@@ -1,0 +1,65 @@
+{
+  "name": "school-management-system",
+  "version": "1.0.0",
+  "description": "Offline School Management System",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "concurrently \"npm run react\" \"wait-on http://localhost:3000 && npm run electron\"",
+    "react": "react-scripts start",
+    "electron": "electron .",
+    "build": "react-scripts build && electron-builder",
+    "dev": "npm run start"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^9.4.3",
+    "jspdf": "^2.5.1",
+    "jspdf-autotable": "^3.8.2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "electron": "^29.1.0",
+    "electron-builder": "^24.6.4",
+    "eslint-scope": "^9.1.2",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.school.management",
+    "productName": "School Management System",
+    "win": {
+      "target": "nsis",
+      "icon": "src/assets/logo/icon.ico"
+    },
+    "files": [
+      "build/**/*",
+      "src/main/**/*",
+      "src/database/**/*",
+      "src/services/**/*",
+      "data/**/*",
+      "node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "src/database/schema.sql",
+        "to": "schema.sql"
+      },
+      {
+        "from": "data/",
+        "to": "data/"
+      }
+    ]
+  },
+  "homepage": "./",
+  "browserslist": {
+    "production": [
+      "last 1 electron version"
+    ],
+    "development": [
+      "last 1 electron version"
+    ]
+  }
+}
