@@ -38,6 +38,24 @@ function initDatabase() {
   // Run schema only if tables don't exist yet
   const schema = fs.readFileSync(SCHEMA_PATH, 'utf8');
   db.exec(schema);
+
+  // Migrations: safely add new columns if they don't exist
+  const migrate = (sql) => { try { db.exec(sql); } catch (_) {} };
+  migrate("ALTER TABLE enrollment ADD COLUMN house_no TEXT");
+  migrate("ALTER TABLE enrollment ADD COLUMN village TEXT");
+  migrate("ALTER TABLE enrollment ADD COLUMN district TEXT");
+  migrate("ALTER TABLE enrollment ADD COLUMN state_name TEXT");
+  migrate("ALTER TABLE enrollment ADD COLUMN pin_code TEXT");
+  migrate("ALTER TABLE enrollment ADD COLUMN nationality TEXT DEFAULT 'Indian'");
+  migrate("ALTER TABLE enrollment ADD COLUMN physically_handicapped TEXT DEFAULT 'No'");
+  migrate("ALTER TABLE enrollment ADD COLUMN father_qualification TEXT");
+  migrate("ALTER TABLE enrollment ADD COLUMN father_profession TEXT");
+  migrate("ALTER TABLE enrollment ADD COLUMN mother_qualification TEXT");
+  migrate("ALTER TABLE enrollment ADD COLUMN mother_profession TEXT");
+  migrate("ALTER TABLE enrollment ADD COLUMN siblings TEXT");
+  migrate("ALTER TABLE enrollment ADD COLUMN birth_cert_submitted TEXT DEFAULT 'No'");
+  migrate("ALTER TABLE enrollment ADD COLUMN tc_submitted TEXT DEFAULT 'No'");
+
   console.log('[DB] Initialised:', DB_PATH);
 }
 
@@ -175,13 +193,27 @@ ipcMain.handle('enrollment:add', (_evt, data) => {
          gender, date_of_birth, aadhar_number, pen_number, current_class,
          father_name, mother_name, father_phone, mother_phone, blood_group,
          prev_sr_number, prev_school_name, documents_submitted,
-         religion, caste, category, address, academic_year)
+         religion, caste, category, address, academic_year,
+         house_no, village, town, city, district, state_name, pin_code, nationality,
+         physically_handicapped, disability_description,
+         father_qualification, father_profession,
+         mother_qualification, mother_profession,
+         siblings, sibling_codes,
+         birth_cert_submitted, birth_cert_number, tc_submitted,
+         rte, rte_details, prev_school_attended)
       VALUES
         (@admission_number, @date_of_admission, @class_of_admission, @student_name,
          @gender, @date_of_birth, @aadhar_number, @pen_number, @current_class,
          @father_name, @mother_name, @father_phone, @mother_phone, @blood_group,
          @prev_sr_number, @prev_school_name, @documents_submitted,
-         @religion, @caste, @category, @address, @academic_year)
+         @religion, @caste, @category, @address, @academic_year,
+         @house_no, @village, @town, @city, @district, @state_name, @pin_code, @nationality,
+         @physically_handicapped, @disability_description,
+         @father_qualification, @father_profession,
+         @mother_qualification, @mother_profession,
+         @siblings, @sibling_codes,
+         @birth_cert_submitted, @birth_cert_number, @tc_submitted,
+         @rte, @rte_details, @prev_school_attended)
     `).run({ ...data, admission_number: admissionNumber });
 
     return { success: true, admission_number: admissionNumber };
@@ -513,6 +545,190 @@ ipcMain.handle('excel:import', (_evt, { filePath, sheetName, table, mapping, opt
       errors:       errorRows.slice(0, 20),
     };
 
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ============================================================
+//  FEES — Phase 3
+// ============================================================
+
+// ── Auto-generate receipt number ─────────────────────────────
+function generateReceiptNumber() {
+  const now   = new Date();
+  const year  = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const count = (db.prepare("SELECT COUNT(*) as c FROM fees_ledger WHERE receipt_number IS NOT NULL AND receipt_number != ''").get().c || 0) + 1;
+  return `RCP-${year}${month}-${String(count).padStart(4, '0')}`;
+}
+
+// ── Get student's full ledger for a year ──────────────────────
+ipcMain.handle('fees:getLedger', (_evt, { admission_number, academic_year }) => {
+  try {
+    const student = db.prepare('SELECT * FROM enrollment WHERE admission_number = ?').get(admission_number);
+    if (!student) return { success: false, message: 'Student not found.' };
+
+    const entries = db.prepare(
+      'SELECT * FROM fees_ledger WHERE admission_number = ? AND academic_year = ? ORDER BY ledger_id'
+    ).all(admission_number, academic_year);
+
+    // Total summary
+    const summary = db.prepare(`
+      SELECT
+        SUM(total_due)              as total_billed,
+        SUM(amount_paid_this_month) as total_paid,
+        SUM(total_due - amount_paid_this_month) as total_pending
+      FROM fees_ledger
+      WHERE admission_number = ? AND academic_year = ?
+    `).get(admission_number, academic_year);
+
+    return { success: true, student, entries, summary };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Add / update a monthly fee entry ─────────────────────────
+ipcMain.handle('fees:addEntry', (_evt, data) => {
+  try {
+    // Check if entry for this month already exists
+    const existing = db.prepare(
+      'SELECT ledger_id FROM fees_ledger WHERE admission_number = ? AND month = ? AND academic_year = ?'
+    ).get(data.admission_number, data.month, data.academic_year);
+
+    if (existing) {
+      // Update
+      db.prepare(`
+        UPDATE fees_ledger SET
+          monthly_tuition_fees   = @monthly_tuition_fees,
+          transport_fees         = @transport_fees,
+          concession             = @concession,
+          prev_balance           = @prev_balance,
+          prev_deposit           = @prev_deposit,
+          total_due              = @total_due,
+          amount_paid_this_month = @amount_paid_this_month,
+          payment_date           = @payment_date,
+          address                = @address
+        WHERE ledger_id = @ledger_id
+      `).run({ ...data, ledger_id: existing.ledger_id });
+      return { success: true, ledger_id: existing.ledger_id, updated: true };
+    }
+
+    // Generate ledger number
+    const count = (db.prepare('SELECT COUNT(*) as c FROM fees_ledger').get().c || 0) + 1;
+    const ledger_number = `LDG-${data.academic_year}-${String(count).padStart(4, '0')}`;
+
+    const result = db.prepare(`
+      INSERT INTO fees_ledger (
+        new_ledger_number, admission_number, student_name, father_name,
+        class, address, academic_year, month,
+        prev_balance, prev_deposit,
+        monthly_tuition_fees, transport_fees, concession,
+        total_due, amount_paid_this_month, payment_date
+      ) VALUES (
+        @new_ledger_number, @admission_number, @student_name, @father_name,
+        @class, @address, @academic_year, @month,
+        @prev_balance, @prev_deposit,
+        @monthly_tuition_fees, @transport_fees, @concession,
+        @total_due, @amount_paid_this_month, @payment_date
+      )
+    `).run({ ...data, new_ledger_number: ledger_number });
+
+    return { success: true, ledger_id: result.lastInsertRowid };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Collect a payment → update ledger + generate receipt ─────
+ipcMain.handle('fees:collectPayment', (_evt, { ledger_id, amount_paid, payment_mode, payment_date }) => {
+  try {
+    const entry = db.prepare('SELECT * FROM fees_ledger WHERE ledger_id = ?').get(ledger_id);
+    if (!entry) return { success: false, message: 'Ledger entry not found.' };
+
+    const receipt_number = generateReceiptNumber();
+
+    db.prepare(`
+      UPDATE fees_ledger SET
+        amount_paid_this_month = amount_paid_this_month + @amount_paid,
+        payment_date           = @payment_date,
+        receipt_number         = @receipt_number
+      WHERE ledger_id = @ledger_id
+    `).run({ amount_paid, payment_date, receipt_number, ledger_id });
+
+    const updated = db.prepare('SELECT * FROM fees_ledger WHERE ledger_id = ?').get(ledger_id);
+    const student = db.prepare('SELECT * FROM enrollment WHERE admission_number = ?').get(entry.admission_number);
+
+    return { success: true, receipt_number, entry: updated, student };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get all students with pending fees ───────────────────────
+ipcMain.handle('fees:getPending', (_evt, { academic_year, class: cls }) => {
+  try {
+    let sql = `
+      SELECT
+        f.ledger_id, f.admission_number, f.student_name, f.father_name,
+        f.class, f.address, f.month, f.academic_year,
+        f.monthly_tuition_fees, f.transport_fees, f.concession,
+        f.total_due, f.amount_paid_this_month,
+        (f.total_due - f.amount_paid_this_month) as remaining,
+        f.payment_date, f.receipt_number,
+        e.father_phone, e.mother_phone
+      FROM fees_ledger f
+      LEFT JOIN enrollment e ON e.admission_number = f.admission_number
+      WHERE f.academic_year = ?
+        AND (f.total_due - f.amount_paid_this_month) > 0
+    `;
+    const params = [academic_year];
+    if (cls) { sql += ' AND f.class = ?'; params.push(cls); }
+    sql += ' ORDER BY f.class, f.student_name';
+
+    const rows = db.prepare(sql).all(...params);
+    return { success: true, data: rows };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Search students for fees receipt ────────────────────────
+ipcMain.handle('fees:searchStudent', (_evt, { query, academic_year }) => {
+  try {
+    const q = `%${query}%`;
+    // Get latest ledger entry per student
+    const rows = db.prepare(`
+      SELECT
+        e.admission_number, e.student_name, e.father_name, e.current_class,
+        e.father_phone, e.address,
+        COALESCE(SUM(f.total_due - f.amount_paid_this_month), 0) as total_pending,
+        MAX(f.payment_date) as last_payment_date
+      FROM enrollment e
+      LEFT JOIN fees_ledger f ON f.admission_number = e.admission_number AND f.academic_year = ?
+      WHERE (e.student_name LIKE ? OR e.admission_number LIKE ? OR e.father_name LIKE ?)
+        AND e.tc_issued = 0
+      GROUP BY e.admission_number
+      ORDER BY e.student_name
+      LIMIT 20
+    `).all(academic_year, q, q, q);
+    return { success: true, data: rows };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get month-wise ledger for receipt view ───────────────────
+ipcMain.handle('fees:getMonthLedger', (_evt, { admission_number, academic_year }) => {
+  try {
+    const entries = db.prepare(`
+      SELECT *, (total_due - amount_paid_this_month) as remaining
+      FROM fees_ledger
+      WHERE admission_number = ? AND academic_year = ?
+      ORDER BY ledger_id
+    `).all(admission_number, academic_year);
+    return { success: true, data: entries };
   } catch (err) {
     return { success: false, message: err.message };
   }

@@ -8,13 +8,17 @@ import Login from './pages/Login';
 import ExcelImport from './pages/ExcelImport';
 import Admission from './pages/Admission';
 import StudentList from './pages/StudentList';
+import FeesLedger from './pages/FeesLedger';
+import FeesReceipt from './pages/FeesReceipt';
+import FeesNotice from './pages/FeesNotice';
 
 // ── Sidebar nav items (add pages here as you build each phase) ─
 const NAV_ITEMS = [
   { key: 'dashboard',    label: 'Dashboard',       icon: '🏠', permission: 'dashboard'   },
   { key: 'admission',    label: 'New Admission',    icon: '📝', permission: 'admission'   },
   { key: 'studentList',  label: 'Student List',     icon: '📋', permission: 'studentList' },
-  { key: 'feesReceipt',  label: 'Collect Fees',     icon: '💰', permission: 'feesReceipt' },
+  { key: 'feesLedger',   label: 'Fees Ledger',       icon: '📒', permission: 'feesReceipt' },
+  { key: 'feesReceipt',  label: 'Collect Fees',       icon: '💰', permission: 'feesReceipt' },
   { key: 'feesNotice',   label: 'Fees Notice',      icon: '📢', permission: 'feesNotice'  },
   { key: 'admitCard',    label: 'Admit Cards',      icon: '🪪', permission: 'admitCard'   },
   { key: 'attendance',   label: 'Attendance',       icon: '📅', permission: 'attendance'  },
@@ -50,8 +54,9 @@ function AppShell() {
       // Phase 2+
       case 'admission':    return <Admission />;
       case 'studentList':  return <StudentList />;
-      case 'feesReceipt':  return <ComingSoon page="Fees Receipt — Phase 3" />;
-      case 'feesNotice':   return <ComingSoon page="Fees Notice — Phase 3" />;
+      case 'feesLedger':   return <FeesLedger />;
+      case 'feesReceipt':  return <FeesReceipt />;
+      case 'feesNotice':   return <FeesNotice />;
       case 'admitCard':    return <ComingSoon page="Admit Card — Phase 4" />;
       case 'tcGeneration': return <ComingSoon page="TC Generation — Phase 4" />;
       case 'attendance':   return <ComingSoon page="Attendance — Phase 5" />;
