@@ -22,7 +22,7 @@ const DATA_DIR = isDev
 const DB_PATH = path.join(DATA_DIR, 'school.db');
 
 const SCHEMA_PATH = isDev
-  ? path.join(__dirname, 'schema.sql')
+  ? path.join(__dirname, '../database/schema.sql')
   : path.join(process.resourcesPath, 'schema.sql');
 
 // ── Ensure data directory exists ─────────────────────────────
@@ -39,22 +39,69 @@ function initDatabase() {
   const schema = fs.readFileSync(SCHEMA_PATH, 'utf8');
   db.exec(schema);
 
-  // Migrations: safely add new columns if they don't exist
+  // Migrations: safely add new/updated columns to existing DBs
   const migrate = (sql) => { try { db.exec(sql); } catch (_) {} };
-  migrate("ALTER TABLE enrollment ADD COLUMN house_no TEXT");
-  migrate("ALTER TABLE enrollment ADD COLUMN village TEXT");
-  migrate("ALTER TABLE enrollment ADD COLUMN district TEXT");
-  migrate("ALTER TABLE enrollment ADD COLUMN state_name TEXT");
-  migrate("ALTER TABLE enrollment ADD COLUMN pin_code TEXT");
-  migrate("ALTER TABLE enrollment ADD COLUMN nationality TEXT DEFAULT 'Indian'");
-  migrate("ALTER TABLE enrollment ADD COLUMN physically_handicapped TEXT DEFAULT 'No'");
-  migrate("ALTER TABLE enrollment ADD COLUMN father_qualification TEXT");
-  migrate("ALTER TABLE enrollment ADD COLUMN father_profession TEXT");
-  migrate("ALTER TABLE enrollment ADD COLUMN mother_qualification TEXT");
-  migrate("ALTER TABLE enrollment ADD COLUMN mother_profession TEXT");
-  migrate("ALTER TABLE enrollment ADD COLUMN siblings TEXT");
-  migrate("ALTER TABLE enrollment ADD COLUMN birth_cert_submitted TEXT DEFAULT 'No'");
-  migrate("ALTER TABLE enrollment ADD COLUMN tc_submitted TEXT DEFAULT 'No'");
+  // Address
+  migrate("ALTER TABLE enrollment ADD COLUMN house_no TEXT NOT NULL DEFAULT 'NOT PROVIDED'");
+  migrate("ALTER TABLE enrollment ADD COLUMN village TEXT NOT NULL DEFAULT 'NOT PROVIDED'");
+  migrate("ALTER TABLE enrollment ADD COLUMN post TEXT NOT NULL DEFAULT 'NOT PROVIDED'");
+  migrate("ALTER TABLE enrollment ADD COLUMN district TEXT NOT NULL DEFAULT 'Bulandshahr'");
+  migrate("ALTER TABLE enrollment ADD COLUMN state_name TEXT NOT NULL DEFAULT 'Uttar Pradesh'");
+  migrate("ALTER TABLE enrollment ADD COLUMN pin_code TEXT NOT NULL DEFAULT '203131'");
+  migrate("ALTER TABLE enrollment ADD COLUMN town TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN city TEXT NOT NULL DEFAULT ''");
+  // Student extras
+  migrate("ALTER TABLE enrollment ADD COLUMN nationality TEXT NOT NULL DEFAULT 'Indian'");
+  migrate("ALTER TABLE enrollment ADD COLUMN physically_handicapped TEXT NOT NULL DEFAULT 'No'");
+  migrate("ALTER TABLE enrollment ADD COLUMN disability_description TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN blood_group TEXT NOT NULL DEFAULT 'NOT PROVIDED'");
+  migrate("ALTER TABLE enrollment ADD COLUMN rte TEXT NOT NULL DEFAULT 'No'");
+  migrate("ALTER TABLE enrollment ADD COLUMN rte_details TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN student_status TEXT NOT NULL DEFAULT 'ACTIVE'");
+  migrate("ALTER TABLE enrollment ADD COLUMN birth_document TEXT NOT NULL DEFAULT 'NOT PROVIDED'");
+  migrate("ALTER TABLE enrollment ADD COLUMN sr_number INTEGER");
+  // Documents
+  migrate("ALTER TABLE enrollment ADD COLUMN birth_cert_submitted TEXT NOT NULL DEFAULT 'No'");
+  migrate("ALTER TABLE enrollment ADD COLUMN birth_cert_number TEXT NOT NULL DEFAULT 'NOT PROVIDED'");
+  migrate("ALTER TABLE enrollment ADD COLUMN tc_submitted TEXT NOT NULL DEFAULT 'No'");
+  migrate("ALTER TABLE enrollment ADD COLUMN prev_school_attended TEXT NOT NULL DEFAULT 'No'");
+  // Parents
+  migrate("ALTER TABLE enrollment ADD COLUMN father_qualification TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN father_profession TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN mother_qualification TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN mother_profession TEXT NOT NULL DEFAULT ''");
+  // Siblings
+  migrate("ALTER TABLE enrollment ADD COLUMN siblings TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN sibling_codes TEXT NOT NULL DEFAULT ''");
+
+  // New columns for redesigned admission form
+  migrate("ALTER TABLE enrollment ADD COLUMN guardian_name TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN mobile_number TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN alternate_mobile TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN contact_email TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN mother_tongue TEXT NOT NULL DEFAULT 'Hindi'");
+  migrate("ALTER TABLE enrollment ADD COLUMN minority_group TEXT NOT NULL DEFAULT 'Not Applicable'");
+  migrate("ALTER TABLE enrollment ADD COLUMN bpl_beneficiary TEXT NOT NULL DEFAULT 'No'");
+  migrate("ALTER TABLE enrollment ADD COLUMN ews_disadvantaged TEXT NOT NULL DEFAULT 'No'");
+  migrate("ALTER TABLE enrollment ADD COLUMN cwsn TEXT NOT NULL DEFAULT 'No'");
+  migrate("ALTER TABLE enrollment ADD COLUMN impairment_type TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN disability_certificate TEXT NOT NULL DEFAULT 'No'");
+  migrate("ALTER TABLE enrollment ADD COLUMN disability_percentage TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN section TEXT NOT NULL DEFAULT 'A'");
+  migrate("ALTER TABLE enrollment ADD COLUMN medium_of_instruction TEXT NOT NULL DEFAULT 'Hindi'");
+  migrate("ALTER TABLE enrollment ADD COLUMN language_group TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN academic_stream TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN subject_group TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN prev_year_status TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN prev_year_class TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN rte_section_12c TEXT NOT NULL DEFAULT 'No'");
+  migrate("ALTER TABLE enrollment ADD COLUMN rte_amount_claimed TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN is_new_student TEXT NOT NULL DEFAULT 'Yes'");
+  migrate("ALTER TABLE enrollment ADD COLUMN prev_result TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN prev_marks_percentage TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN prev_days_attended TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN prev_class_studied TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN prev_group_studied TEXT NOT NULL DEFAULT ''");
 
   console.log('[DB] Initialised:', DB_PATH);
 }
@@ -180,47 +227,159 @@ ipcMain.handle('users:toggle', (_evt, { userId, isActive }) => {
 });
 
 // ── ENROLLMENT (SR Register) ──────────────────────────────────
-ipcMain.handle('enrollment:add', (_evt, data) => {
+// ── Apply null-value defaults ────────────────────────────────
+function applyDefaults(data) {
+  // Strictly matches clean enrollment schema — no extra fields
+  return {
+    // System
+    student_status:         data.student_status?.trim()        || 'ACTIVE',
+    academic_year:          data.academic_year?.trim()         || '2025-26',
+    // Student Identity
+    student_name:           data.student_name?.trim()          || 'NOT PROVIDED',
+    gender:                 data.gender?.trim()                || 'NOT PROVIDED',
+    date_of_birth:          data.date_of_birth?.trim()         || '00-00-0000',
+    indian_nationality:     data.indian_nationality?.trim()    || 'Yes',
+    blood_group:            data.blood_group?.trim()           || 'NOT PROVIDED',
+    mother_tongue:          data.mother_tongue?.trim()         || 'Hindi',
+    aadhar_number:          data.aadhar_number?.replace(/\s/g,'') || '999999999999',
+    aadhar_doc:             data.aadhar_doc                    || '',
+    birth_cert:             data.birth_cert                    || 'No',
+    birth_cert_doc:         data.birth_cert_doc                || '',
+    // Parents / Guardian
+    mother_name:            data.mother_name?.trim()           || 'NOT PROVIDED',
+    mother_profession:      data.mother_profession             || 'Housewife',
+    father_name:            data.father_name?.trim()           || 'NOT PROVIDED',
+    father_profession:      data.father_profession             || 'Mazdoori',
+    guardian_name:          data.guardian_name                 || '',
+    contact_email:          data.contact_email                 || '',
+    mobile_number:          data.mobile_number                 || '',
+    alternate_mobile:       data.alternate_mobile              || '',
+    // Address
+    house_no:               data.house_no?.trim()              || 'NOT PROVIDED',
+    village:                data.village?.trim()               || 'NOT PROVIDED',
+    post:                   data.post?.trim()                  || 'NOT PROVIDED',
+    district:               data.district?.trim()              || 'Bulandshahr',
+    state_name:             data.state_name?.trim()            || 'Uttar Pradesh',
+    pin_code:               data.pin_code?.trim()              || '203131',
+    // Social Details
+    category:               data.category?.trim()              || 'NOT PROVIDED',
+    minority_group:         data.minority_group                || 'Not Applicable',
+    bpl_beneficiary:        data.bpl_beneficiary               || 'No',
+    ews_disadvantaged:      data.ews_disadvantaged             || 'No',
+    cwsn:                   data.cwsn                          || 'No',
+    impairment_type:        data.impairment_type               || '',
+    disability_certificate: data.disability_certificate        || 'No',
+    disability_cert_doc:    data.disability_cert_doc           || '',
+    disability_percentage:  data.disability_percentage         || '',
+    // Enrollment Number section
+    pen_number:             data.pen_number?.trim()            || '11111111111',
+    apaar_id:               data.apaar_id                      || '',
+    rte_section_12c:        data.rte_section_12c               || 'No',
+    rte_amount_claimed:     data.rte_amount_claimed            || '',
+    // Admission Details
+    date_of_admission:      data.date_of_admission?.trim()     || '00-00-0000',
+    class_of_admission:     data.class_of_admission?.trim()    || 'NOT PROVIDED',
+    current_class:          data.current_class?.trim()         || data.class_of_admission?.trim() || 'NOT PROVIDED',
+    section:                data.section                       || 'A',
+    medium_of_instruction:  data.medium_of_instruction         || 'English',
+    studied_elsewhere:      data.studied_elsewhere             || 'No',
+    tc_submitted:           data.tc_submitted                  || 'No',
+    tc_doc:                 data.tc_doc                        || '',
+    prev_year_status:       data.prev_year_status              || '',
+    prev_year_class:        data.prev_year_class               || '',
+    prev_enrollment_number: data.prev_enrollment_number        || '',
+    prev_academic_year:     data.prev_academic_year            || '',
+    prev_school_name:       data.prev_school_name              || 'NOT APPLICABLE',
+    // Subjects & Stream
+    language_group:         data.language_group                || '',
+    academic_stream:        data.academic_stream               || '',
+    subject_group:          data.subject_group                 || '',
+  };
+}
+
+ipcMain.handle('enrollment:add', (_evt, rawData) => {
   try {
-    // Auto-generate admission number: ADM-YYYY-XXXX
-    const year = new Date().getFullYear();
-    const count = (db.prepare('SELECT COUNT(*) as c FROM enrollment').get().c || 0) + 1;
-    const admissionNumber = `ADM-${year}-${String(count).padStart(4, '0')}`;
+    const data = applyDefaults(rawData);
+
+    // ── Generate admission number: BPS[YYYY]-[NNNN] ──────────
+    // YYYY = first year of academic session (2025 for 2025-26)
+    // NNNN = global sequential counter — NEVER resets across years
+    const now         = new Date();
+    const sessionYear = now.getMonth() >= 3
+      ? now.getFullYear()
+      : now.getFullYear() - 1;
+
+    // Find highest counter across ALL records
+    const lastRecord = db.prepare(
+      "SELECT admission_number FROM enrollment ORDER BY rowid DESC LIMIT 1"
+    ).get();
+
+    let lastCounter = 0;
+    if (lastRecord) {
+      const parts = lastRecord.admission_number.split('-');
+      lastCounter = parseInt(parts[parts.length - 1]) || 0;
+    }
+
+    const nextCounter     = lastCounter + 1;
+    const admissionNumber = `BPS${sessionYear}-${String(nextCounter).padStart(4, '0')}`;
 
     db.prepare(`
-      INSERT INTO enrollment
-        (admission_number, date_of_admission, class_of_admission, student_name,
-         gender, date_of_birth, aadhar_number, pen_number, current_class,
-         father_name, mother_name, father_phone, mother_phone, blood_group,
-         prev_sr_number, prev_school_name, documents_submitted,
-         religion, caste, category, address, academic_year,
-         house_no, village, town, city, district, state_name, pin_code, nationality,
-         physically_handicapped, disability_description,
-         father_qualification, father_profession,
-         mother_qualification, mother_profession,
-         siblings, sibling_codes,
-         birth_cert_submitted, birth_cert_number, tc_submitted,
-         rte, rte_details, prev_school_attended)
-      VALUES
-        (@admission_number, @date_of_admission, @class_of_admission, @student_name,
-         @gender, @date_of_birth, @aadhar_number, @pen_number, @current_class,
-         @father_name, @mother_name, @father_phone, @mother_phone, @blood_group,
-         @prev_sr_number, @prev_school_name, @documents_submitted,
-         @religion, @caste, @category, @address, @academic_year,
-         @house_no, @village, @town, @city, @district, @state_name, @pin_code, @nationality,
-         @physically_handicapped, @disability_description,
-         @father_qualification, @father_profession,
-         @mother_qualification, @mother_profession,
-         @siblings, @sibling_codes,
-         @birth_cert_submitted, @birth_cert_number, @tc_submitted,
-         @rte, @rte_details, @prev_school_attended)
+      INSERT INTO enrollment (
+        admission_number, student_status, academic_year,
+        student_name, gender, date_of_birth, indian_nationality,
+        blood_group, mother_tongue, aadhar_number, aadhar_doc,
+        birth_cert, birth_cert_doc,
+        mother_name, mother_profession,
+        father_name, father_profession,
+        guardian_name, contact_email, mobile_number, alternate_mobile,
+        house_no, village, post, district, state_name, pin_code,
+        category, minority_group, bpl_beneficiary, ews_disadvantaged,
+        cwsn, impairment_type, disability_certificate, disability_cert_doc, disability_percentage,
+        pen_number, apaar_id, rte_section_12c, rte_amount_claimed,
+        date_of_admission, class_of_admission, current_class,
+        section, medium_of_instruction,
+        studied_elsewhere, tc_submitted, tc_doc,
+        prev_year_status, prev_year_class,
+        prev_enrollment_number, prev_academic_year, prev_school_name,
+        language_group, academic_stream, subject_group
+      ) VALUES (
+        @admission_number, @student_status, @academic_year,
+        @student_name, @gender, @date_of_birth, @indian_nationality,
+        @blood_group, @mother_tongue, @aadhar_number, @aadhar_doc,
+        @birth_cert, @birth_cert_doc,
+        @mother_name, @mother_profession,
+        @father_name, @father_profession,
+        @guardian_name, @contact_email, @mobile_number, @alternate_mobile,
+        @house_no, @village, @post, @district, @state_name, @pin_code,
+        @category, @minority_group, @bpl_beneficiary, @ews_disadvantaged,
+        @cwsn, @impairment_type, @disability_certificate, @disability_cert_doc, @disability_percentage,
+        @pen_number, @apaar_id, @rte_section_12c, @rte_amount_claimed,
+        @date_of_admission, @class_of_admission, @current_class,
+        @section, @medium_of_instruction,
+        @studied_elsewhere, @tc_submitted, @tc_doc,
+        @prev_year_status, @prev_year_class,
+        @prev_enrollment_number, @prev_academic_year, @prev_school_name,
+        @language_group, @academic_stream, @subject_group
+      )
     `).run({ ...data, admission_number: admissionNumber });
 
     return { success: true, admission_number: admissionNumber };
   } catch (err) {
-    if (err.message.includes('UNIQUE')) {
-      return { success: false, message: 'Aadhar or PEN number already exists in the system.' };
-    }
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Edit existing student ─────────────────────────────────────
+ipcMain.handle('enrollment:edit', (_evt, { admission_number, ...rawData }) => {
+  try {
+    const data = applyDefaults(rawData);
+    const fields = Object.keys(data).map(k => `${k} = @${k}`).join(', ');
+    db.prepare(
+      `UPDATE enrollment SET ${fields}, updated_at = datetime('now','localtime')
+       WHERE admission_number = @admission_number`
+    ).run({ ...data, admission_number });
+    return { success: true };
+  } catch (err) {
     return { success: false, message: err.message };
   }
 });
@@ -368,200 +527,232 @@ const IMPORT_SCHEMAS = {
 };
 
 // ── Read Excel file → return headers + first 10 rows for preview ──
+// ══════════════════════════════════════════════════════════════
+// EXCEL IMPORTER — preview, validate, import
+// ══════════════════════════════════════════════════════════════
+
+const VALID_CLASSES = new Set(['Nursery','LKG','UKG','Class 1','Class 2','Class 3',
+  'Class 4','Class 5','Class 6','Class 7','Class 8','Class 9',
+  'Class 10','Class 11','Class 12']);
+const VALID_STATUS  = new Set(['ACTIVE','DROPBOX/TC','DROPBOX-MID SESSION']);
+const VALID_MG      = new Set(['Not Applicable','Muslim','Christian','Sikh','Buddhist','Parsi','Jain']);
+const VALID_YN      = new Set(['Yes','No']);
+const DATE_RE       = /^\d{2}-\d{2}-\d{4}$/;
+
+function validateRow(row) {
+  const errs = [];
+  if (!row.student_name)       errs.push('student_name is blank');
+  if (!row.father_name)        errs.push('father_name is blank');
+  if (!row.date_of_birth)      errs.push('date_of_birth is blank');
+  if (!row.date_of_admission)  errs.push('date_of_admission is blank');
+  if (!row.class_of_admission) errs.push('class_of_admission is blank');
+  if (!row.admission_number)   errs.push('admission_number is blank');
+  if (row.date_of_birth     && !DATE_RE.test(row.date_of_birth))
+    errs.push(`date_of_birth wrong format: ${row.date_of_birth}`);
+  if (row.date_of_admission && !DATE_RE.test(row.date_of_admission))
+    errs.push(`date_of_admission wrong format: ${row.date_of_admission}`);
+  if (row.admission_number  && !/^BPS\d{4}-\d{4}$/.test(row.admission_number))
+    errs.push(`admission_number wrong format: ${row.admission_number}`);
+  if (row.class_of_admission && !VALID_CLASSES.has(row.class_of_admission))
+    errs.push(`class_of_admission invalid: ${row.class_of_admission}`);
+  if (row.current_class && !VALID_CLASSES.has(row.current_class))
+    errs.push(`current_class invalid: ${row.current_class}`);
+  if (row.student_status && !VALID_STATUS.has(row.student_status))
+    errs.push(`student_status invalid: ${row.student_status}`);
+  if (row.gender && !['M','F','Other'].includes(row.gender))
+    errs.push(`gender invalid: ${row.gender}`);
+  if (row.aadhar_number && !/^\d{12}$/.test(String(row.aadhar_number).replace(/\s/g,'')))
+    errs.push(`aadhar_number not 12 digits: ${row.aadhar_number}`);
+  if (row.pen_number) {
+    const p = String(row.pen_number).replace(/\.0$/, '');
+    if (!/^\d{11}$/.test(p)) errs.push(`pen_number not 11 digits: ${row.pen_number}`);
+  }
+  ['birth_cert','bpl_beneficiary','ews_disadvantaged','cwsn',
+   'disability_certificate','rte_section_12c','studied_elsewhere','tc_submitted'].forEach(col => {
+    if (row[col] && !VALID_YN.has(row[col]))
+      errs.push(`${col} must be Yes/No, got: ${row[col]}`);
+  });
+  if (row.minority_group && !VALID_MG.has(row.minority_group))
+    errs.push(`minority_group invalid: ${row.minority_group}`);
+  return errs;
+}
+
+function readExcel(filePath) {
+  const wb      = XLSX.readFile(filePath, { raw: true });
+  const ws      = wb.Sheets[wb.SheetNames[0]];
+  const all     = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  const headers = all[0].map(h => String(h).trim());
+  const rows    = all.slice(1).filter(r => r.some(c => c !== ''));
+  const parsed  = rows.map(r =>
+    headers.reduce((obj, h, i) => {
+      obj[h] = r[i] !== undefined ? String(r[i]).trim() : '';
+      return obj;
+    }, {})
+  );
+  return { headers, rows: parsed };
+}
+
+// ── 1. Preview ────────────────────────────────────────────────
 ipcMain.handle('excel:preview', async (_evt, filePath) => {
   try {
-    const workbook = XLSX.readFile(filePath, { cellDates: true, dateNF: 'dd/mm/yyyy' });
-    const sheetNames = workbook.SheetNames;
-
-    // Read all sheets
-    const sheets = sheetNames.map(name => {
-      const ws = workbook.Sheets[name];
-      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-      if (rows.length === 0) return { name, headers: [], preview: [], totalRows: 0 };
-
-      const headers = rows[0].map(h => String(h).trim());
-      const dataRows = rows.slice(1).filter(r => r.some(cell => cell !== ''));
-      const preview  = dataRows.slice(0, 10).map(r =>
-        headers.reduce((obj, h, i) => {
-          obj[h] = r[i] !== undefined ? String(r[i]) : '';
-          return obj;
-        }, {})
-      );
-
-      return { name, headers, preview, totalRows: dataRows.length };
-    });
-
-    return { success: true, sheets, schemas: IMPORT_SCHEMAS };
-  } catch (err) {
-    return { success: false, message: `Could not read file: ${err.message}` };
-  }
-});
-
-// ── Validate + import a mapped sheet into the database ───────
-ipcMain.handle('excel:import', (_evt, { filePath, sheetName, table, mapping, options }) => {
-  try {
-    const workbook = XLSX.readFile(filePath, { cellDates: true, dateNF: 'dd/mm/yyyy' });
-    const ws = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-
-    if (rows.length < 2) return { success: false, message: 'Sheet has no data rows.' };
-
-    const excelHeaders = rows[0].map(h => String(h).trim());
-    const dataRows     = rows.slice(1).filter(r => r.some(cell => cell !== ''));
-
-    const schema = IMPORT_SCHEMAS[table];
-    if (!schema) return { success: false, message: 'Unknown table.' };
-
-    // mapping = { dbColumn: excelColumnName }
-    // Build each row as a DB object and validate
-    const validRows   = [];
-    const errorRows   = [];
-
-    dataRows.forEach((rawRow, idx) => {
-      // Convert raw row array → object keyed by Excel header
-      const excelObj = excelHeaders.reduce((obj, h, i) => {
-        obj[h] = rawRow[i] !== undefined ? String(rawRow[i]).trim() : '';
-        return obj;
-      }, {});
-
-      const dbObj  = {};
-      const errors = [];
-
-      schema.columns.forEach(col => {
-        const excelCol = mapping[col.key];
-        let val = excelCol ? (excelObj[excelCol] || '') : '';
-
-        // Type coercions
-        if (['monthly_tuition_fees','transport_fees','concession','prev_balance',
-             'amount_paid_this_month','total_due'].includes(col.key)) {
-          val = parseFloat(val.replace(/[₹,\s]/g, '')) || 0;
-        }
-
-        if (col.required && (val === '' || val === null || val === undefined)) {
-          errors.push(`"${col.label}" is required`);
-        }
-
-        // Aadhar: must be 12 digits if provided
-        if (col.key === 'aadhar_number' && val && !/^\d{12}$/.test(val.replace(/\s/g,''))) {
-          errors.push('Aadhar must be 12 digits');
-        }
-
-        // Gender: normalise
-        if (col.key === 'gender') {
-          const g = val.toUpperCase();
-          if (g === 'M' || g === 'MALE' || g === 'BOY')   val = 'M';
-          else if (g === 'F' || g === 'FEMALE' || g === 'GIRL') val = 'F';
-          else if (val !== '') val = 'Other';
-        }
-
-        // Category: normalise
-        if (col.key === 'category' && val) {
-          val = val.toUpperCase();
-          if (!['GEN','SC','ST','OBC'].includes(val)) {
-            errors.push('Category must be GEN, SC, ST, or OBC');
-          }
-        }
-
-        dbObj[col.key] = val;
-      });
-
-      const rowNum = idx + 2; // +2 because row 1 is header
-      if (errors.length > 0) {
-        errorRows.push({ rowNum, data: excelObj, errors });
-      } else {
-        validRows.push({ rowNum, data: dbObj });
-      }
-    });
-
-    // If skipErrors is false and there are errors, abort
-    if (!options.skipErrors && errorRows.length > 0) {
-      return {
-        success: false,
-        validCount:  validRows.length,
-        errorCount:  errorRows.length,
-        errors:      errorRows.slice(0, 20), // return first 20 errors
-        needsConfirm: true,
-      };
-    }
-
-    // ── Commit valid rows ────────────────────────────────────
-    const importMany = db.transaction((rows) => {
-      let inserted = 0;
-      let updated  = 0;
-      let skipped  = 0;
-
-      rows.forEach(({ data }) => {
-        if (table === 'enrollment') {
-          // Auto-generate admission number if not provided
-          if (!data.admission_number) {
-            const year  = new Date().getFullYear();
-            const count = db.prepare('SELECT COUNT(*) as c FROM enrollment').get().c + 1;
-            data.admission_number = `ADM-${year}-${String(count).padStart(4,'0')}`;
-          }
-
-          const existing = db.prepare(
-            'SELECT admission_number FROM enrollment WHERE admission_number = ?'
-          ).get(data.admission_number);
-
-          if (existing && options.updateExisting) {
-            const fields = Object.keys(data)
-              .filter(k => k !== 'admission_number')
-              .map(k => `${k} = @${k}`).join(', ');
-            db.prepare(
-              `UPDATE enrollment SET ${fields}, updated_at = datetime('now','localtime')
-               WHERE admission_number = @admission_number`
-            ).run(data);
-            updated++;
-          } else if (!existing) {
-            const keys = Object.keys(data).join(', ');
-            const vals = Object.keys(data).map(k => `@${k}`).join(', ');
-            db.prepare(`INSERT INTO enrollment (${keys}) VALUES (${vals})`).run(data);
-            inserted++;
-          } else {
-            skipped++; // duplicate, updateExisting = false
-          }
-
-        } else if (table === 'fees_ledger') {
-          const keys = Object.keys(data).join(', ');
-          const vals = Object.keys(data).map(k => `@${k}`).join(', ');
-          try {
-            db.prepare(`INSERT INTO fees_ledger (${keys}) VALUES (${vals})`).run(data);
-            inserted++;
-          } catch { skipped++; }
-        }
-      });
-
-      return { inserted, updated, skipped };
-    });
-
-    const { inserted, updated, skipped } = importMany(validRows);
-
+    const { headers, rows } = readExcel(filePath);
     return {
-      success:      true,
-      inserted,
-      updated,
-      skipped,
-      errorCount:   errorRows.length,
-      errors:       errorRows.slice(0, 20),
+      success:   true,
+      headers,
+      preview:   rows.slice(0, 10),
+      totalRows: rows.length,
     };
-
   } catch (err) {
     return { success: false, message: err.message };
   }
 });
 
-// ============================================================
-//  FEES — Phase 3
-// ============================================================
+// ── 2. Validate ───────────────────────────────────────────────
+ipcMain.handle('excel:validate', (_evt, filePath) => {
+  try {
+    const { headers, rows } = readExcel(filePath);
 
-// ── Auto-generate receipt number ─────────────────────────────
-function generateReceiptNumber() {
-  const now   = new Date();
-  const year  = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const count = (db.prepare("SELECT COUNT(*) as c FROM fees_ledger WHERE receipt_number IS NOT NULL AND receipt_number != ''").get().c || 0) + 1;
-  return `RCP-${year}${month}-${String(count).padStart(4, '0')}`;
-}
+    const SCHEMA_COLS = [
+      'admission_number','student_status','academic_year','created_at','updated_at',
+      'student_name','gender','date_of_birth','indian_nationality','blood_group',
+      'mother_tongue','aadhar_number','aadhar_doc','birth_cert','birth_cert_doc',
+      'mother_name','mother_profession','father_name','father_profession',
+      'guardian_name','contact_email','mobile_number','alternate_mobile',
+      'house_no','village','post','district','state_name','pin_code',
+      'category','minority_group','bpl_beneficiary','ews_disadvantaged',
+      'cwsn','impairment_type','disability_certificate','disability_cert_doc','disability_percentage',
+      'pen_number','apaar_id','rte_section_12c','rte_amount_claimed',
+      'date_of_admission','class_of_admission','current_class','section','medium_of_instruction',
+      'studied_elsewhere','tc_submitted','tc_doc',
+      'prev_year_status','prev_year_class','prev_enrollment_number','prev_academic_year','prev_school_name',
+      'language_group','academic_stream','subject_group','tc_issued'
+    ];
+
+    const colMissing = SCHEMA_COLS.filter(c => !headers.includes(c));
+    const colExtra   = headers.filter(c => !SCHEMA_COLS.includes(c) && c !== '');
+
+    // Duplicate admission numbers within file
+    const seen = {}, adm_dupes = [];
+    rows.forEach((r, i) => {
+      const v = r.admission_number;
+      if (v) {
+        if (seen[v] !== undefined) adm_dupes.push({ row: i + 2, value: v });
+        else seen[v] = i;
+      }
+    });
+
+    // Row validation
+    const errorRows = [];
+    rows.forEach((row, idx) => {
+      const errs = validateRow(row);
+      if (errs.length > 0)
+        errorRows.push({ row: idx + 2, admission_number: row.admission_number || '—', errors: errs });
+    });
+
+    // Conflict check — which admission numbers already exist in DB
+    const conflicts = rows
+      .filter(r => r.admission_number && db.prepare(
+        'SELECT 1 FROM enrollment WHERE admission_number = ?'
+      ).get(r.admission_number))
+      .map(r => r.admission_number);
+
+    return {
+      success:    true,
+      totalRows:  rows.length,
+      colMissing,
+      colExtra,
+      adm_dupes,
+      errorRows,
+      conflicts,
+      isClean: colMissing.length === 0 && colExtra.length === 0 &&
+               adm_dupes.length === 0  && errorRows.length === 0,
+    };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── 3. Import ─────────────────────────────────────────────────
+ipcMain.handle('excel:import', (evt, { filePath, skipDuplicates }) => {
+  try {
+    const { rows } = readExcel(filePath);
+    let inserted = 0, skipped = 0, failed = 0;
+    const failedRows = [];
+
+    const insertStmt = db.prepare(`
+      INSERT INTO enrollment (
+        admission_number, student_status, academic_year,
+        student_name, gender, date_of_birth, indian_nationality,
+        blood_group, mother_tongue, aadhar_number, aadhar_doc,
+        birth_cert, birth_cert_doc,
+        mother_name, mother_profession, father_name, father_profession,
+        guardian_name, contact_email, mobile_number, alternate_mobile,
+        house_no, village, post, district, state_name, pin_code,
+        category, minority_group, bpl_beneficiary, ews_disadvantaged,
+        cwsn, impairment_type, disability_certificate, disability_cert_doc, disability_percentage,
+        pen_number, apaar_id, rte_section_12c, rte_amount_claimed,
+        date_of_admission, class_of_admission, current_class,
+        section, medium_of_instruction,
+        studied_elsewhere, tc_submitted, tc_doc,
+        prev_year_status, prev_year_class, prev_enrollment_number, prev_academic_year, prev_school_name,
+        language_group, academic_stream, subject_group, tc_issued
+      ) VALUES (
+        @admission_number, @student_status, @academic_year,
+        @student_name, @gender, @date_of_birth, @indian_nationality,
+        @blood_group, @mother_tongue, @aadhar_number, @aadhar_doc,
+        @birth_cert, @birth_cert_doc,
+        @mother_name, @mother_profession, @father_name, @father_profession,
+        @guardian_name, @contact_email, @mobile_number, @alternate_mobile,
+        @house_no, @village, @post, @district, @state_name, @pin_code,
+        @category, @minority_group, @bpl_beneficiary, @ews_disadvantaged,
+        @cwsn, @impairment_type, @disability_certificate, @disability_cert_doc, @disability_percentage,
+        @pen_number, @apaar_id, @rte_section_12c, @rte_amount_claimed,
+        @date_of_admission, @class_of_admission, @current_class,
+        @section, @medium_of_instruction,
+        @studied_elsewhere, @tc_submitted, @tc_doc,
+        @prev_year_status, @prev_year_class, @prev_enrollment_number, @prev_academic_year, @prev_school_name,
+        @language_group, @academic_stream, @subject_group, @tc_issued
+      )
+    `);
+
+    const importAll = db.transaction(() => {
+      rows.forEach((raw, idx) => {
+        const exists = raw.admission_number &&
+          db.prepare('SELECT 1 FROM enrollment WHERE admission_number = ?')
+            .get(raw.admission_number);
+
+        if (exists) {
+          skipped++;
+          return;
+        }
+
+        const data            = applyDefaults(raw);
+        data.admission_number = raw.admission_number;
+        data.pen_number       = String(data.pen_number || '').replace(/\.0$/, '');
+        data.aadhar_number    = String(data.aadhar_number || '').replace(/\.0$/, '');
+        data.tc_issued        = parseInt(raw.tc_issued) || 0;
+
+        try {
+          insertStmt.run(data);
+          inserted++;
+        } catch (err) {
+          failed++;
+          failedRows.push({ row: idx + 2, admission_number: raw.admission_number, error: err.message });
+        }
+
+        if ((idx + 1) % 50 === 0 || idx === rows.length - 1) {
+          evt.sender.send('excel:progress', { current: idx + 1, total: rows.length });
+        }
+      });
+    });
+
+    importAll();
+    return { success: true, inserted, skipped, failed, failedRows, total: rows.length };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
 
 // ── Get student's full ledger for a year ──────────────────────
 ipcMain.handle('fees:getLedger', (_evt, { admission_number, academic_year }) => {

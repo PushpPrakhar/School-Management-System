@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // Enrollment
   addStudent:         (data)              => invoke('enrollment:add', data),
+  editStudent:        (data)              => invoke('enrollment:edit', data),
   getByClass:         (cls, year)         => invoke('enrollment:getByClass', { class: cls, academic_year: year }),
   getStudent:         (admNo)             => invoke('enrollment:getById', admNo),
   searchStudents:     (query)             => invoke('enrollment:search', query),
@@ -24,12 +25,12 @@ contextBridge.exposeInMainWorld('api', {
   dashboardStats:     (year)              => invoke('dashboard:stats', year),
 
   // Fees
-  feesGetLedger:      (admNo, year)       => invoke('fees:getLedger',       { admission_number: admNo, academic_year: year }),
-  feesAddEntry:       (data)              => invoke('fees:addEntry',         data),
-  feesCollectPayment: (data)              => invoke('fees:collectPayment',   data),
-  feesGetPending:     (year, cls)         => invoke('fees:getPending',       { academic_year: year, class: cls }),
-  feesSearchStudent:  (query, year)       => invoke('fees:searchStudent',    { query, academic_year: year }),
-  feesGetMonthLedger: (admNo, year)       => invoke('fees:getMonthLedger',   { admission_number: admNo, academic_year: year }),
+  feesGetLedger:      (admNo, year)       => invoke('fees:getLedger',     { admission_number: admNo, academic_year: year }),
+  feesAddEntry:       (data)              => invoke('fees:addEntry',       data),
+  feesCollectPayment: (data)              => invoke('fees:collectPayment', data),
+  feesGetPending:     (year, cls)         => invoke('fees:getPending',     { academic_year: year, class: cls }),
+  feesSearchStudent:  (query, year)       => invoke('fees:searchStudent',  { query, academic_year: year }),
+  feesGetMonthLedger: (admNo, year)       => invoke('fees:getMonthLedger', { admission_number: admNo, academic_year: year }),
 
   // Backup
   createBackup:       (dir)               => invoke('backup:create', dir),
@@ -38,6 +39,13 @@ contextBridge.exposeInMainWorld('api', {
   pickFile:           (filters)           => invoke('dialog:pickFile', filters),
 
   // Excel import
-  excelPreview:       (filePath)          => invoke('excel:preview', filePath),
-  excelImport:        (opts)              => invoke('excel:import',  opts),
+  excelPreview:       (filePath)          => invoke('excel:preview',  filePath),
+  excelValidate:      (filePath)          => invoke('excel:validate', filePath),
+  excelImport:        (opts)              => invoke('excel:import',   opts),
+
+  // Progress listener — ipcRenderer used at top level, safe for contextBridge
+  onExcelProgress: (cb) => {
+    ipcRenderer.on('excel:progress', (_evt, data) => cb(data));
+    return () => ipcRenderer.removeAllListeners('excel:progress');
+  },
 });

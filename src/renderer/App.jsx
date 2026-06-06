@@ -8,6 +8,7 @@ import Login from './pages/Login';
 import ExcelImport from './pages/ExcelImport';
 import Admission from './pages/Admission';
 import StudentList from './pages/StudentList';
+import EditStudent from './pages/EditStudent';
 import FeesLedger from './pages/FeesLedger';
 import FeesReceipt from './pages/FeesReceipt';
 import FeesNotice from './pages/FeesNotice';
@@ -17,6 +18,7 @@ const NAV_ITEMS = [
   { key: 'dashboard',    label: 'Dashboard',       icon: '🏠', permission: 'dashboard'   },
   { key: 'admission',    label: 'New Admission',    icon: '📝', permission: 'admission'   },
   { key: 'studentList',  label: 'Student List',     icon: '📋', permission: 'studentList' },
+  { key: 'editStudent',  label: 'Edit Student',      icon: '✏️',  permission: 'editStudent'  },
   { key: 'feesLedger',   label: 'Fees Ledger',       icon: '📒', permission: 'feesReceipt' },
   { key: 'feesReceipt',  label: 'Collect Fees',       icon: '💰', permission: 'feesReceipt' },
   { key: 'feesNotice',   label: 'Fees Notice',      icon: '📢', permission: 'feesNotice'  },
@@ -54,6 +56,7 @@ function AppShell() {
       // Phase 2+
       case 'admission':    return <Admission />;
       case 'studentList':  return <StudentList />;
+      case 'editStudent':  return <EditStudent />;
       case 'feesLedger':   return <FeesLedger />;
       case 'feesReceipt':  return <FeesReceipt />;
       case 'feesNotice':   return <FeesNotice />;
