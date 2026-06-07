@@ -1,5 +1,30 @@
+# Dependencies
 node_modules/
+
+# Database — never commit actual data
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Build output
 build/
 dist/
-data/
+
+# Electron builder
+release/
+
+# Environment
+.env
 .env.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
