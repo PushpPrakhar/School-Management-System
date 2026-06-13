@@ -2,16 +2,17 @@
 // Routes between Login and the main app shell.
 // Each page is lazy-loaded so only the current page's bundle loads.
 
-import React, { Suspense, lazy, useState } from 'react';
+import React, { useState } from 'react';
 import { AuthProvider, useAuth } from './utils/AuthContext';
 import Login from './pages/Login';
 import ExcelImport from './pages/ExcelImport';
 import Admission from './pages/Admission';
 import StudentList from './pages/StudentList';
 import EditStudent from './pages/EditStudent';
-import FeesLedger from './pages/FeesLedger';
-import FeesReceipt from './pages/FeesReceipt';
-import FeesNotice from './pages/FeesNotice';
+import Dashboard from './pages/Dashboard';
+import ApproveAdmission from './pages/ApproveAdmission';
+import RollNumbers from './pages/RollNumbers';
+import PromoteStudents from './pages/PromoteStudents';
 
 // ── Sidebar nav items (add pages here as you build each phase) ─
 const NAV_ITEMS = [
@@ -19,6 +20,8 @@ const NAV_ITEMS = [
   { key: 'admission',    label: 'New Admission',    icon: '📝', permission: 'admission'   },
   { key: 'studentList',  label: 'Student List',     icon: '📋', permission: 'studentList' },
   { key: 'editStudent',  label: 'Edit Student',      icon: '✏️',  permission: 'editStudent'  },
+  { key: 'approveAdmission', label: 'Approve Admissions', icon: '✅', permission: 'approveAdmission' },
+  { key: 'rollNumbers',      label: 'Roll Numbers',       icon: '🔢', permission: 'rollNumbers'      },
   { key: 'feesLedger',   label: 'Fees Ledger',       icon: '📒', permission: 'feesReceipt' },
   { key: 'feesReceipt',  label: 'Collect Fees',       icon: '💰', permission: 'feesReceipt' },
   { key: 'feesNotice',   label: 'Fees Notice',      icon: '📢', permission: 'feesNotice'  },
@@ -52,11 +55,14 @@ function AppShell() {
   const renderPage = () => {
     switch (activePage) {
       // Phase 1 — these exist now
-      case 'dashboard':    return <ComingSoon page="Dashboard — Phase 6" />;
+      case 'dashboard':    return <Dashboard onNavigate={setActivePage} />;
       // Phase 2+
       case 'admission':    return <Admission />;
       case 'studentList':  return <StudentList />;
-      case 'editStudent':  return <EditStudent />;
+      case 'editStudent':       return <EditStudent />;
+      case 'approveAdmission':  return <ApproveAdmission />;
+      case 'promoteStudents':  return <PromoteStudents />;
+      case 'rollNumbers':       return <RollNumbers />;
       case 'feesLedger':   return <FeesLedger />;
       case 'feesReceipt':  return <FeesReceipt />;
       case 'feesNotice':   return <FeesNotice />;

@@ -81,6 +81,8 @@ function initDatabase() {
   migrate("ALTER TABLE enrollment ADD COLUMN contact_email TEXT NOT NULL DEFAULT ''");
   migrate("ALTER TABLE enrollment ADD COLUMN mother_tongue TEXT NOT NULL DEFAULT 'Hindi'");
   migrate("ALTER TABLE enrollment ADD COLUMN minority_group TEXT NOT NULL DEFAULT 'Not Applicable'");
+  migrate("ALTER TABLE enrollment ADD COLUMN caste TEXT NOT NULL DEFAULT 'NOT PROVIDED'");
+  migrate("ALTER TABLE enrollment ADD COLUMN religion TEXT NOT NULL DEFAULT 'NOT PROVIDED'");
   migrate("ALTER TABLE enrollment ADD COLUMN bpl_beneficiary TEXT NOT NULL DEFAULT 'No'");
   migrate("ALTER TABLE enrollment ADD COLUMN ews_disadvantaged TEXT NOT NULL DEFAULT 'No'");
   migrate("ALTER TABLE enrollment ADD COLUMN cwsn TEXT NOT NULL DEFAULT 'No'");
@@ -102,6 +104,94 @@ function initDatabase() {
   migrate("ALTER TABLE enrollment ADD COLUMN prev_days_attended TEXT NOT NULL DEFAULT ''");
   migrate("ALTER TABLE enrollment ADD COLUMN prev_class_studied TEXT NOT NULL DEFAULT ''");
   migrate("ALTER TABLE enrollment ADD COLUMN prev_group_studied TEXT NOT NULL DEFAULT ''");
+
+  // Edit history table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS edit_history (
+      history_id       INTEGER  PRIMARY KEY AUTOINCREMENT,
+      admission_number TEXT     NOT NULL,
+      student_name     TEXT     NOT NULL DEFAULT '',
+      edited_by        TEXT     NOT NULL DEFAULT '',
+      edited_at        DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+      changes          TEXT     NOT NULL DEFAULT '[]'
+    )
+  `);
+  try {
+    db.exec("CREATE INDEX IF NOT EXISTS idx_edit_history_admission ON edit_history (admission_number)");
+  } catch(_) {}
+
+  // Approval workflow columns
+  migrate("ALTER TABLE enrollment ADD COLUMN submitted_by TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN approved_by TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN approved_at TEXT NOT NULL DEFAULT ''");
+  migrate("ALTER TABLE enrollment ADD COLUMN rejected_reason TEXT NOT NULL DEFAULT ''");
+
+  // Fix any dates stored as Excel serial numbers
+  // Excel serial → DD-MM-YYYY conversion
+  const fixExcelDates = () => {
+    const excelSerial = (n) => {
+      const d = new Date(Date.UTC(1899, 11, 30 + n));
+      const dd = String(d.getUTCDate()).padStart(2,'0');
+      const mm = String(d.getUTCMonth()+1).padStart(2,'0');
+      const yy = d.getUTCFullYear();
+      return `${dd}-${mm}-${yy}`;
+    };
+    const rows = db.prepare("SELECT rowid, date_of_birth, date_of_admission FROM enrollment").all();
+    const upDob = db.prepare("UPDATE enrollment SET date_of_birth = ? WHERE rowid = ?");
+    const upDoa = db.prepare("UPDATE enrollment SET date_of_admission = ? WHERE rowid = ?");
+    let fixed = 0;
+    rows.forEach(r => {
+      if (r.date_of_birth && /^\d{4,5}$/.test(String(r.date_of_birth).trim())) {
+        upDob.run(excelSerial(parseInt(r.date_of_birth)), r.rowid);
+        fixed++;
+      }
+      if (r.date_of_admission && /^\d{4,5}$/.test(String(r.date_of_admission).trim())) {
+        upDoa.run(excelSerial(parseInt(r.date_of_admission)), r.rowid);
+        fixed++;
+      }
+    });
+    if (fixed > 0) console.log(`[DB] Fixed ${fixed} Excel serial date(s)`);
+  };
+  fixExcelDates();
+
+  // Roll numbers table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS roll_numbers (
+      roll_id          INTEGER  PRIMARY KEY AUTOINCREMENT,
+      admission_number TEXT     NOT NULL,
+      student_name     TEXT     NOT NULL DEFAULT '',
+      class            TEXT     NOT NULL DEFAULT '',
+      section          TEXT     NOT NULL DEFAULT '',
+      academic_year    TEXT     NOT NULL DEFAULT '',
+      roll_number      INTEGER  NOT NULL DEFAULT 0,
+      is_mid_year      INTEGER  NOT NULL DEFAULT 0,
+      assigned_at      DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+      UNIQUE (class, section, academic_year, roll_number),
+      UNIQUE (admission_number, class, section, academic_year)
+    )
+  `);
+  try {
+    db.exec("CREATE INDEX IF NOT EXISTS idx_roll_class ON roll_numbers (class, section, academic_year)");
+  } catch(_) {}
+
+  // Daily attendance table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS attendance_daily (
+      attendance_id    INTEGER  PRIMARY KEY AUTOINCREMENT,
+      admission_number TEXT     NOT NULL,
+      student_name     TEXT     NOT NULL DEFAULT '',
+      class            TEXT     NOT NULL DEFAULT '',
+      section          TEXT     NOT NULL DEFAULT '',
+      date             TEXT     NOT NULL DEFAULT '',
+      academic_year    TEXT     NOT NULL DEFAULT '',
+      status           TEXT     NOT NULL DEFAULT 'Present',
+      marked_by        TEXT     NOT NULL DEFAULT '',
+      marked_at        DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+      UNIQUE (admission_number, date)
+    )
+  `);
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_att_class_date ON attendance_daily (class, section, date)"); } catch(_) {}
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_att_student ON attendance_daily (admission_number, academic_year)"); } catch(_) {}
 
   console.log('[DB] Initialised:', DB_PATH);
 }
@@ -290,6 +380,9 @@ function applyDefaults(data) {
     prev_enrollment_number: data.prev_enrollment_number        || '',
     prev_academic_year:     data.prev_academic_year            || '',
     prev_school_name:       data.prev_school_name              || 'NOT APPLICABLE',
+    // Legacy SR register fields now collected in form
+    religion:              data.religion?.trim()              || 'NOT PROVIDED',
+    caste:                 data.caste?.trim()                 || 'NOT PROVIDED',
     // Subjects & Stream
     language_group:         data.language_group                || '',
     academic_stream:        data.academic_stream               || '',
@@ -301,27 +394,16 @@ ipcMain.handle('enrollment:add', (_evt, rawData) => {
   try {
     const data = applyDefaults(rawData);
 
-    // ── Generate admission number: BPS[YYYY]-[NNNN] ──────────
-    // YYYY = first year of academic session (2025 for 2025-26)
-    // NNNN = global sequential counter — NEVER resets across years
-    const now         = new Date();
-    const sessionYear = now.getMonth() >= 3
-      ? now.getFullYear()
-      : now.getFullYear() - 1;
+    // ── Generate TEMPORARY admission number ─────────────────────
+    // Real permanent BPS number is only assigned when Principal approves
+    // Session year comes from the FORM's academic_year field (e.g. "2025-26" → 2025)
+    // This allows adding previous year students with correct BPS year prefix
+    const academicYear = data.academic_year || rawData.academic_year || '';
+    const sessionYear  = academicYear
+      ? parseInt(academicYear.split('-')[0])
+      : (() => { const now = new Date(); const y = now.getFullYear(); return now.getMonth() >= 3 ? y : y - 1; })();
 
-    // Find highest counter across ALL records
-    const lastRecord = db.prepare(
-      "SELECT admission_number FROM enrollment ORDER BY rowid DESC LIMIT 1"
-    ).get();
-
-    let lastCounter = 0;
-    if (lastRecord) {
-      const parts = lastRecord.admission_number.split('-');
-      lastCounter = parseInt(parts[parts.length - 1]) || 0;
-    }
-
-    const nextCounter     = lastCounter + 1;
-    const admissionNumber = `BPS${sessionYear}-${String(nextCounter).padStart(4, '0')}`;
+    const admissionNumber = `BPS${sessionYear}-TEMP${Date.now()}`;
 
     db.prepare(`
       INSERT INTO enrollment (
@@ -337,6 +419,7 @@ ipcMain.handle('enrollment:add', (_evt, rawData) => {
         cwsn, impairment_type, disability_certificate, disability_cert_doc, disability_percentage,
         pen_number, apaar_id, rte_section_12c, rte_amount_claimed,
         date_of_admission, class_of_admission, current_class,
+        religion, caste,
         section, medium_of_instruction,
         studied_elsewhere, tc_submitted, tc_doc,
         prev_year_status, prev_year_class,
@@ -355,6 +438,7 @@ ipcMain.handle('enrollment:add', (_evt, rawData) => {
         @cwsn, @impairment_type, @disability_certificate, @disability_cert_doc, @disability_percentage,
         @pen_number, @apaar_id, @rte_section_12c, @rte_amount_claimed,
         @date_of_admission, @class_of_admission, @current_class,
+        @religion, @caste,
         @section, @medium_of_instruction,
         @studied_elsewhere, @tc_submitted, @tc_doc,
         @prev_year_status, @prev_year_class,
@@ -369,25 +453,151 @@ ipcMain.handle('enrollment:add', (_evt, rawData) => {
   }
 });
 
+// ── Human-readable field labels for history log ──────────────
+const FIELD_LABELS = {
+  student_name:'Student Name', gender:'Gender', date_of_birth:'Date of Birth',
+  indian_nationality:'Indian Nationality', blood_group:'Blood Group',
+  mother_tongue:'Mother Tongue', aadhar_number:'Aadhar Number',
+  birth_cert:'Birth Certificate', mother_name:"Mother's Name",
+  mother_profession:"Mother's Profession", father_name:"Father's Name",
+  father_profession:"Father's Profession", guardian_name:"Guardian's Name",
+  contact_email:'Contact Email', mobile_number:'Mobile Number',
+  alternate_mobile:'Alternate Mobile', house_no:'House No.',
+  village:'Village', post:'Post', district:'District',
+  state_name:'State', pin_code:'Pin Code', caste:'Caste', religion:'Religion',
+  category:'Category', minority_group:'Minority Group',
+  bpl_beneficiary:'BPL Beneficiary', ews_disadvantaged:'EWS / Disadvantaged',
+  cwsn:'CWSN', impairment_type:'Type of Impairment',
+  disability_certificate:'Disability Certificate',
+  disability_percentage:'Disability Percentage',
+  pen_number:'PEN Number', apaar_id:'APAAR ID',
+  rte_section_12c:'RTE Section 12C', rte_amount_claimed:'RTE Amount Claimed',
+  date_of_admission:'Date of Admission', class_of_admission:'Class of Admission',
+  current_class:'Current Class', section:'Section',
+  medium_of_instruction:'Medium of Instruction',
+  studied_elsewhere:'Studied Elsewhere', tc_submitted:'TC Submitted',
+  prev_year_status:'Previous Year Status', prev_year_class:'Previous Year Class',
+  prev_enrollment_number:'Previous Enrollment No.',
+  prev_academic_year:'Previous Academic Year',
+  prev_school_name:'Previous School Name',
+  language_group:'Language Group', academic_stream:'Academic Stream',
+  subject_group:'Subject Group', academic_year:'Academic Year',
+  student_status:'Student Status',
+};
+
 // ── Edit existing student ─────────────────────────────────────
-ipcMain.handle('enrollment:edit', (_evt, { admission_number, ...rawData }) => {
+ipcMain.handle('enrollment:edit', (_evt, rawData) => {
   try {
-    const data = applyDefaults(rawData);
-    const fields = Object.keys(data).map(k => `${k} = @${k}`).join(', ');
+    const { admission_number, edited_by = 'admin' } = rawData;
+    if (!admission_number) return { success: false, message: 'admission_number is required' };
+
+    const EDITABLE = [
+      'student_name','gender','date_of_birth','indian_nationality','blood_group',
+      'mother_tongue','aadhar_number','aadhar_doc','birth_cert','birth_cert_doc',
+      'mother_name','mother_profession','father_name','father_profession',
+      'guardian_name','contact_email','mobile_number','alternate_mobile',
+      'house_no','village','post','district','state_name','pin_code',
+      'caste','religion','category','minority_group','bpl_beneficiary','ews_disadvantaged',
+      'cwsn','impairment_type','disability_certificate','disability_cert_doc','disability_percentage',
+      'pen_number','apaar_id','rte_section_12c','rte_amount_claimed',
+      'date_of_admission','class_of_admission','current_class','section','medium_of_instruction',
+      'studied_elsewhere','tc_submitted','tc_doc',
+      'prev_year_status','prev_year_class','prev_enrollment_number','prev_academic_year','prev_school_name',
+      'language_group','academic_stream','subject_group',
+      'academic_year','student_status',
+    ];
+
+    // Fetch current record to compare
+    const current = db.prepare('SELECT * FROM enrollment WHERE admission_number = ?').get(admission_number);
+    if (!current) return { success: false, message: 'Student not found' };
+
+    const data   = applyDefaults(rawData);
+    const params = { admission_number };
+    EDITABLE.forEach(k => { params[k] = rawData[k] !== undefined ? rawData[k] : (data[k] ?? ''); });
+
+    // Detect what actually changed
+    const changes = EDITABLE
+      .filter(k => String(current[k] ?? '') !== String(params[k] ?? ''))
+      .map(k => ({
+        field: FIELD_LABELS[k] || k,
+        old:   String(current[k] ?? ''),
+        new:   String(params[k]  ?? ''),
+      }));
+
+    // Perform update
+    const fields = EDITABLE.map(k => `${k} = @${k}`).join(', ');
     db.prepare(
       `UPDATE enrollment SET ${fields}, updated_at = datetime('now','localtime')
        WHERE admission_number = @admission_number`
-    ).run({ ...data, admission_number });
-    return { success: true };
+    ).run(params);
+
+    // Log changes only if something actually changed
+    if (changes.length > 0) {
+      db.prepare(`
+        INSERT INTO edit_history (admission_number, student_name, edited_by, changes)
+        VALUES (?, ?, ?, ?)
+      `).run(
+        admission_number,
+        params.student_name || current.student_name || '',
+        edited_by,
+        JSON.stringify(changes)
+      );
+    }
+
+    return { success: true, changes_count: changes.length };
   } catch (err) {
     return { success: false, message: err.message };
   }
 });
 
-ipcMain.handle('enrollment:getByClass', (_evt, { class: cls, academic_year }) => {
-  const rows = db.prepare(
-    'SELECT * FROM enrollment WHERE current_class = ? AND academic_year = ? ORDER BY student_name'
-  ).all(cls, academic_year);
+// ── Get edit history for a student ───────────────────────────
+ipcMain.handle('editHistory:getByStudent', (_evt, admission_number) => {
+  try {
+    const rows = db.prepare(`
+      SELECT history_id, admission_number, student_name,
+             edited_by, edited_at, changes
+      FROM edit_history
+      WHERE admission_number = ?
+      ORDER BY edited_at DESC
+    `).all(admission_number);
+
+    return {
+      success: true,
+      data: rows.map(r => ({ ...r, changes: JSON.parse(r.changes || '[]') }))
+    };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get full edit history (all students) ─────────────────────
+ipcMain.handle('editHistory:getAll', () => {
+  try {
+    const rows = db.prepare(`
+      SELECT h.history_id, h.admission_number, h.student_name,
+             h.edited_by, h.edited_at, h.changes
+      FROM edit_history h
+      ORDER BY h.edited_at DESC
+      LIMIT 200
+    `).all();
+
+    return {
+      success: true,
+      data: rows.map(r => ({ ...r, changes: JSON.parse(r.changes || '[]') }))
+    };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+ipcMain.handle('enrollment:getByClass', (_evt, { class: cls }) => {
+  // Use LOWER() on both sides so 'Nursery', 'NURSERY', 'nursery' all match
+  const rows = db.prepare(`
+    SELECT * FROM enrollment
+    WHERE LOWER(current_class) = LOWER(?)
+    AND   student_status = 'ACTIVE'
+    ORDER BY student_name
+  `).all(cls);
   return { success: true, data: rows };
 });
 
@@ -417,22 +627,6 @@ ipcMain.handle('enrollment:update', (_evt, { admission_number, ...data }) => {
 });
 
 // ── DASHBOARD STATS ──────────────────────────────────────────
-ipcMain.handle('dashboard:stats', (_evt, academic_year) => {
-  const totalStudents = db.prepare(
-    "SELECT COUNT(*) as c FROM enrollment WHERE academic_year = ? AND tc_issued = 0"
-  ).get(academic_year).c;
-
-  const pendingFees = db.prepare(
-    "SELECT COUNT(DISTINCT admission_number) as c FROM fees_ledger WHERE academic_year = ? AND (total_due - amount_paid_this_month) > 0"
-  ).get(academic_year).c;
-
-  const classWise = db.prepare(
-    "SELECT current_class, COUNT(*) as count FROM enrollment WHERE academic_year = ? AND tc_issued = 0 GROUP BY current_class ORDER BY current_class"
-  ).all(academic_year);
-
-  return { success: true, data: { totalStudents, pendingFees, classWise } };
-});
-
 // ── BACKUP & RESTORE ─────────────────────────────────────────
 ipcMain.handle('backup:create', async (_evt, targetDir) => {
   try {
@@ -527,6 +721,233 @@ const IMPORT_SCHEMAS = {
 };
 
 // ── Read Excel file → return headers + first 10 rows for preview ──
+// ══════════════════════════════════════════════════════════════
+// DASHBOARD STATS
+// ══════════════════════════════════════════════════════════════
+ipcMain.handle('dashboard:stats', (_evt, params) => {
+  // Safe defaults — handler won't crash if called with undefined
+  const role         = params?.role         || 'staff';
+  const teacherClass = params?.cls          || '';
+  const submittedBy  = params?.submitted_by || '';
+
+  try {
+    const CLASS_ORDER = ['Nursery','LKG','UKG','Class 1','Class 2','Class 3',
+      'Class 4','Class 5','Class 6','Class 7','Class 8','Class 9',
+      'Class 10','Class 11','Class 12'];
+
+    // ── Core counts ──────────────────────────────────────────────
+    const totalActive   = db.prepare("SELECT COUNT(*) as c FROM enrollment WHERE student_status = 'ACTIVE'").get().c;
+    const totalPending  = db.prepare("SELECT COUNT(*) as c FROM enrollment WHERE student_status = 'PENDING'").get().c;
+    const totalRejected = db.prepare("SELECT COUNT(*) as c FROM enrollment WHERE student_status = 'REJECTED'").get().c;
+    const tcIssued      = db.prepare("SELECT COUNT(*) as c FROM enrollment WHERE tc_issued = 1").get().c;
+    const totalUsers    = db.prepare("SELECT COUNT(*) as c FROM users WHERE is_active = 1").get().c;
+
+    // ── Class-wise breakdown ─────────────────────────────────────
+    // Note: using 'c' not 'cls' to avoid shadowing params.cls
+    const classRows = db.prepare(`
+      SELECT current_class,
+        COUNT(*) as total,
+        SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) as boys,
+        SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) as girls
+      FROM enrollment
+      WHERE student_status = 'ACTIVE'
+      GROUP BY current_class
+    `).all();
+
+    const classWise = CLASS_ORDER.map(c => {
+      const found = classRows.find(r => r.current_class.toLowerCase() === c.toLowerCase());
+      return found ? { ...found, current_class: c } : null;
+    }).filter(Boolean);
+
+    const totalBoys  = classWise.reduce((s, r) => s + (r.boys  || 0), 0);
+    const totalGirls = classWise.reduce((s, r) => s + (r.girls || 0), 0);
+
+    // ── Category breakdown ───────────────────────────────────────
+    const categoryRows = db.prepare(`
+      SELECT category, COUNT(*) as count
+      FROM enrollment
+      WHERE student_status = 'ACTIVE'
+      GROUP BY category
+    `).all();
+
+    // ── Recent pending admissions ────────────────────────────────
+    const recentPending = db.prepare(`
+      SELECT admission_number, student_name, class_of_admission,
+             created_at
+      FROM enrollment
+      WHERE student_status = 'PENDING'
+      ORDER BY created_at ASC
+      LIMIT 5
+    `).all();
+
+    // ── Staff's own submissions (only if submittedBy is set) ─────
+    const myPending = submittedBy
+      ? db.prepare(`
+          SELECT admission_number, student_name, class_of_admission,
+                 student_status, created_at, approved_at, rejected_reason
+          FROM enrollment
+          WHERE student_status IN ('PENDING','ACTIVE','REJECTED')
+          ORDER BY created_at DESC
+          LIMIT 10
+        `).all()
+      : [];
+
+    // ── Teacher's selected class stats ───────────────────────────
+    const teacherClassStats = teacherClass
+      ? db.prepare(`
+          SELECT COUNT(*) as total,
+            SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) as boys,
+            SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) as girls
+          FROM enrollment
+          WHERE LOWER(current_class) = LOWER(?)
+          AND   student_status = 'ACTIVE'
+        `).get(teacherClass)
+      : null;
+
+    return {
+      success: true,
+      data: {
+        totalActive, totalPending, totalRejected, tcIssued,
+        totalBoys, totalGirls, totalUsers,
+        classWise, categoryRows, recentPending,
+        myPending, teacherClassStats,
+      }
+    };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+
+// ══════════════════════════════════════════════════════════════
+// APPROVAL WORKFLOW
+// ══════════════════════════════════════════════════════════════
+
+// ── Get all pending admissions ────────────────────────────────
+ipcMain.handle('admission:getPending', () => {
+  try {
+    const rows = db.prepare(`
+      SELECT admission_number, student_name, father_name, gender,
+             date_of_birth, class_of_admission, section, date_of_admission,
+             academic_year, submitted_by, created_at, village, mobile_number
+      FROM enrollment
+      WHERE student_status = 'PENDING'
+      ORDER BY created_at ASC
+    `).all();
+    return { success: true, data: rows };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get full details of one student (for review panel) ────────
+ipcMain.handle('admission:getForReview', (_evt, admission_number) => {
+  try {
+    const row = db.prepare(
+      'SELECT * FROM enrollment WHERE admission_number = ?'
+    ).get(admission_number);
+    if (!row) return { success: false, message: 'Student not found' };
+    return { success: true, data: row };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Approve admission — assign real BPS number ────────────────
+ipcMain.handle('admission:approve', (_evt, { admission_number, approved_by }) => {
+  try {
+    // Get session year from the student's academic_year field
+    const student = db.prepare(
+      'SELECT academic_year FROM enrollment WHERE admission_number = ?'
+    ).get(admission_number);
+    if (!student) return { success: false, message: 'Student not found' };
+
+    // Session year from student's academic_year field — "2025-26" → 2025
+    // This ensures BPS2025-XXXX for 2025-26 students, BPS2026-XXXX for 2026-27 etc.
+    const sessionYear = parseInt(student.academic_year?.split('-')[0]) ||
+      (() => { const now = new Date(); const y = now.getFullYear(); return now.getMonth() >= 3 ? y : y - 1; })();
+
+    // Find highest counter from all real (non-pending) admission numbers
+    const lastReal = db.prepare(`
+      SELECT admission_number FROM enrollment
+      WHERE admission_number NOT LIKE '%-XXXX%'
+      AND   admission_number NOT LIKE '%-TEMP%'
+      AND   student_status   != 'PENDING'
+      ORDER BY rowid DESC LIMIT 1
+    `).get();
+
+    let lastCounter = 0;
+    if (lastReal) {
+      const parts = lastReal.admission_number.split('-');
+      lastCounter = parseInt(parts[parts.length - 1]) || 0;
+    }
+
+    const nextCounter    = lastCounter + 1;
+    const newAdmNumber   = `BPS${sessionYear}-${String(nextCounter).padStart(4, '0')}`;
+    const approvedAt     = new Date().toLocaleString('en-IN', {
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', hour12: true
+    });
+
+    db.prepare(`
+      UPDATE enrollment SET
+        admission_number = @newAdmNumber,
+        student_status   = 'ACTIVE',
+        approved_by      = @approved_by,
+        approved_at      = @approvedAt,
+        updated_at       = datetime('now','localtime')
+      WHERE admission_number = @admission_number
+    `).run({ newAdmNumber, approved_by, approvedAt, admission_number });
+
+    return { success: true, new_admission_number: newAdmNumber };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Reject admission ──────────────────────────────────────────
+ipcMain.handle('admission:reject', (_evt, { admission_number, rejected_by, reason }) => {
+  try {
+    const rejectedAt = new Date().toLocaleString('en-IN', {
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', hour12: true
+    });
+
+    db.prepare(`
+      UPDATE enrollment SET
+        student_status  = 'REJECTED',
+        approved_by     = @rejected_by,
+        approved_at     = @rejectedAt,
+        rejected_reason = @reason,
+        updated_at      = datetime('now','localtime')
+      WHERE admission_number = @admission_number
+    `).run({ rejected_by, rejectedAt, reason, admission_number });
+
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get approval history ──────────────────────────────────────
+ipcMain.handle('admission:getHistory', () => {
+  try {
+    const rows = db.prepare(`
+      SELECT admission_number, student_name, father_name, class_of_admission,
+             section, academic_year, student_status,
+             submitted_by, approved_by, approved_at, rejected_reason, created_at
+      FROM enrollment
+      WHERE student_status IN ('ACTIVE','REJECTED')
+      AND   approved_by != ''
+      ORDER BY rowid DESC
+    `).all();
+    return { success: true, data: rows };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+
 // ══════════════════════════════════════════════════════════════
 // EXCEL IMPORTER — preview, validate, import
 // ══════════════════════════════════════════════════════════════
@@ -692,6 +1113,7 @@ ipcMain.handle('excel:import', (evt, { filePath, skipDuplicates }) => {
         cwsn, impairment_type, disability_certificate, disability_cert_doc, disability_percentage,
         pen_number, apaar_id, rte_section_12c, rte_amount_claimed,
         date_of_admission, class_of_admission, current_class,
+        religion, caste,
         section, medium_of_instruction,
         studied_elsewhere, tc_submitted, tc_doc,
         prev_year_status, prev_year_class, prev_enrollment_number, prev_academic_year, prev_school_name,
@@ -708,6 +1130,7 @@ ipcMain.handle('excel:import', (evt, { filePath, skipDuplicates }) => {
         @cwsn, @impairment_type, @disability_certificate, @disability_cert_doc, @disability_percentage,
         @pen_number, @apaar_id, @rte_section_12c, @rte_amount_claimed,
         @date_of_admission, @class_of_admission, @current_class,
+        @religion, @caste,
         @section, @medium_of_instruction,
         @studied_elsewhere, @tc_submitted, @tc_doc,
         @prev_year_status, @prev_year_class, @prev_enrollment_number, @prev_academic_year, @prev_school_name,
@@ -920,6 +1343,511 @@ ipcMain.handle('fees:getMonthLedger', (_evt, { admission_number, academic_year }
       ORDER BY ledger_id
     `).all(admission_number, academic_year);
     return { success: true, data: entries };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+// ROLL NUMBER HANDLERS
+// ══════════════════════════════════════════════════════════════
+
+// ── Get dynamic roll numbers for a class (calculated on the fly) ──
+ipcMain.handle('rollNumbers:getDynamic', (_evt, { class: cls, section, academic_year }) => {
+  try {
+    const rows = db.prepare(`
+      SELECT
+        admission_number,
+        student_name,
+        current_class,
+        section,
+        gender,
+        date_of_birth,
+        father_name,
+        mobile_number,
+        category,
+        ROW_NUMBER() OVER (
+          PARTITION BY current_class, section
+          ORDER BY student_name ASC
+        ) AS roll_number
+      FROM enrollment
+      WHERE LOWER(current_class) = LOWER(?)
+      AND   (section = ? OR ? = '')
+      AND   student_status = 'ACTIVE'
+      ORDER BY student_name ASC
+    `).all(cls, section || '', section || '');
+    return { success: true, data: rows };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Check if frozen roll numbers exist for a class/year ──────
+ipcMain.handle('rollNumbers:checkFrozen', (_evt, { class: cls, section, academic_year }) => {
+  try {
+    const count = db.prepare(`
+      SELECT COUNT(*) as c FROM roll_numbers
+      WHERE LOWER(class) = LOWER(?)
+      AND   section      = ?
+      AND   academic_year = ?
+    `).get(cls, section || 'A', academic_year).c;
+    return { success: true, exists: count > 0, count };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Assign (freeze) roll numbers for one class/section/year ──
+ipcMain.handle('rollNumbers:assignClass', (_evt, { class: cls, section, academic_year, assigned_by }) => {
+  try {
+    // Get students sorted alphabetically
+    const students = db.prepare(`
+      SELECT admission_number, student_name
+      FROM enrollment
+      WHERE LOWER(current_class) = LOWER(?)
+      AND   section       = ?
+      AND   student_status = 'ACTIVE'
+      ORDER BY student_name ASC
+    `).all(cls, section || 'A');
+
+    if (students.length === 0)
+      return { success: false, message: `No active students found in ${cls} ${section}` };
+
+    // Delete existing roll numbers for this class/section/year first
+    db.prepare(`
+      DELETE FROM roll_numbers
+      WHERE LOWER(class) = LOWER(?)
+      AND   section       = ?
+      AND   academic_year = ?
+    `).run(cls, section || 'A', academic_year);
+
+    // Insert fresh roll numbers in alphabetical order
+    const insert = db.prepare(`
+      INSERT INTO roll_numbers
+        (admission_number, student_name, class, section, academic_year, roll_number, is_mid_year)
+      VALUES (?, ?, ?, ?, ?, ?, 0)
+    `);
+
+    const assignAll = db.transaction(() => {
+      students.forEach((s, idx) => {
+        insert.run(s.admission_number, s.student_name, cls, section || 'A', academic_year, idx + 1);
+      });
+    });
+
+    assignAll();
+    return { success: true, assigned: students.length };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Assign roll numbers for ALL classes at once ───────────────
+ipcMain.handle('rollNumbers:assignAll', (_evt, { academic_year, assigned_by }) => {
+  try {
+    // Get all unique class+section combinations with active students
+    const classes = db.prepare(`
+      SELECT DISTINCT current_class, section
+      FROM enrollment
+      WHERE student_status = 'ACTIVE'
+      ORDER BY current_class, section
+    `).all();
+
+    let totalAssigned = 0;
+    const results = [];
+
+    classes.forEach(({ current_class, section }) => {
+      const students = db.prepare(`
+        SELECT admission_number, student_name
+        FROM enrollment
+        WHERE LOWER(current_class) = LOWER(?)
+        AND   section       = ?
+        AND   student_status = 'ACTIVE'
+        ORDER BY student_name ASC
+      `).all(current_class, section);
+
+      // Clear old and insert fresh
+      db.prepare(`
+        DELETE FROM roll_numbers
+        WHERE LOWER(class) = LOWER(?) AND section = ? AND academic_year = ?
+      `).run(current_class, section, academic_year);
+
+      const insert = db.prepare(`
+        INSERT INTO roll_numbers
+          (admission_number, student_name, class, section, academic_year, roll_number, is_mid_year)
+        VALUES (?, ?, ?, ?, ?, ?, 0)
+      `);
+
+      students.forEach((s, idx) => {
+        insert.run(s.admission_number, s.student_name, current_class, section, academic_year, idx + 1);
+      });
+
+      totalAssigned += students.length;
+      results.push({ class: current_class, section, count: students.length });
+    });
+
+    return { success: true, totalAssigned, classes: results };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get frozen roll numbers for a class/section/year ─────────
+ipcMain.handle('rollNumbers:getFrozen', (_evt, { class: cls, section, academic_year }) => {
+  try {
+    const rows = db.prepare(`
+      SELECT r.roll_number, r.admission_number, r.student_name,
+             r.is_mid_year, r.assigned_at,
+             e.gender, e.date_of_birth, e.father_name,
+             e.mobile_number, e.category, e.section
+      FROM roll_numbers r
+      LEFT JOIN enrollment e ON r.admission_number = e.admission_number
+      WHERE LOWER(r.class) = LOWER(?)
+      AND   r.section       = ?
+      AND   r.academic_year = ?
+      ORDER BY r.roll_number ASC
+    `).all(cls, section || 'A', academic_year);
+    return { success: true, data: rows };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Add mid-year student (appends to end of list) ─────────────
+ipcMain.handle('rollNumbers:addMidYear', (_evt, { admission_number, class: cls, section, academic_year }) => {
+  try {
+    // Check if already has a roll number in this class/year
+    const existing = db.prepare(`
+      SELECT roll_number FROM roll_numbers
+      WHERE admission_number = ? AND academic_year = ?
+    `).get(admission_number, academic_year);
+    if (existing)
+      return { success: false, message: 'Student already has a roll number for this year.' };
+
+    // Get student details
+    const student = db.prepare(
+      'SELECT student_name FROM enrollment WHERE admission_number = ?'
+    ).get(admission_number);
+    if (!student) return { success: false, message: 'Student not found.' };
+
+    // Get highest current roll number for this class/section/year
+    const max = db.prepare(`
+      SELECT MAX(roll_number) as max FROM roll_numbers
+      WHERE LOWER(class) = LOWER(?) AND section = ? AND academic_year = ?
+    `).get(cls, section || 'A', academic_year);
+
+    const nextRoll = (max?.max || 0) + 1;
+
+    db.prepare(`
+      INSERT INTO roll_numbers
+        (admission_number, student_name, class, section, academic_year, roll_number, is_mid_year)
+      VALUES (?, ?, ?, ?, ?, ?, 1)
+    `).run(admission_number, student.student_name, cls, section || 'A', academic_year, nextRoll);
+
+    return { success: true, roll_number: nextRoll };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get a student's roll number ───────────────────────────────
+ipcMain.handle('rollNumbers:getForStudent', (_evt, { admission_number, academic_year }) => {
+  try {
+    const row = db.prepare(`
+      SELECT roll_number, class, section FROM roll_numbers
+      WHERE admission_number = ? AND academic_year = ?
+    `).get(admission_number, academic_year);
+    return { success: true, data: row || null };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Summary: all classes with roll number status ──────────────
+ipcMain.handle('rollNumbers:getSummary', (_evt, academic_year) => {
+  try {
+    // All active class+section combos
+    const active = db.prepare(`
+      SELECT current_class as class, section, COUNT(*) as student_count
+      FROM enrollment
+      WHERE student_status = 'ACTIVE'
+      GROUP BY current_class, section
+      ORDER BY current_class, section
+    `).all();
+
+    // Which ones have frozen roll numbers
+    const frozen = db.prepare(`
+      SELECT class, section, COUNT(*) as roll_count, MAX(assigned_at) as last_assigned
+      FROM roll_numbers
+      WHERE academic_year = ?
+      GROUP BY class, section
+    `).all(academic_year);
+
+    const frozenMap = {};
+    frozen.forEach(f => { frozenMap[`${f.class}_${f.section}`] = f; });
+
+    const summary = active.map(a => {
+      const key  = `${a.class}_${a.section}`;
+      const f    = frozenMap[key];
+      return {
+        class:          a.class,
+        section:        a.section,
+        student_count:  a.student_count,
+        is_assigned:    !!f,
+        roll_count:     f?.roll_count || 0,
+        last_assigned:  f?.last_assigned || null,
+      };
+    });
+
+    return { success: true, data: summary };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+// STUDENT PROMOTION HANDLERS
+// ══════════════════════════════════════════════════════════════
+
+const CLASS_SEQUENCE = [
+  'Nursery','LKG','UKG',
+  'Class 1','Class 2','Class 3','Class 4','Class 5',
+  'Class 6','Class 7','Class 8','Class 9','Class 10',
+  'Class 11','Class 12'
+];
+
+function getNextClass(current) {
+  const idx = CLASS_SEQUENCE.findIndex(
+    c => c.toLowerCase() === current?.toLowerCase()
+  );
+  if (idx === -1) return null;
+  if (idx === CLASS_SEQUENCE.length - 1) return 'PASSED OUT';
+  return CLASS_SEQUENCE[idx + 1];
+}
+
+ipcMain.handle('promotion:preview', (_evt, { from_year, to_year }) => {
+  try {
+    const students = db.prepare(`
+      SELECT admission_number, student_name, current_class, section, academic_year
+      FROM enrollment WHERE student_status = 'ACTIVE'
+      ORDER BY current_class, student_name
+    `).all();
+    const classMap = {};
+    students.forEach(s => {
+      const key = s.current_class || 'Unknown';
+      if (!classMap[key]) classMap[key] = [];
+      classMap[key].push(s);
+    });
+    const preview = CLASS_SEQUENCE.filter(c => classMap[c]).map(c => ({
+      current_class: c, next_class: getNextClass(c),
+      count: classMap[c].length, students: classMap[c],
+    }));
+    Object.keys(classMap).forEach(c => {
+      if (!CLASS_SEQUENCE.includes(c)) {
+        preview.push({ current_class: c, next_class: null,
+          count: classMap[c].length, students: classMap[c],
+          warning: 'Class not in sequence — will be skipped' });
+      }
+    });
+    return { success: true, total: students.length, preview, from_year, to_year };
+  } catch (err) { return { success: false, message: err.message }; }
+});
+
+ipcMain.handle('promotion:execute', (_evt, { to_year, excluded = [], promoted_by }) => {
+  try {
+    const students = db.prepare(
+      "SELECT admission_number, current_class FROM enrollment WHERE student_status = 'ACTIVE'"
+    ).all();
+    let promoted = 0, passedOut = 0, skipped = 0, excluded_ct = 0;
+    const updateClass = db.prepare(
+      "UPDATE enrollment SET current_class = ?, academic_year = ?, updated_at = datetime('now','localtime') WHERE admission_number = ?"
+    );
+    const updatePassedOut = db.prepare(
+      "UPDATE enrollment SET current_class = 'PASSED OUT', student_status = 'PASSED OUT', academic_year = ?, updated_at = datetime('now','localtime') WHERE admission_number = ?"
+    );
+    const doAll = db.transaction(() => {
+      students.forEach(s => {
+        if (excluded.includes(s.admission_number)) { excluded_ct++; return; }
+        const next = getNextClass(s.current_class);
+        if (!next) { skipped++; return; }
+        if (next === 'PASSED OUT') { updatePassedOut.run(to_year, s.admission_number); passedOut++; }
+        else { updateClass.run(next, to_year, s.admission_number); promoted++; }
+      });
+    });
+    doAll();
+    try {
+      db.prepare("INSERT INTO edit_history (admission_number, student_name, edited_by, changes) VALUES ('SYSTEM', 'BULK PROMOTION', ?, ?)")
+        .run(promoted_by || 'admin', JSON.stringify([{ field: 'Bulk Promotion', old: 'Previous year', new: `Promoted to ${to_year} — ${promoted} promoted, ${passedOut} passed out, ${excluded_ct} excluded` }]));
+    } catch(_) {}
+    return { success: true, promoted, passedOut, skipped, excluded: excluded_ct };
+  } catch (err) { return { success: false, message: err.message }; }
+});
+
+ipcMain.handle('promotion:getHistory', () => {
+  try {
+    const rows = db.prepare(
+      "SELECT edited_by, edited_at, changes FROM edit_history WHERE admission_number = 'SYSTEM' ORDER BY edited_at DESC"
+    ).all();
+    return { success: true, data: rows.map(r => ({ ...r, changes: JSON.parse(r.changes || '[]') })) };
+  } catch (err) { return { success: false, message: err.message }; }
+});
+
+// ══════════════════════════════════════════════════════════════
+// DAILY ATTENDANCE HANDLERS
+// ══════════════════════════════════════════════════════════════
+
+
+
+// ── Get students for a class (for marking attendance) ─────────
+ipcMain.handle('attendance:getStudents', (_evt, { class: cls, section, academic_year }) => {
+  try {
+    const students = db.prepare(`
+      SELECT e.admission_number, e.student_name, e.gender,
+             COALESCE(r.roll_number, ROW_NUMBER() OVER (ORDER BY e.student_name)) as roll_number
+      FROM enrollment e
+      LEFT JOIN roll_numbers r
+        ON r.admission_number = e.admission_number
+        AND LOWER(r.class) = LOWER(e.current_class)
+        AND r.section = e.section
+        AND r.academic_year = ?
+      WHERE LOWER(e.current_class) = LOWER(?)
+      AND   e.section       = ?
+      AND   e.student_status = 'ACTIVE'
+      ORDER BY roll_number, e.student_name
+    `).all(academic_year, cls, section);
+    return { success: true, data: students };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get attendance for a class on a specific date ─────────────
+ipcMain.handle('attendance:getByDate', (_evt, { class: cls, section, date }) => {
+  try {
+    const rows = db.prepare(`
+      SELECT admission_number, student_name, status, marked_by, marked_at
+      FROM attendance_daily
+      WHERE LOWER(class) = LOWER(?) AND section = ? AND date = ?
+      ORDER BY admission_number
+    `).all(cls, section, date);
+    return { success: true, data: rows };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Mark attendance for a full class on a date ────────────────
+ipcMain.handle('attendance:markDay', (_evt, { class: cls, section, date, academic_year, records, marked_by }) => {
+  try {
+    const upsert = db.prepare(`
+      INSERT INTO attendance_daily
+        (admission_number, student_name, class, section, date, academic_year, status, marked_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(admission_number, date)
+      DO UPDATE SET status = excluded.status, marked_by = excluded.marked_by,
+                    marked_at = datetime('now','localtime')
+    `);
+    const markAll = db.transaction(() => {
+      records.forEach(r => {
+        upsert.run(r.admission_number, r.student_name, cls, section, date, academic_year, r.status, marked_by || 'admin');
+      });
+    });
+    markAll();
+    return { success: true, count: records.length };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get monthly summary for a class ──────────────────────────
+ipcMain.handle('attendance:getMonthly', (_evt, { class: cls, section, month, year, academic_year }) => {
+  try {
+    // month = "06", year = "2025" (from date DD-MM-YYYY, positions 4-5 and 7-10)
+    const rows = db.prepare(`
+      SELECT
+        admission_number,
+        student_name,
+        COUNT(*) as total_days,
+        SUM(CASE WHEN status = 'Present' THEN 1 ELSE 0 END) as present,
+        SUM(CASE WHEN status = 'Absent'  THEN 1 ELSE 0 END) as absent,
+        SUM(CASE WHEN status = 'Late'    THEN 1 ELSE 0 END) as late,
+        ROUND(
+          (SUM(CASE WHEN status IN ('Present','Late') THEN 1 ELSE 0 END) * 100.0) / COUNT(*),
+          1
+        ) as percentage
+      FROM attendance_daily
+      WHERE LOWER(class) = LOWER(?)
+      AND   section       = ?
+      AND   SUBSTR(date, 4, 2) = ?
+      AND   SUBSTR(date, 7, 4) = ?
+      AND   academic_year = ?
+      GROUP BY admission_number, student_name
+      ORDER BY student_name
+    `).all(cls, section, month, year, academic_year);
+    return { success: true, data: rows };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get day-by-day grid for a class/month ────────────────────
+ipcMain.handle('attendance:getDailyGrid', (_evt, { class: cls, section, month, year, academic_year }) => {
+  try {
+    const rows = db.prepare(`
+      SELECT admission_number, student_name, date, status
+      FROM attendance_daily
+      WHERE LOWER(class) = LOWER(?)
+      AND   section       = ?
+      AND   SUBSTR(date, 4, 2) = ?
+      AND   SUBSTR(date, 7, 4) = ?
+      AND   academic_year = ?
+      ORDER BY student_name, date
+    `).all(cls, section, month, year, academic_year);
+    return { success: true, data: rows };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get low attendance students ───────────────────────────────
+ipcMain.handle('attendance:getLowAttendance', (_evt, { academic_year, threshold = 75 }) => {
+  try {
+    const rows = db.prepare(`
+      SELECT
+        admission_number,
+        student_name,
+        class,
+        section,
+        COUNT(*) as total_days,
+        SUM(CASE WHEN status IN ('Present','Late') THEN 1 ELSE 0 END) as attended,
+        ROUND(
+          (SUM(CASE WHEN status IN ('Present','Late') THEN 1 ELSE 0 END) * 100.0) / COUNT(*),
+          1
+        ) as percentage
+      FROM attendance_daily
+      WHERE academic_year = ?
+      GROUP BY admission_number, student_name, class, section
+      HAVING percentage < ?
+      ORDER BY percentage ASC
+    `).all(academic_year, threshold);
+    return { success: true, data: rows };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get marked dates for a class/month (to show which days done) ──
+ipcMain.handle('attendance:getMarkedDates', (_evt, { class: cls, section, month, year }) => {
+  try {
+    const rows = db.prepare(`
+      SELECT DISTINCT date
+      FROM attendance_daily
+      WHERE LOWER(class) = LOWER(?)
+      AND   section = ?
+      AND   SUBSTR(date, 4, 2) = ?
+      AND   SUBSTR(date, 7, 4) = ?
+      ORDER BY date
+    `).all(cls, section, month, year);
+    return { success: true, data: rows.map(r => r.date) };
   } catch (err) {
     return { success: false, message: err.message };
   }

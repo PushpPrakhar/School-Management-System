@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS enrollment (
     pin_code                TEXT        NOT NULL DEFAULT '203131',
 
     -- ── STEP 1: SOCIAL DETAILS ────────────────────────────────
+    caste                   TEXT        NOT NULL DEFAULT 'NOT PROVIDED',
+    religion                TEXT        NOT NULL DEFAULT 'NOT PROVIDED',
     category                TEXT        NOT NULL DEFAULT 'NOT PROVIDED',
     minority_group          TEXT        NOT NULL DEFAULT 'Not Applicable',
     bpl_beneficiary         TEXT        NOT NULL DEFAULT 'No',
@@ -86,7 +88,11 @@ CREATE TABLE IF NOT EXISTS enrollment (
     subject_group           TEXT        NOT NULL DEFAULT '',
 
     -- ── TC ISSUED (set by TC generation module) ───────────────
-    tc_issued               INTEGER     NOT NULL DEFAULT 0
+    tc_issued               INTEGER     NOT NULL DEFAULT 0,
+    submitted_by            TEXT        NOT NULL DEFAULT '',
+    approved_by             TEXT        NOT NULL DEFAULT '',
+    approved_at             TEXT        NOT NULL DEFAULT '',
+    rejected_reason         TEXT        NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_enrollment_class
@@ -191,6 +197,53 @@ CREATE TABLE IF NOT EXISTS users (
     created_at              DATETIME    NOT NULL DEFAULT (datetime('now','localtime')),
     last_login              TEXT        NOT NULL DEFAULT ''
 );
+
+
+-- ------------------------------------------------------------
+-- 8. ROLL NUMBERS
+-- Frozen annual roll numbers per class/section/year
+-- Dynamic roll numbers are calculated on the fly via ROW_NUMBER()
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS roll_numbers (
+    roll_id          INTEGER  PRIMARY KEY AUTOINCREMENT,
+    admission_number TEXT     NOT NULL REFERENCES enrollment(admission_number),
+    student_name     TEXT     NOT NULL DEFAULT '',
+    class            TEXT     NOT NULL DEFAULT '',
+    section          TEXT     NOT NULL DEFAULT '',
+    academic_year    TEXT     NOT NULL DEFAULT '',
+    roll_number      INTEGER  NOT NULL DEFAULT 0,
+    is_mid_year      INTEGER  NOT NULL DEFAULT 0,  -- 1 if assigned mid-year
+    assigned_at      DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE (class, section, academic_year, roll_number),
+    UNIQUE (admission_number, class, section, academic_year)
+);
+
+CREATE INDEX IF NOT EXISTS idx_roll_class
+    ON roll_numbers (class, section, academic_year);
+
+
+-- ------------------------------------------------------------
+-- 9. DAILY ATTENDANCE
+-- One row per student per date. Monthly summaries calculated from this.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS attendance_daily (
+    attendance_id    INTEGER  PRIMARY KEY AUTOINCREMENT,
+    admission_number TEXT     NOT NULL,
+    student_name     TEXT     NOT NULL DEFAULT '',
+    class            TEXT     NOT NULL DEFAULT '',
+    section          TEXT     NOT NULL DEFAULT '',
+    date             TEXT     NOT NULL DEFAULT '',
+    academic_year    TEXT     NOT NULL DEFAULT '',
+    status           TEXT     NOT NULL DEFAULT 'Present',
+    marked_by        TEXT     NOT NULL DEFAULT '',
+    marked_at        DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE (admission_number, date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_att_class_date
+    ON attendance_daily (class, section, date);
+CREATE INDEX IF NOT EXISTS idx_att_student
+    ON attendance_daily (admission_number, academic_year);
 
 -- Default admin user (password: admin123)
 INSERT OR IGNORE INTO users (username, password_hash, full_name, role)

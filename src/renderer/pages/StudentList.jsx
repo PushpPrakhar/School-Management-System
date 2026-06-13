@@ -17,10 +17,15 @@ const CURRENT_YEAR = (() => {
   return now.getMonth() >= 3 ? `${y}-${String(y + 1).slice(2)}` : `${y - 1}-${String(y).slice(2)}`;
 })();
 
-const ACADEMIC_YEARS = Array.from({ length: 4 }, (_, i) => {
-  const y = new Date().getFullYear() - 1 + i;
+// Only show past and current academic years — never future
+const CURRENT_SESSION_YEAR = (() => {
+  const now = new Date(); const y = now.getFullYear();
+  return now.getMonth() >= 3 ? y : y - 1; // April onwards = new session
+})();
+const ACADEMIC_YEARS = Array.from({ length: 5 }, (_, i) => {
+  const y = CURRENT_SESSION_YEAR - 4 + i; // last 4 years + current
   return `${y}-${String(y + 1).slice(2)}`;
-});
+}).reverse(); // newest first
 
 // Format date DD/MM/YYYY
 function fmtDate(d) {
@@ -136,7 +141,7 @@ export default function StudentList() {
     if (!selectedClass) return;
     setLoading(true);
     setSearched(true);
-    const result = await window.api.getByClass(selectedClass, academicYear);
+    const result = await window.api.getByClass(selectedClass, ''); // academic_year not used — list shows current enrollment
     setLoading(false);
     if (result.success) setStudents(result.data);
   };
@@ -262,7 +267,7 @@ export default function StudentList() {
         </div>
 
         <div className="flex-1 min-w-40">
-          <label className="block text-xs font-medium text-gray-600 mb-1">Academic Year</label>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Academic Year <span className="text-gray-400 font-normal">(for reference)</span></label>
           <select
             value={academicYear}
             onChange={e => setAcademicYear(e.target.value)}

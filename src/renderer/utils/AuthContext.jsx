@@ -9,12 +9,12 @@ const AuthContext = createContext(null);
 export const PERMISSIONS = {
   admin: [
     'dashboard', 'admission', 'editStudent', 'deleteStudent',
-    'studentList', 'editStudent', 'admitCard', 'examMarks', 'feesNotice',
+    'studentList', 'editStudent', 'approveAdmission', 'rollNumbers', 'admitCard', 'examMarks', 'feesNotice',
     'feesReceipt', 'attendance', 'editAttendance',
     'tcGeneration', 'backup', 'userManagement',
   ],
   staff: [
-    'dashboard', 'admission', 'studentList', 'editStudent', 'admitCard',
+    'dashboard', 'admission', 'studentList', 'editStudent', 'approveAdmission', 'rollNumbers', 'admitCard',
     'examMarks', 'feesNotice', 'feesReceipt', 'attendance',
   ],
   teacher: [

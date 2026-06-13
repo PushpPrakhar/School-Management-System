@@ -5,12 +5,29 @@
 import React, { useState } from 'react';
 
 // ── Constants ─────────────────────────────────────────────────
+// Date helpers — DB stores DD-MM-YYYY, <input type="date"> needs YYYY-MM-DD
+const toInputDate  = (v) => {
+  if (!v || v === '00-00-0000') return '';
+  const p = String(v).split('-');
+  if (p.length === 3 && p[2]?.length === 4) return `${p[2]}-${p[1]}-${p[0]}`;
+  if (p.length === 3 && p[0]?.length === 4) return v; // already YYYY-MM-DD
+  return '';
+};
+const fromInputDate = (v) => {
+  if (!v) return '';
+  const p = String(v).split('-');
+  if (p.length === 3 && p[0]?.length === 4) return `${p[2]}-${p[1]}-${p[0]}`;
+  return v;
+};
+
 const VILLAGES = [
-  'Balrau','Badauli','Bhura Badauli','Danwar','Dushhera','Dushheri',
-  'Ishan Pur','Jawal','Kamalpur','Kathpura','Khurja','Kyoli',
-  'Madhkola','Mahmudpur','Mansoorpur','Meerpur','Nagla Sherpur',
-  'Naglakat','Nayabas Nayser','Rohinda','Shahvaj Pur',
-  'Sherpur Nayser','Thangora','Tikri','Other',
+  'Badauli','Balrau','Bhura Badauli','Danwar',
+  'Dushhera','Dushheri','Ishan Pur','Jawal',
+  'Kamalpur','Kathpura','Khurja','Kyoli',
+  'Madhkola','Mahmudpur','Mansoorpur','Meerpur',
+  'Nagla Sherpur','Naglakat','Nayabas Nayser','Nayser',
+  'Rohinda','Shahvaj Pur','Sherpur Nayser','Thangora',
+  'Tikri','Other',
 ];
 
 const CLASSES = [
@@ -29,6 +46,9 @@ const CLASS_ORDER = {
 const isClass9Plus  = (c) => CLASS_ORDER[c] >= 11;
 const isClass11Plus = (c) => CLASS_ORDER[c] >= 13;
 
+const CASTES            = ['Badhai','Banjara','Brahmin','Chamar','Dhobi','Dhimar',
+  'Gaderia','Gujjar','Jaat','Jatav','Khatik','Kori','Kumhar','Muslim',
+  'Nai','Rajput','Teli','Vaishya','Valmiki','Yadav'];
 const SOCIAL_CATEGORIES = ['General (GEN)','OBC','SC','ST'];
 const MINORITY_GROUPS   = ['Not Applicable','Muslim','Christian','Sikh','Buddhist','Parsi','Jain'];
 const BLOOD_GROUPS      = ['A+','A-','B+','B-','O+','O-','AB+','AB-'];
@@ -72,10 +92,16 @@ const IMPAIRMENTS = [
   'Other',
 ];
 
-const CURRENT_YEAR = (() => {
+const CURRENT_SESSION_YEAR = (() => {
   const now = new Date(); const y = now.getFullYear();
-  return now.getMonth() >= 3 ? `${y}-${String(y+1).slice(2)}` : `${y-1}-${String(y).slice(2)}`;
+  return now.getMonth() >= 3 ? y : y - 1;
 })();
+const CURRENT_YEAR = `${CURRENT_SESSION_YEAR}-${String(CURRENT_SESSION_YEAR+1).slice(2)}`;
+// Allow selecting past years for backdated admissions
+const ADMISSION_YEARS = Array.from({ length: 5 }, (_, i) => {
+  const y = CURRENT_SESSION_YEAR - 3 + i;
+  return `${y}-${String(y+1).slice(2)}`;
+}).reverse(); // newest first
 
 // ── Blank form state ──────────────────────────────────────────
 const BLANK_GENERAL = {
@@ -91,6 +117,7 @@ const BLANK_GENERAL = {
   mobile_number: '', alternate_mobile: '',
   house_no: '', village: '', post: '',
   district: 'Bulandshahr', state_name: 'Uttar Pradesh', pin_code: '203131',
+  caste: '', religion: '',
   category: '', minority_group: 'Not Applicable',
   bpl_beneficiary: 'No', ews_disadvantaged: 'No',
   cwsn: 'No', impairment_type: '',
@@ -476,7 +503,26 @@ function Step1({ onSave, initialData }) {
         </div>
         <div className="p-5 space-y-4">
 
-          {/* Row 1: Social Category | Minority Group */}
+          {/* Row 1: Caste | Religion */}
+          <FieldRow>
+            <Field label="Caste">
+              <select value={form.caste}
+                onChange={e => set('caste', e.target.value)} className={sel(false)}>
+                <option value="">Select</option>
+                {CASTES.map(c => <option key={c}>{c}</option>)}
+              </select>
+            </Field>
+            <Field label="Religion">
+              <select value={form.religion}
+                onChange={e => set('religion', e.target.value)} className={sel(false)}>
+                <option value="">Select</option>
+                {['Hindu','Muslim','Sikh','Christian','Jain','Buddhist','Others'].map(r =>
+                  <option key={r}>{r}</option>)}
+              </select>
+            </Field>
+          </FieldRow>
+
+          {/* Row 2: Social Category | Minority Group */}
           <FieldRow>
             <Field label="Social Category">
               <select value={form.category} onChange={e => set('category', e.target.value)}
@@ -493,7 +539,7 @@ function Step1({ onSave, initialData }) {
             </Field>
           </FieldRow>
 
-          {/* Row 2: BPL | EWS */}
+          {/* Row 3: BPL | EWS */}
           <FieldRow>
             <Field label="BPL Beneficiary">
               <YesNo value={form.bpl_beneficiary} onChange={v => set('bpl_beneficiary', v)} />
@@ -561,12 +607,92 @@ function Step1({ onSave, initialData }) {
   );
 }
 
+
+// ── Confirmation Dialog ───────────────────────────────────────
+function ConfirmDialog({ generalData, enrollmentData, onConfirm, onCancel }) {
+  const fields = [
+    { key: 'class',   label: 'Class',          value: enrollmentData.class_of_admission },
+    { key: 'name',    label: 'Name of Student', value: generalData.student_name },
+    { key: 'gender',  label: 'Gender',          value: generalData.gender === 'M' ? 'Male' : generalData.gender === 'F' ? 'Female' : generalData.gender },
+    { key: 'father',  label: "Father's Name",   value: generalData.father_name },
+    { key: 'mother',  label: "Mother's Name",   value: generalData.mother_name || 'Not Provided' },
+    { key: 'dob',     label: 'Date of Birth',   value: generalData.date_of_birth },
+    { key: 'aadhar',  label: 'Aadhar Number',   value: generalData.aadhar_number || 'Not Provided' },
+  ];
+
+  const [checked, setChecked] = React.useState({});
+  const allChecked = fields.every(f => checked[f.key]);
+
+  const toggle = (key) => setChecked(c => ({ ...c, [key]: !c[key] }));
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-40 z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+
+        {/* Header */}
+        <div className="bg-blue-700 px-6 py-4">
+          <h3 className="text-white font-bold text-lg">Confirm Admission Details</h3>
+          <p className="text-blue-200 text-xs mt-0.5">
+            Please verify and check each field before submitting.
+          </p>
+        </div>
+
+        {/* Fields with checkboxes */}
+        <div className="px-6 py-4 space-y-2">
+          {!allChecked && (
+            <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3">
+              ⚠️ Please check all boxes to confirm the details are correct.
+            </p>
+          )}
+          {fields.map(f => (
+            <label key={f.key}
+              className={`flex items-center gap-3 p-3 rounded-xl cursor-pointer transition-colors
+                ${checked[f.key] ? 'bg-green-50 border border-green-200' : 'bg-gray-50 border border-gray-200'}`}>
+              <div className={`w-5 h-5 rounded flex items-center justify-center shrink-0 border-2 transition-colors
+                ${checked[f.key] ? 'bg-green-600 border-green-600' : 'border-gray-300 bg-white'}`}
+                onClick={() => toggle(f.key)}>
+                {checked[f.key] && <span className="text-white text-xs font-bold">✓</span>}
+              </div>
+              <div className="flex-1 flex justify-between items-center">
+                <span className="text-sm text-gray-500 w-36">{f.label}</span>
+                <span className={`text-sm font-semibold ${checked[f.key] ? 'text-green-800' : 'text-gray-800'}`}>
+                  {f.value || '—'}
+                </span>
+              </div>
+            </label>
+          ))}
+        </div>
+
+        <p className="text-xs text-gray-400 text-center px-6 pb-2">
+          The above information cannot be changed after confirmation without admin access.
+        </p>
+
+        {/* Actions */}
+        <div className="flex gap-3 px-6 pb-5">
+          <button onClick={onCancel}
+            className="flex-1 border border-gray-300 text-gray-600 hover:bg-gray-50 font-medium py-2.5 rounded-xl text-sm">
+            ← Go Back
+          </button>
+          <button onClick={onConfirm} disabled={!allChecked}
+            className={`flex-1 font-medium py-2.5 rounded-xl text-sm transition-colors
+              ${allChecked
+                ? 'bg-green-600 hover:bg-green-700 text-white'
+                : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}>
+            {allChecked ? '✅ Confirm & Submit' : 'Check all fields first'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ══════════════════════════════════════════════════════════════
 // STEP 2 — Enrollment Details
 // ══════════════════════════════════════════════════════════════
 function Step2({ generalData, admissionNumber, onSubmit, onBack, saving, initialData, onDataChange }) {
-  const [form, setForm]     = useState(initialData || BLANK_ENROLLMENT);
-  const [errors, setErrors] = useState({});
+  const [form, setForm]       = useState(initialData || BLANK_ENROLLMENT);
+  const [errors, setErrors]   = useState({});
+  const [showConfirm, setShowConfirm] = useState(false);
 
   const set = (k, v) => {
     const updated = { ...form, [k]: v };
@@ -599,7 +725,14 @@ function Step2({ generalData, admissionNumber, onSubmit, onBack, saving, initial
     return Object.keys(e).length === 0;
   };
 
-  const handleSubmit = () => { if (!validate()) return; onSubmit(form); };
+  const handleSubmit = () => {
+    if (!validate()) return;
+    setShowConfirm(true); // show confirmation dialog before submitting
+  };
+  const handleConfirmed = () => {
+    setShowConfirm(false);
+    onSubmit(form);
+  };
 
   // Disabled row wrapper — greys out and blocks interaction
   const DisabledRow = ({ disabled, children }) => (
@@ -692,11 +825,27 @@ function Step2({ generalData, admissionNumber, onSubmit, onBack, saving, initial
         </div>
         <div className="p-5 space-y-5">
 
+          {/* Row 0: Academic Year selection */}
+          <FieldRow>
+            <Field label="Academic Year">
+              <select value={form.academic_year}
+                onChange={e => set('academic_year', e.target.value)} className={sel(false)}>
+                {ADMISSION_YEARS.map(y => <option key={y}>{y}</option>)}
+              </select>
+            </Field>
+            <div className="flex items-center bg-blue-50 border border-blue-200 rounded-xl px-4 py-2">
+              <p className="text-xs text-blue-700">
+                <strong>Select 2025-26</strong> for last year's students.<br/>
+                Select <strong>2026-27</strong> for new students joining this year.
+              </p>
+            </div>
+          </FieldRow>
+
           {/* Row 1: Date of Admission | Class */}
           <FieldRow>
-            <Field label="Date of Admission" required error={errors.date_of_admission}>
-              <input type="date" value={form.date_of_admission}
-                onChange={e => set('date_of_admission', e.target.value)}
+            <Field label="Date of Admission (DD-MM-YYYY)" required error={errors.date_of_admission}>
+              <input type="date" value={toInputDate(form.date_of_admission)}
+                onChange={e => set('date_of_admission', fromInputDate(e.target.value))}
                 className={inp(errors.date_of_admission)} />
             </Field>
             <Field label="Class" required error={errors.class_of_admission}>
@@ -855,6 +1004,16 @@ function Step2({ generalData, admissionNumber, onSubmit, onBack, saving, initial
           {saving ? <><span className="animate-spin">⏳</span> Saving…</> : '✅ Submit Admission'}
         </button>
       </div>
+
+      {/* Confirmation dialog */}
+      {showConfirm && (
+        <ConfirmDialog
+          generalData={generalData}
+          enrollmentData={form}
+          onConfirm={handleConfirmed}
+          onCancel={() => setShowConfirm(false)}
+        />
+      )}
     </div>
   );
 }
@@ -915,6 +1074,8 @@ export default function Admission() {
       alternate_mobile:      g.alternate_mobile,
       contact_email:         g.contact_email,
       mother_tongue:         g.mother_tongue,
+      caste:                 g.caste,
+      religion:              g.religion,
       category:              g.category,
       minority_group:        g.minority_group,
       bpl_beneficiary:       g.bpl_beneficiary,
@@ -956,7 +1117,7 @@ export default function Admission() {
       language_group:         enrollmentData.language_group         || '',
       academic_stream:        enrollmentData.academic_stream        || '',
       subject_group:          enrollmentData.subject_group          || '',
-      student_status:        'ACTIVE',
+      student_status:        'PENDING',
     });
 
     setSaving(false);
@@ -970,6 +1131,7 @@ export default function Admission() {
   const reset = () => {
     setStep(1);
     setGeneralData(null);
+    setEnrollmentData(null);
     setAdmissionNumber('');
     setSuccess(null);
   };
@@ -1001,6 +1163,7 @@ export default function Admission() {
       {step === 1 && <Step1 onSave={handleStep1Save} initialData={generalData} />}
       {step === 2 && (
         <Step2
+          key={admissionNumber || 'new'}
           generalData={generalData}
           admissionNumber={admissionNumber}
           onSubmit={handleSubmit}
