@@ -36,11 +36,11 @@ contextBridge.exposeInMainWorld('api', {
   pickFile:           (filters)           => invoke('dialog:pickFile', filters),
 
   // Approval
-  getPendingAdmissions:  ()                          => invoke('admission:getPending'),
-  getAdmissionForReview: (admNo)                     => invoke('admission:getForReview', admNo),
-  approveAdmission:      (admNo, by)                 => invoke('admission:approve', { admission_number: admNo, approved_by: by }),
-  rejectAdmission:       (admNo, by, reason)         => invoke('admission:reject',  { admission_number: admNo, rejected_by: by, reason }),
-  getApprovalHistory:    ()                          => invoke('admission:getHistory'),
+  getPendingAdmissions:  ()               => invoke('admission:getPending'),
+  getAdmissionForReview: (admNo)          => invoke('admission:getForReview', admNo),
+  approveAdmission:      (admNo, by)      => invoke('admission:approve', { admission_number: admNo, approved_by: by }),
+  rejectAdmission:       (admNo, by, r)   => invoke('admission:reject',  { admission_number: admNo, rejected_by: by, reason: r }),
+  getApprovalHistory:    ()               => invoke('admission:getHistory'),
 
   // Edit history
   getStudentEditHistory: (admNo)          => invoke('editHistory:getByStudent', admNo),
@@ -69,4 +69,17 @@ contextBridge.exposeInMainWorld('api', {
   promotionPreview:   (from, to)          => invoke('promotion:preview', { from_year: from, to_year: to }),
   promotionExecute:   (to, excl, by)      => invoke('promotion:execute', { to_year: to, excluded: excl, promoted_by: by }),
   promotionHistory:   ()                  => invoke('promotion:getHistory'),
+
+  // Daily Attendance
+  attendanceGetStudents:   (cls, sec, yr)                 => invoke('attendance:getStudents',     { class: cls, section: sec, academic_year: yr }),
+  attendanceGetByDate:     (cls, sec, date)               => invoke('attendance:getByDate',       { class: cls, section: sec, date }),
+  attendanceMarkDay:       (cls, sec, date, yr, recs, by) => invoke('attendance:markDay',         { class: cls, section: sec, date, academic_year: yr, records: recs, marked_by: by }),
+  attendanceGetMonthly:    (cls, sec, mon, yr, acYr)      => invoke('attendance:getMonthly',      { class: cls, section: sec, month: mon, year: yr, academic_year: acYr }),
+  attendanceGetDailyGrid:  (cls, sec, mon, yr, acYr)      => invoke('attendance:getDailyGrid',    { class: cls, section: sec, month: mon, year: yr, academic_year: acYr }),
+  attendanceGetLow:        (yr, threshold)                => invoke('attendance:getLowAttendance', { academic_year: yr, threshold }),
+  attendanceGetMarkedDates:(cls, sec, mon, yr)            => invoke('attendance:getMarkedDates',  { class: cls, section: sec, month: mon, year: yr }),
+  attendanceLockDay:       (cls, sec, date, by)           => invoke('attendance:lockDay',         { class: cls, section: sec, date, locked_by: by }),
+  attendanceUnlockDay:     (cls, sec, date)               => invoke('attendance:unlockDay',       { class: cls, section: sec, date }),
+  attendanceCheckLocked:   (cls, sec, date)               => invoke('attendance:checkLocked',     { class: cls, section: sec, date }),
+  attendanceGetLockedDates:(cls, sec, mon, yr)            => invoke('attendance:getLockedDates',  { class: cls, section: sec, month: mon, year: yr }),
 });

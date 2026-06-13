@@ -193,6 +193,19 @@ function initDatabase() {
   try { db.exec("CREATE INDEX IF NOT EXISTS idx_att_class_date ON attendance_daily (class, section, date)"); } catch(_) {}
   try { db.exec("CREATE INDEX IF NOT EXISTS idx_att_student ON attendance_daily (admission_number, academic_year)"); } catch(_) {}
 
+  // Attendance locks table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS attendance_locks (
+      lock_id     INTEGER  PRIMARY KEY AUTOINCREMENT,
+      class       TEXT     NOT NULL,
+      section     TEXT     NOT NULL,
+      date        TEXT     NOT NULL,
+      locked_by   TEXT     NOT NULL DEFAULT '',
+      locked_at   DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+      UNIQUE (class, section, date)
+    )
+  `);
+
   console.log('[DB] Initialised:', DB_PATH);
 }
 
@@ -1701,7 +1714,7 @@ ipcMain.handle('promotion:getHistory', () => {
 ipcMain.handle('attendance:getStudents', (_evt, { class: cls, section, academic_year }) => {
   try {
     const students = db.prepare(`
-      SELECT e.admission_number, e.student_name, e.gender,
+      SELECT e.admission_number, e.student_name, e.father_name, e.gender,
              COALESCE(r.roll_number, ROW_NUMBER() OVER (ORDER BY e.student_name)) as roll_number
       FROM enrollment e
       LEFT JOIN roll_numbers r
@@ -1848,6 +1861,63 @@ ipcMain.handle('attendance:getMarkedDates', (_evt, { class: cls, section, month,
       ORDER BY date
     `).all(cls, section, month, year);
     return { success: true, data: rows.map(r => r.date) };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Lock attendance for a class/date ─────────────────────────
+ipcMain.handle('attendance:lockDay', (_evt, { class: cls, section, date, locked_by }) => {
+  try {
+    db.prepare(`
+      INSERT INTO attendance_locks (class, section, date, locked_by)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(class, section, date) DO UPDATE SET
+        locked_by = excluded.locked_by,
+        locked_at = datetime('now','localtime')
+    `).run(cls, section, date, locked_by || 'admin');
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Unlock attendance ─────────────────────────────────────────
+ipcMain.handle('attendance:unlockDay', (_evt, { class: cls, section, date }) => {
+  try {
+    db.prepare(`
+      DELETE FROM attendance_locks WHERE class = ? AND section = ? AND date = ?
+    `).run(cls, section, date);
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Check if a date is locked ─────────────────────────────────
+ipcMain.handle('attendance:checkLocked', (_evt, { class: cls, section, date }) => {
+  try {
+    const row = db.prepare(`
+      SELECT locked_by, locked_at FROM attendance_locks
+      WHERE LOWER(class) = LOWER(?) AND section = ? AND date = ?
+    `).get(cls, section, date);
+    return { success: true, locked: !!row, locked_by: row?.locked_by, locked_at: row?.locked_at };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get locked dates for a class/month ───────────────────────
+ipcMain.handle('attendance:getLockedDates', (_evt, { class: cls, section, month, year }) => {
+  try {
+    const rows = db.prepare(`
+      SELECT date, locked_by, locked_at FROM attendance_locks
+      WHERE LOWER(class) = LOWER(?)
+      AND   section = ?
+      AND   SUBSTR(date, 4, 2) = ?
+      AND   SUBSTR(date, 7, 4) = ?
+    `).all(cls, section, month, year);
+    return { success: true, data: rows };
   } catch (err) {
     return { success: false, message: err.message };
   }
