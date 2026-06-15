@@ -369,6 +369,10 @@ function GeneralTab({ form, set, pickDoc }) {
 }
 
 // ── Enrollment Profile tab ────────────────────────────────────
+function DisabledRow({ disabled, children }) {
+  return <div className={disabled ? 'opacity-40 pointer-events-none' : ''}>{children}</div>;
+}
+
 function EnrollmentTab({ form, set, pickDoc }) {
   const cls              = form.current_class || '';
   const show9Plus        = isClass9Plus(cls);
@@ -376,10 +380,6 @@ function EnrollmentTab({ form, set, pickDoc }) {
   const isNursery        = cls === 'Nursery';
   const studiedElsewhere = form.studied_elsewhere === 'Yes';
   const disabledBelow    = isNursery || !studiedElsewhere;
-
-  const DisabledRow = ({ disabled: dis, children }) => (
-    <div className={dis ? 'opacity-40 pointer-events-none' : ''}>{children}</div>
-  );
 
   return (
     <div>
@@ -394,13 +394,13 @@ function EnrollmentTab({ form, set, pickDoc }) {
               </div>
             </Field>
             <Field label="PEN Number">
-              <input value={form.pen_number || ''} onChange={e => set('pen_number', e.target.value)}
+              <input value={form.pen_number || ''} onChange={e => set('pen_number', e.target.value.replace(/\D/g,'').slice(0,11))} maxLength={11}
                 placeholder="11-digit PEN" className={inp(MISSING(form.pen_number))} />
             </Field>
           </Row>
           <Row>
             <Field label="APAAR ID">
-              <input value={form.apaar_id || ''} onChange={e => set('apaar_id', e.target.value)}
+              <input value={form.apaar_id || ''} onChange={e => set('apaar_id', e.target.value.replace(/\D/g,'').slice(0,12))} maxLength={12}
                 placeholder="Leave blank if not generated" className={inp(false)} />
             </Field>
             <Field label="Admitted under Section 12C of RTE Act?">
@@ -487,11 +487,11 @@ function EnrollmentTab({ form, set, pickDoc }) {
           <DisabledRow disabled={disabledBelow}>
             <Row>
               <Field label="Previous Enrollment Number">
-                <input value={form.prev_enrollment_number || ''} onChange={e => set('prev_enrollment_number', e.target.value)}
+                <input value={form.prev_enrollment_number || ''} onChange={e => set('prev_enrollment_number', e.target.value.toUpperCase())}
                   className={inp(false)} />
               </Field>
               <Field label="Previous Academic Year">
-                <input value={form.prev_academic_year || ''} onChange={e => set('prev_academic_year', e.target.value)}
+                <input value={form.prev_academic_year || ''} onChange={e => set('prev_academic_year', e.target.value.toUpperCase())}
                   placeholder="e.g. 2024-25" className={inp(false)} />
               </Field>
             </Row>
@@ -499,7 +499,7 @@ function EnrollmentTab({ form, set, pickDoc }) {
 
           <DisabledRow disabled={disabledBelow}>
             <Field label="Previous School Name">
-              <input value={form.prev_school_name || ''} onChange={e => set('prev_school_name', e.target.value)}
+              <input value={form.prev_school_name || ''} onChange={e => set('prev_school_name', e.target.value.toUpperCase())}
                 className={inp(false)} />
             </Field>
           </DisabledRow>
@@ -605,7 +605,7 @@ function GlobalHistoryTab() {
       <div className="mb-4">
         <input
           value={filter}
-          onChange={e => setFilter(e.target.value)}
+          onChange={e => setFilter(e.target.value.toUpperCase())}
           placeholder="Filter by student name, admission no., or edited by…"
           className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm
                      focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -868,7 +868,7 @@ export default function EditStudent() {
           <div className="bg-white border border-gray-200 rounded-xl p-4 flex gap-3 items-end mb-4">
             <div className="flex-1">
               <Label text="Search Student" />
-              <input value={query} onChange={e => setQuery(e.target.value)}
+              <input value={query} onChange={e => setQuery(e.target.value.toUpperCase())}
                 onKeyDown={e => e.key === 'Enter' && search()}
                 placeholder="Name, Admission No., Father's Name…"
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />

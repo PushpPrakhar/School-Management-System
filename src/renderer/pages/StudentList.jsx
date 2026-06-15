@@ -304,7 +304,7 @@ export default function StudentList() {
               {/* Search */}
               <input
                 value={query}
-                onChange={e => setQuery(e.target.value)}
+                onChange={e => setQuery(e.target.value.toUpperCase())}
                 placeholder="Search by name or admission no…"
                 className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-56
                            focus:outline-none focus:ring-2 focus:ring-blue-500"

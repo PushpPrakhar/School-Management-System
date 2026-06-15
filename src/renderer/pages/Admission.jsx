@@ -690,15 +690,19 @@ function ConfirmDialog({ generalData, enrollmentData, onConfirm, onCancel }) {
 // STEP 2 — Enrollment Details
 // ══════════════════════════════════════════════════════════════
 function Step2({ generalData, admissionNumber, onSubmit, onBack, saving, initialData, onDataChange }) {
-  const [form, setForm]       = useState(initialData || BLANK_ENROLLMENT);
-  const [errors, setErrors]   = useState({});
-  const [showConfirm, setShowConfirm] = useState(false);
+  const [form,        setForm]       = useState(initialData || BLANK_ENROLLMENT);
+  const [errors,      setErrors]     = useState({});
+  const [showConfirm, setShowConfirm]= useState(false);
 
-  const set = (k, v) => {
-    const updated = { ...form, [k]: v };
-    setForm(updated);
-    setErrors(e => ({ ...e, [k]: '' }));
-    if (onDataChange) onDataChange(updated);
+  // Single setState call per keystroke — prevents double render that loses focus
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  // Clear a field's error separately (only needed on submit)
+  const clearErr = (k) => setErrors(e => ({ ...e, [k]: '' }));
+
+  // Save to parent only when leaving a field, not on every keystroke
+  const saveToParent = () => {
+    if (onDataChange) onDataChange(form);
   };
 
   const pickDoc = async (field) => {
@@ -734,34 +738,8 @@ function Step2({ generalData, admissionNumber, onSubmit, onBack, saving, initial
     onSubmit(form);
   };
 
-  // Disabled row wrapper — greys out and blocks interaction
-  const DisabledRow = ({ disabled, children }) => (
-    <div className={disabled ? 'opacity-40 pointer-events-none' : ''}>
-      {children}
-    </div>
-  );
 
-  const FieldRow = ({ children }) => (
-    <div className="grid grid-cols-2 gap-x-8 gap-y-4">{children}</div>
-  );
-  const Field = ({ label, required, error, children }) => (
-    <div>
-      <label className="block text-xs font-medium text-gray-500 mb-1">
-        {label}{required && <span className="text-red-500 ml-0.5">*</span>}
-      </label>
-      {children}
-      {error && <p className="text-red-500 text-xs mt-1">{error}</p>}
-    </div>
-  );
-  const UploadBtn = ({ field, value }) => (
-    <div className="flex gap-2 mt-1">
-      <button type="button" onClick={() => pickDoc(field)}
-        className="text-xs border border-blue-300 text-blue-600 hover:bg-blue-50 px-3 py-1 rounded-lg flex items-center gap-1">
-        📎 {value ? 'Change' : 'Upload'}
-      </button>
-      {value && <span className="text-xs text-green-600">✓ {value.split(/[\\/]/).pop()}</span>}
-    </div>
-  );
+
 
   return (
     <div>
@@ -786,7 +764,7 @@ function Step2({ generalData, admissionNumber, onSubmit, onBack, saving, initial
             </Field>
             <Field label="PEN Number">
               <input value={form.pen_number}
-                onChange={e => set('pen_number', e.target.value)}
+                onChange={e => set('pen_number', e.target.value.replace(/\D/g,'').slice(0,11))} maxLength={11}
                 placeholder="11-digit Permanent Education Number"
                 className={inp(false)} />
             </Field>
@@ -796,7 +774,7 @@ function Step2({ generalData, admissionNumber, onSubmit, onBack, saving, initial
           <FieldRow>
             <Field label="APAAR ID">
               <input value={form.apaar_id}
-                onChange={e => set('apaar_id', e.target.value)}
+                onChange={e => set('apaar_id', e.target.value.replace(/\D/g,'').slice(0,12))} maxLength={12}
                 placeholder="Leave blank if not generated"
                 className={inp(false)} />
             </Field>
@@ -857,7 +835,6 @@ function Step2({ generalData, admissionNumber, onSubmit, onBack, saving, initial
                   };
                   setForm(updated);
                   setErrors(err => ({ ...err, class_of_admission: '' }));
-                  if (onDataChange) onDataChange(updated);
                 }}
                 className={sel(errors.class_of_admission)}>
                 <option value="">Select class</option>
@@ -891,7 +868,7 @@ function Step2({ generalData, admissionNumber, onSubmit, onBack, saving, initial
                 <Field label="TC Submitted?">
                   <div className="flex items-center gap-2">
                     <YesNo value={form.tc_submitted} onChange={v => set('tc_submitted', v)} />
-                    {form.tc_submitted === 'Yes' && <UploadBtn field="tc_doc" value={form.tc_doc} />}
+                    {form.tc_submitted === 'Yes' && <UploadBtn onUpload={() => pickDoc('tc_doc')} value={form.tc_doc} />}
                   </div>
                 </Field>
               </div>
@@ -901,7 +878,7 @@ function Step2({ generalData, admissionNumber, onSubmit, onBack, saving, initial
           <div className="border-t border-gray-100" />
 
           {/* Row 4: Status in previous year | Class passed — disabled for Nursery */}
-          <DisabledRow disabled={disabledBelowRow3}>
+          <div className={disabledBelowRow3 ? 'opacity-40 pointer-events-none' : ''}>
             <FieldRow>
               <Field label="Status in Previous Year">
                 <select value={form.prev_year_status}
@@ -920,34 +897,34 @@ function Step2({ generalData, admissionNumber, onSubmit, onBack, saving, initial
                 </select>
               </Field>
             </FieldRow>
-          </DisabledRow>
+          </div>
 
           {/* Row 5: Prev enrollment number | Prev academic year — disabled for Nursery or not studied elsewhere */}
-          <DisabledRow disabled={disabledBelowRow3}>
+          <div className={disabledBelowRow3 ? 'opacity-40 pointer-events-none' : ''}>
             <FieldRow>
               <Field label="Previous Enrollment Number">
                 <input value={form.prev_enrollment_number}
-                  onChange={e => set('prev_enrollment_number', e.target.value)}
+                  onChange={e => set('prev_enrollment_number', e.target.value.toUpperCase())}
                   placeholder="Enrollment number from previous school"
                   className={inp(false)} />
               </Field>
               <Field label="Previous Academic Year">
                 <input value={form.prev_academic_year}
-                  onChange={e => set('prev_academic_year', e.target.value)}
+                  onChange={e => set('prev_academic_year', e.target.value.toUpperCase())}
                   placeholder="e.g. 2024-25" className={inp(false)} />
               </Field>
             </FieldRow>
-          </DisabledRow>
+          </div>
 
           {/* Row 6: Previous school name — disabled for Nursery or not studied elsewhere */}
-          <DisabledRow disabled={disabledBelowRow3}>
+          <div className={disabledBelowRow3 ? 'opacity-40 pointer-events-none' : ''}>
             <Field label="Previous School Name">
               <input value={form.prev_school_name}
-                onChange={e => set('prev_school_name', e.target.value)}
+                onChange={e => set('prev_school_name', e.target.value.toUpperCase())}
                 placeholder="Full name of previous school"
                 className={inp(false)} />
             </Field>
-          </DisabledRow>
+          </div>
 
         </div>
       </div>

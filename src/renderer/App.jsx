@@ -13,6 +13,7 @@ import Dashboard from './pages/Dashboard';
 import ApproveAdmission from './pages/ApproveAdmission';
 import RollNumbers from './pages/RollNumbers';
 import PromoteStudents from './pages/PromoteStudents';
+import Attendance from './pages/Attendance';
 
 // ── Sidebar nav items (add pages here as you build each phase) ─
 const NAV_ITEMS = [
@@ -63,12 +64,12 @@ function AppShell() {
       case 'approveAdmission':  return <ApproveAdmission />;
       case 'promoteStudents':  return <PromoteStudents />;
       case 'rollNumbers':       return <RollNumbers />;
-      case 'feesLedger':   return <FeesLedger />;
-      case 'feesReceipt':  return <FeesReceipt />;
-      case 'feesNotice':   return <FeesNotice />;
+      case 'feesLedger':   return <ComingSoon page="Fees Ledger" />;
+      case 'feesReceipt':  return <ComingSoon page="Collect Fees" />;
+      case 'feesNotice':   return <ComingSoon page="Fees Notice" />;
       case 'admitCard':    return <ComingSoon page="Admit Card — Phase 4" />;
       case 'tcGeneration': return <ComingSoon page="TC Generation — Phase 4" />;
-      case 'attendance':   return <ComingSoon page="Attendance — Phase 5" />;
+      case 'attendance':   return <Attendance />;
       case 'examination':  return <ComingSoon page="Examination — Phase 5" />;
       case 'backup':       return <ComingSoon page="Backup & Restore — Phase 6" />;
       case 'users':        return <UserManagement />;
