@@ -324,9 +324,13 @@ export default function ApproveAdmission({ onCountChange = () => {} }) {
   const loadPending = useCallback(async () => {
     setLoading(true);
     const res = await window.api.getPendingAdmissions();
-    if (res.success) { setPending(res.data); onCountChange(res.data.length); }
+    if (res.success) {
+      setPending(res.data);
+      // Use functional update to avoid stale closure on onCountChange
+      if (typeof onCountChange === 'function') onCountChange(res.data.length);
+    }
     setLoading(false);
-  }, [onCountChange]);
+  }, []); // Empty deps — stable reference, prevents infinite loop
 
   const loadRejected = useCallback(async () => {
     const res = await window.api.getRejectedAdmissions();

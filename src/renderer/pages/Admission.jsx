@@ -689,7 +689,7 @@ function ConfirmDialog({ generalData, enrollmentData, onConfirm, onCancel }) {
 // ══════════════════════════════════════════════════════════════
 // STEP 2 — Enrollment Details
 // ══════════════════════════════════════════════════════════════
-function Step2({ generalData, admissionNumber, onSubmit, onBack, saving, initialData, onDataChange }) {
+function Step2({ generalData, admissionNumber, onSubmit, onBack, saving, initialData, onDataChange, submitError }) {
   const [form,        setForm]       = useState(initialData || BLANK_ENROLLMENT);
   const [errors,      setErrors]     = useState({});
   const [showConfirm, setShowConfirm]= useState(false);
@@ -971,6 +971,11 @@ function Step2({ generalData, admissionNumber, onSubmit, onBack, saving, initial
       )}
 
       {/* Navigation */}
+      {submitError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-4 text-red-600 text-sm">
+          ❌ {submitError}
+        </div>
+      )}
       <div className="flex items-center justify-between pb-8">
         <button onClick={onBack}
           className="text-sm text-gray-500 hover:text-gray-700 underline">
@@ -1025,8 +1030,11 @@ export default function Admission() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const [submitError, setSubmitError] = useState('');
+
   const handleSubmit = async (enrollmentData) => {
     setSaving(true);
+    setSubmitError('');
 
     // Build address string
     const g = generalData;
@@ -1100,8 +1108,10 @@ export default function Admission() {
     setSaving(false);
 
     if (result.success) {
-      setSuccess({ admission_number: result.admission_number });
+      setSuccess({ temp_id: result.temp_id });
       window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      setSubmitError(result.message || 'Failed to submit admission. Please try again.');
     }
   };
 
@@ -1123,7 +1133,8 @@ export default function Admission() {
         <div className="bg-green-50 border border-green-200 rounded-xl p-5 mb-6 text-left">
           <div className="flex justify-between items-center">
             <span className="text-sm text-green-700">Admission Number</span>
-            <span className="font-mono font-bold text-green-800 text-xl">{success.admission_number}</span>
+            <span className="font-mono font-bold text-green-800 text-xl">PENDING APPROVAL</span>
+              <p className="text-xs text-green-600 mt-1">Admission submitted and awaiting principal approval</p>
           </div>
         </div>
         <button onClick={reset}
@@ -1146,6 +1157,7 @@ export default function Admission() {
           onSubmit={handleSubmit}
           onBack={() => { setStep(1); window.scrollTo({ top:0, behavior:'smooth' }); }}
           saving={saving}
+          submitError={submitError}
           initialData={enrollmentData}
           onDataChange={setEnrollmentData}
         />

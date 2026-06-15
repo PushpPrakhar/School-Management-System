@@ -351,6 +351,22 @@ function initDatabase() {
     }
   })();
 
+  // Add submitted_by to temp_admissions if missing (migration for existing tables)
+  try { db.exec("ALTER TABLE temp_admissions ADD COLUMN submitted_by TEXT NOT NULL DEFAULT ''"); } catch(_) {}
+  // Add submitted_at to temp_admissions if missing
+  try { db.exec("ALTER TABLE temp_admissions ADD COLUMN submitted_at DATETIME NOT NULL DEFAULT (datetime('now','localtime'))"); } catch(_) {}
+
+  // Ensure all temp_admissions columns exist (safe to run repeatedly)
+  const tempCols = [
+    "ALTER TABLE temp_admissions ADD COLUMN submitted_by TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE temp_admissions ADD COLUMN submitted_at DATETIME NOT NULL DEFAULT (datetime('now','localtime'))",
+    "ALTER TABLE temp_admissions ADD COLUMN religion TEXT NOT NULL DEFAULT 'NOT PROVIDED'",
+    "ALTER TABLE temp_admissions ADD COLUMN caste TEXT NOT NULL DEFAULT 'NOT PROVIDED'",
+    "ALTER TABLE temp_admissions ADD COLUMN apaar_id TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE temp_admissions ADD COLUMN pen_number TEXT NOT NULL DEFAULT ''",
+  ];
+  tempCols.forEach(sql => { try { db.exec(sql); } catch(_) {} });
+
   console.log('[DB] Initialised:', DB_PATH);
 }
 
@@ -545,197 +561,116 @@ function applyDefaults(data) {
     language_group:         data.language_group                || '',
     academic_stream:        data.academic_stream               || '',
     subject_group:          data.subject_group                 || '',
+    // Submission tracking
+    submitted_by:           data.submitted_by                  || '',
   };
 }
 
-ipcMain.handle('enrollment:add', (_evt, rawData) => {
+ipcMain.handle('enrollment:add', (_evt, raw) => {
   try {
-    const data = applyDefaults(rawData);
+    const s = raw || {};
 
-    // Insert into temp_admissions — no admission number yet
-    // Real BPS number assigned only when principal approves
+    // Build explicit object with named params — no applyDefaults dependency
+    // submitted_by excluded — has DEFAULT '' in table, avoids any column issues
+    const row = {
+      student_name:           (s.student_name          || '').trim() || 'NOT PROVIDED',
+      gender:                 (s.gender                || '').trim() || 'NOT PROVIDED',
+      date_of_birth:          (s.date_of_birth         || '').trim() || '00-00-0000',
+      indian_nationality:     (s.indian_nationality    || '').trim() || 'YES',
+      blood_group:            (s.blood_group           || '').trim() || 'NOT PROVIDED',
+      mother_tongue:          (s.mother_tongue         || '').trim() || 'Hindi',
+      aadhar_number:          (s.aadhar_number         || '').replace(/\s/g,'') || '999999999999',
+      aadhar_doc:              s.aadhar_doc            || '',
+      birth_cert:              s.birth_cert            || 'No',
+      birth_cert_doc:          s.birth_cert_doc        || '',
+      mother_name:            (s.mother_name           || '').trim() || 'NOT PROVIDED',
+      mother_profession:       s.mother_profession     || 'Housewife',
+      father_name:            (s.father_name           || '').trim() || 'NOT PROVIDED',
+      father_profession:       s.father_profession     || 'Mazdoori',
+      guardian_name:           s.guardian_name         || '',
+      contact_email:           s.contact_email         || '',
+      mobile_number:           s.mobile_number         || '',
+      alternate_mobile:        s.alternate_mobile      || '',
+      house_no:               (s.house_no              || '').trim() || '',
+      village:                (s.village               || '').trim() || 'NOT PROVIDED',
+      post:                   (s.post                  || '').trim() || '',
+      district:               (s.district              || '').trim() || 'Aligarh',
+      state_name:             (s.state_name            || '').trim() || 'Uttar Pradesh',
+      pin_code:               (s.pin_code              || '').trim() || '',
+      category:               (s.category              || '').trim() || 'GENERAL',
+      minority_group:          s.minority_group        || 'Not Applicable',
+      bpl_beneficiary:         s.bpl_beneficiary       || 'No',
+      ews_disadvantaged:       s.ews_disadvantaged     || 'No',
+      cwsn:                    s.cwsn                  || 'No',
+      impairment_type:         s.impairment_type       || '',
+      disability_certificate:  s.disability_certificate || 'No',
+      disability_cert_doc:     s.disability_cert_doc  || '',
+      disability_percentage:   s.disability_percentage || '',
+      pen_number:             (s.pen_number            || '').trim() || '',
+      apaar_id:                s.apaar_id              || '',
+      rte_section_12c:         s.rte_section_12c       || 'No',
+      rte_amount_claimed:      s.rte_amount_claimed    || '',
+      date_of_admission:      (s.date_of_admission     || '').trim() || '00-00-0000',
+      class_of_admission:     (s.class_of_admission    || '').trim() || 'NOT PROVIDED',
+      religion:               (s.religion              || '').trim() || 'NOT PROVIDED',
+      caste:                  (s.caste                 || '').trim() || 'NOT PROVIDED',
+      section:                 s.section               || 'A',
+      medium_of_instruction:   s.medium_of_instruction || 'Hindi',
+      studied_elsewhere:       s.studied_elsewhere     || 'No',
+      tc_submitted:            s.tc_submitted          || 'No',
+      tc_doc:                  s.tc_doc                || '',
+      prev_year_status:        s.prev_year_status      || '',
+      prev_year_class:         s.prev_year_class       || '',
+      prev_enrollment_number:  s.prev_enrollment_number || '',
+      prev_academic_year:      s.prev_academic_year    || '',
+      prev_school_name:        s.prev_school_name      || '',
+      language_group:          s.language_group        || '',
+      academic_stream:         s.academic_stream       || '',
+      subject_group:           s.subject_group         || '',
+      academic_year:          (s.academic_year         || '').trim() || '2025-26',
+    };
+
     const result = db.prepare(`
       INSERT INTO temp_admissions (
         student_name, gender, date_of_birth, indian_nationality,
         blood_group, mother_tongue, aadhar_number, aadhar_doc,
         birth_cert, birth_cert_doc,
-        mother_name, mother_profession,
-        father_name, father_profession,
+        mother_name, mother_profession, father_name, father_profession,
         guardian_name, contact_email, mobile_number, alternate_mobile,
         house_no, village, post, district, state_name, pin_code,
         category, minority_group, bpl_beneficiary, ews_disadvantaged,
         cwsn, impairment_type, disability_certificate, disability_cert_doc, disability_percentage,
         pen_number, apaar_id, rte_section_12c, rte_amount_claimed,
         date_of_admission, class_of_admission,
-        religion, caste,
-        section, medium_of_instruction,
+        religion, caste, section, medium_of_instruction,
         studied_elsewhere, tc_submitted, tc_doc,
         prev_year_status, prev_year_class,
         prev_enrollment_number, prev_academic_year, prev_school_name,
-        language_group, academic_stream, subject_group, academic_year, submitted_by
+        language_group, academic_stream, subject_group, academic_year
       ) VALUES (
         @student_name, @gender, @date_of_birth, @indian_nationality,
         @blood_group, @mother_tongue, @aadhar_number, @aadhar_doc,
         @birth_cert, @birth_cert_doc,
-        @mother_name, @mother_profession,
-        @father_name, @father_profession,
+        @mother_name, @mother_profession, @father_name, @father_profession,
         @guardian_name, @contact_email, @mobile_number, @alternate_mobile,
         @house_no, @village, @post, @district, @state_name, @pin_code,
         @category, @minority_group, @bpl_beneficiary, @ews_disadvantaged,
         @cwsn, @impairment_type, @disability_certificate, @disability_cert_doc, @disability_percentage,
         @pen_number, @apaar_id, @rte_section_12c, @rte_amount_claimed,
         @date_of_admission, @class_of_admission,
-        @religion, @caste,
-        @section, @medium_of_instruction,
+        @religion, @caste, @section, @medium_of_instruction,
         @studied_elsewhere, @tc_submitted, @tc_doc,
         @prev_year_status, @prev_year_class,
         @prev_enrollment_number, @prev_academic_year, @prev_school_name,
-        @language_group, @academic_stream, @subject_group, @academic_year, @submitted_by
+        @language_group, @academic_stream, @subject_group, @academic_year
       )
-    `).run(data);
+    `).run(row);
 
     return { success: true, temp_id: result.lastInsertRowid };
   } catch (err) {
     return { success: false, message: err.message };
   }
-});
-
-// ── Human-readable field labels for history log ──────────────
-const FIELD_LABELS = {
-  student_name:'Student Name', gender:'Gender', date_of_birth:'Date of Birth',
-  indian_nationality:'Indian Nationality', blood_group:'Blood Group',
-  mother_tongue:'Mother Tongue', aadhar_number:'Aadhar Number',
-  birth_cert:'Birth Certificate', mother_name:"Mother's Name",
-  mother_profession:"Mother's Profession", father_name:"Father's Name",
-  father_profession:"Father's Profession", guardian_name:"Guardian's Name",
-  contact_email:'Contact Email', mobile_number:'Mobile Number',
-  alternate_mobile:'Alternate Mobile', house_no:'House No.',
-  village:'Village', post:'Post', district:'District',
-  state_name:'State', pin_code:'Pin Code', caste:'Caste', religion:'Religion',
-  category:'Category', minority_group:'Minority Group',
-  bpl_beneficiary:'BPL Beneficiary', ews_disadvantaged:'EWS / Disadvantaged',
-  cwsn:'CWSN', impairment_type:'Type of Impairment',
-  disability_certificate:'Disability Certificate',
-  disability_percentage:'Disability Percentage',
-  pen_number:'PEN Number', apaar_id:'APAAR ID',
-  rte_section_12c:'RTE Section 12C', rte_amount_claimed:'RTE Amount Claimed',
-  date_of_admission:'Date of Admission', class_of_admission:'Class of Admission',
-  current_class:'Current Class', section:'Section',
-  medium_of_instruction:'Medium of Instruction',
-  studied_elsewhere:'Studied Elsewhere', tc_submitted:'TC Submitted',
-  prev_year_status:'Previous Year Status', prev_year_class:'Previous Year Class',
-  prev_enrollment_number:'Previous Enrollment No.',
-  prev_academic_year:'Previous Academic Year',
-  prev_school_name:'Previous School Name',
-  language_group:'Language Group', academic_stream:'Academic Stream',
-  subject_group:'Subject Group', academic_year:'Academic Year',
-  student_status:'Student Status',
-};
-
-// ── Edit existing student ─────────────────────────────────────
-ipcMain.handle('enrollment:edit', (_evt, rawData) => {
-  try {
-    const { admission_number, edited_by = 'admin' } = rawData;
-    if (!admission_number) return { success: false, message: 'admission_number is required' };
-
-    const EDITABLE = [
-      'student_name','gender','date_of_birth','indian_nationality','blood_group',
-      'mother_tongue','aadhar_number','aadhar_doc','birth_cert','birth_cert_doc',
-      'mother_name','mother_profession','father_name','father_profession',
-      'guardian_name','contact_email','mobile_number','alternate_mobile',
-      'house_no','village','post','district','state_name','pin_code',
-      'caste','religion','category','minority_group','bpl_beneficiary','ews_disadvantaged',
-      'cwsn','impairment_type','disability_certificate','disability_cert_doc','disability_percentage',
-      'pen_number','apaar_id','rte_section_12c','rte_amount_claimed',
-      'date_of_admission','class_of_admission','current_class','section','medium_of_instruction',
-      'studied_elsewhere','tc_submitted','tc_doc',
-      'prev_year_status','prev_year_class','prev_enrollment_number','prev_academic_year','prev_school_name',
-      'language_group','academic_stream','subject_group',
-      'academic_year','student_status',
-    ];
-
-    // Fetch current record to compare
-    const current = db.prepare('SELECT * FROM enrollment WHERE admission_number = ?').get(admission_number);
-    if (!current) return { success: false, message: 'Student not found' };
-
-    const data   = applyDefaults(rawData);
-    const params = { admission_number };
-    EDITABLE.forEach(k => { params[k] = rawData[k] !== undefined ? rawData[k] : (data[k] ?? ''); });
-
-    // Detect what actually changed
-    const changes = EDITABLE
-      .filter(k => String(current[k] ?? '') !== String(params[k] ?? ''))
-      .map(k => ({
-        field: FIELD_LABELS[k] || k,
-        old:   String(current[k] ?? ''),
-        new:   String(params[k]  ?? ''),
-      }));
-
-    // Perform update
-    const fields = EDITABLE.map(k => `${k} = @${k}`).join(', ');
-    db.prepare(
-      `UPDATE enrollment SET ${fields}, updated_at = datetime('now','localtime')
-       WHERE admission_number = @admission_number`
-    ).run(params);
-
-    // Log changes only if something actually changed
-    if (changes.length > 0) {
-      db.prepare(`
-        INSERT INTO edit_history (admission_number, student_name, edited_by, changes)
-        VALUES (?, ?, ?, ?)
-      `).run(
-        admission_number,
-        params.student_name || current.student_name || '',
-        edited_by,
-        JSON.stringify(changes)
-      );
-    }
-
-    return { success: true, changes_count: changes.length };
-  } catch (err) {
-    return { success: false, message: err.message };
-  }
-});
-
-// ── Get edit history for a student ───────────────────────────
-ipcMain.handle('editHistory:getByStudent', (_evt, admission_number) => {
-  try {
-    const rows = db.prepare(`
-      SELECT history_id, admission_number, student_name,
-             edited_by, edited_at, changes
-      FROM edit_history
-      WHERE admission_number = ?
-      ORDER BY edited_at DESC
-    `).all(admission_number);
-
-    return {
-      success: true,
-      data: rows.map(r => ({ ...r, changes: JSON.parse(r.changes || '[]') }))
-    };
-  } catch (err) {
-    return { success: false, message: err.message };
-  }
-});
-
-// ── Get full edit history (all students) ─────────────────────
-ipcMain.handle('editHistory:getAll', () => {
-  try {
-    const rows = db.prepare(`
-      SELECT h.history_id, h.admission_number, h.student_name,
-             h.edited_by, h.edited_at, h.changes
-      FROM edit_history h
-      ORDER BY h.edited_at DESC
-      LIMIT 200
-    `).all();
-
-    return {
-      success: true,
-      data: rows.map(r => ({ ...r, changes: JSON.parse(r.changes || '[]') }))
-    };
-  } catch (err) {
-    return { success: false, message: err.message };
-  }
-});
+})
 
 ipcMain.handle('enrollment:getByClass', (_evt, { class: cls }) => {
   // Use LOWER() on both sides so 'Nursery', 'NURSERY', 'nursery' all match
@@ -768,6 +703,115 @@ ipcMain.handle('enrollment:update', (_evt, { admission_number, ...data }) => {
       `UPDATE enrollment SET ${fields}, updated_at = datetime('now','localtime') WHERE admission_number = @admission_number`
     ).run({ ...data, admission_number });
     return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Edit student & record history ────────────────────────────
+ipcMain.handle('enrollment:edit', (_evt, data) => {
+  try {
+    const {
+      admission_number, edited_by,
+      student_name, gender, date_of_birth, indian_nationality,
+      blood_group, mother_tongue, aadhar_number, birth_cert,
+      mother_name, mother_profession, father_name, father_profession,
+      guardian_name, contact_email, mobile_number, alternate_mobile,
+      house_no, village, post, district, state_name, pin_code,
+      category, caste, religion, minority_group, bpl_beneficiary,
+      ews_disadvantaged, cwsn, impairment_type, disability_certificate,
+      disability_percentage, pen_number, apaar_id,
+      date_of_admission, class_of_admission, current_class, section,
+      medium_of_instruction, academic_year, studied_elsewhere,
+      tc_submitted, prev_year_status, prev_year_class,
+      prev_enrollment_number, prev_academic_year, prev_school_name,
+      language_group, academic_stream, subject_group,
+      rte_section_12c, rte_amount_claimed,
+    } = data;
+
+    // Get current record to compute diff
+    const old = db.prepare('SELECT * FROM enrollment WHERE admission_number = ?').get(admission_number);
+    if (!old) return { success: false, message: 'Student not found.' };
+
+    const newData = {
+      student_name, gender, date_of_birth, indian_nationality,
+      blood_group, mother_tongue, aadhar_number, birth_cert,
+      mother_name, mother_profession, father_name, father_profession,
+      guardian_name, contact_email, mobile_number, alternate_mobile,
+      house_no, village, post, district, state_name, pin_code,
+      category, caste, religion, minority_group, bpl_beneficiary,
+      ews_disadvantaged, cwsn, impairment_type, disability_certificate,
+      disability_percentage, pen_number, apaar_id,
+      date_of_admission, class_of_admission, current_class, section,
+      medium_of_instruction, academic_year, studied_elsewhere,
+      tc_submitted, prev_year_status, prev_year_class,
+      prev_enrollment_number, prev_academic_year, prev_school_name,
+      language_group, academic_stream, subject_group,
+      rte_section_12c, rte_amount_claimed,
+    };
+
+    // Compute changes
+    const changes = Object.entries(newData)
+      .filter(([k, v]) => v !== undefined && String(v) !== String(old[k] ?? ''))
+      .map(([k, v]) => ({ field: k, old: String(old[k] ?? ''), new: String(v) }));
+
+    if (changes.length === 0) return { success: true, message: 'No changes detected.' };
+
+    // Build dynamic UPDATE
+    const fields = Object.keys(newData)
+      .filter(k => newData[k] !== undefined)
+      .map(k => `${k} = @${k}`)
+      .join(', ');
+
+    db.prepare(
+      `UPDATE enrollment SET ${fields}, updated_at = datetime('now','localtime') WHERE admission_number = @admission_number`
+    ).run({ ...newData, admission_number });
+
+    // Log to edit_history
+    db.prepare(`
+      INSERT INTO edit_history (admission_number, student_name, edited_by, changes)
+      VALUES (?, ?, ?, ?)
+    `).run(admission_number, old.student_name, edited_by || 'admin', JSON.stringify(changes));
+
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get edit history for one student ─────────────────────────
+ipcMain.handle('editHistory:getByStudent', (_evt, admissionNumber) => {
+  try {
+    const rows = db.prepare(`
+      SELECT edited_by, edited_at, changes
+      FROM edit_history
+      WHERE admission_number = ?
+      AND   admission_number != 'SYSTEM'
+      ORDER BY edited_at DESC
+    `).all(admissionNumber);
+    return {
+      success: true,
+      data: rows.map(r => ({ ...r, changes: JSON.parse(r.changes || '[]') }))
+    };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get all edit history (all students) ───────────────────────
+ipcMain.handle('editHistory:getAll', () => {
+  try {
+    const rows = db.prepare(`
+      SELECT admission_number, student_name, edited_by, edited_at, changes
+      FROM edit_history
+      WHERE admission_number != 'SYSTEM'
+      ORDER BY edited_at DESC
+      LIMIT 200
+    `).all();
+    return {
+      success: true,
+      data: rows.map(r => ({ ...r, changes: JSON.parse(r.changes || '[]') }))
+    };
   } catch (err) {
     return { success: false, message: err.message };
   }

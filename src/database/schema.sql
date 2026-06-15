@@ -245,6 +245,101 @@ CREATE INDEX IF NOT EXISTS idx_att_class_date
 CREATE INDEX IF NOT EXISTS idx_att_student
     ON attendance_daily (admission_number, academic_year);
 
+
+-- ------------------------------------------------------------
+-- 10. TEMP ADMISSIONS
+-- Students waiting for approval — no admission number yet
+-- On approval: copied to enrollment with real BPS number
+-- On rejection: moved to rejected_admissions
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS temp_admissions (
+    temp_id                INTEGER  PRIMARY KEY AUTOINCREMENT,
+    student_name           TEXT     NOT NULL DEFAULT '',
+    gender                 TEXT     NOT NULL DEFAULT '',
+    date_of_birth          TEXT     NOT NULL DEFAULT '',
+    indian_nationality     TEXT     NOT NULL DEFAULT 'YES',
+    blood_group            TEXT     NOT NULL DEFAULT 'NOT PROVIDED',
+    mother_tongue          TEXT     NOT NULL DEFAULT 'Hindi',
+    aadhar_number          TEXT     NOT NULL DEFAULT '',
+    aadhar_doc             TEXT     NOT NULL DEFAULT '',
+    birth_cert             TEXT     NOT NULL DEFAULT 'NO',
+    birth_cert_doc         TEXT     NOT NULL DEFAULT '',
+    mother_name            TEXT     NOT NULL DEFAULT 'NOT PROVIDED',
+    mother_profession      TEXT     NOT NULL DEFAULT 'NOT PROVIDED',
+    father_name            TEXT     NOT NULL DEFAULT 'NOT PROVIDED',
+    father_profession      TEXT     NOT NULL DEFAULT 'NOT PROVIDED',
+    guardian_name          TEXT     NOT NULL DEFAULT '',
+    contact_email          TEXT     NOT NULL DEFAULT '',
+    mobile_number          TEXT     NOT NULL DEFAULT '',
+    alternate_mobile       TEXT     NOT NULL DEFAULT '',
+    house_no               TEXT     NOT NULL DEFAULT '',
+    village                TEXT     NOT NULL DEFAULT 'NOT PROVIDED',
+    post                   TEXT     NOT NULL DEFAULT '',
+    district               TEXT     NOT NULL DEFAULT 'Aligarh',
+    state_name             TEXT     NOT NULL DEFAULT 'Uttar Pradesh',
+    pin_code               TEXT     NOT NULL DEFAULT '',
+    category               TEXT     NOT NULL DEFAULT 'GENERAL',
+    caste                  TEXT     NOT NULL DEFAULT 'NOT PROVIDED',
+    religion               TEXT     NOT NULL DEFAULT 'NOT PROVIDED',
+    minority_group         TEXT     NOT NULL DEFAULT 'Not Applicable',
+    bpl_beneficiary        TEXT     NOT NULL DEFAULT 'No',
+    ews_disadvantaged      TEXT     NOT NULL DEFAULT 'No',
+    cwsn                   TEXT     NOT NULL DEFAULT 'No',
+    impairment_type        TEXT     NOT NULL DEFAULT '',
+    disability_certificate TEXT     NOT NULL DEFAULT '',
+    disability_cert_doc    TEXT     NOT NULL DEFAULT '',
+    disability_percentage  TEXT     NOT NULL DEFAULT '',
+    pen_number             TEXT     NOT NULL DEFAULT '',
+    apaar_id               TEXT     NOT NULL DEFAULT '',
+    rte_section_12c        TEXT     NOT NULL DEFAULT 'No',
+    rte_amount_claimed     TEXT     NOT NULL DEFAULT '',
+    date_of_admission      TEXT     NOT NULL DEFAULT '',
+    class_of_admission     TEXT     NOT NULL DEFAULT '',
+    section                TEXT     NOT NULL DEFAULT 'A',
+    medium_of_instruction  TEXT     NOT NULL DEFAULT 'Hindi',
+    studied_elsewhere      TEXT     NOT NULL DEFAULT 'No',
+    tc_submitted           TEXT     NOT NULL DEFAULT 'No',
+    tc_doc                 TEXT     NOT NULL DEFAULT '',
+    prev_year_status       TEXT     NOT NULL DEFAULT '',
+    prev_year_class        TEXT     NOT NULL DEFAULT '',
+    prev_enrollment_number TEXT     NOT NULL DEFAULT '',
+    prev_academic_year     TEXT     NOT NULL DEFAULT '',
+    prev_school_name       TEXT     NOT NULL DEFAULT '',
+    language_group         TEXT     NOT NULL DEFAULT '',
+    academic_stream        TEXT     NOT NULL DEFAULT '',
+    subject_group          TEXT     NOT NULL DEFAULT '',
+    academic_year          TEXT     NOT NULL DEFAULT '',
+    submitted_by           TEXT     NOT NULL DEFAULT '',
+    submitted_at           DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+-- ------------------------------------------------------------
+-- 11. REJECTED ADMISSIONS
+-- Students whose admission was rejected by principal
+-- Never appear in pending list — only in rejected tab
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS rejected_admissions (
+    reject_id              INTEGER  PRIMARY KEY AUTOINCREMENT,
+    student_name           TEXT     NOT NULL DEFAULT '',
+    gender                 TEXT     NOT NULL DEFAULT '',
+    date_of_birth          TEXT     NOT NULL DEFAULT '',
+    father_name            TEXT     NOT NULL DEFAULT '',
+    mother_name            TEXT     NOT NULL DEFAULT '',
+    mobile_number          TEXT     NOT NULL DEFAULT '',
+    class_of_admission     TEXT     NOT NULL DEFAULT '',
+    section                TEXT     NOT NULL DEFAULT '',
+    academic_year          TEXT     NOT NULL DEFAULT '',
+    village                TEXT     NOT NULL DEFAULT '',
+    aadhar_number          TEXT     NOT NULL DEFAULT '',
+    pen_number             TEXT     NOT NULL DEFAULT '',
+    date_of_admission      TEXT     NOT NULL DEFAULT '',
+    submitted_by           TEXT     NOT NULL DEFAULT '',
+    submitted_at           TEXT     NOT NULL DEFAULT '',
+    rejected_by            TEXT     NOT NULL DEFAULT '',
+    rejected_reason        TEXT     NOT NULL DEFAULT '',
+    rejected_at            DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
 -- Default admin user (password: admin123)
 INSERT OR IGNORE INTO users (username, password_hash, full_name, role)
 VALUES (
