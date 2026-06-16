@@ -356,7 +356,29 @@ function initDatabase() {
   // Add submitted_at to temp_admissions if missing
   try { db.exec("ALTER TABLE temp_admissions ADD COLUMN submitted_at DATETIME NOT NULL DEFAULT (datetime('now','localtime'))"); } catch(_) {}
 
-  // Ensure all temp_admissions columns exist (safe to run repeatedly)
+  // ── Users table: create + ensure all columns exist ──────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      user_id       INTEGER  PRIMARY KEY AUTOINCREMENT,
+      username      TEXT     NOT NULL UNIQUE,
+      password_hash TEXT     NOT NULL,
+      full_name     TEXT     NOT NULL DEFAULT '',
+      role          TEXT     NOT NULL DEFAULT 'staff',
+      assigned_class TEXT    NOT NULL DEFAULT '',
+      is_active     INTEGER  NOT NULL DEFAULT 1,
+      created_at    DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+      last_login    TEXT     NOT NULL DEFAULT ''
+    )
+  `);
+  // Safe migrations for users table columns that may be missing in old DBs
+  [
+    "ALTER TABLE users ADD COLUMN assigned_class TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE users ADD COLUMN full_name TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE users ADD COLUMN last_login TEXT NOT NULL DEFAULT ''",
+  ].forEach(sql => { try { db.exec(sql); } catch(_) {} });
+
+  // ── Ensure all temp_admissions columns exist (safe to run repeatedly)
   const tempCols = [
     "ALTER TABLE temp_admissions ADD COLUMN submitted_by TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE temp_admissions ADD COLUMN submitted_at DATETIME NOT NULL DEFAULT (datetime('now','localtime'))",
@@ -366,6 +388,47 @@ function initDatabase() {
     "ALTER TABLE temp_admissions ADD COLUMN pen_number TEXT NOT NULL DEFAULT ''",
   ];
   tempCols.forEach(sql => { try { db.exec(sql); } catch(_) {} });
+
+  // Academic Calendar table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS academic_calendar (
+      calendar_id   INTEGER  PRIMARY KEY AUTOINCREMENT,
+      academic_year TEXT     NOT NULL DEFAULT '',
+      date          TEXT     NOT NULL DEFAULT '',
+      day_type      TEXT     NOT NULL DEFAULT 'WORKING',
+      event_name    TEXT     NOT NULL DEFAULT '',
+      applies_to    TEXT     NOT NULL DEFAULT 'ALL',
+      created_by    TEXT     NOT NULL DEFAULT '',
+      UNIQUE (date, academic_year)
+    )
+  `);
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_cal_year_date ON academic_calendar (academic_year, date)"); } catch(_) {}
+
+  // Seed dummy login accounts — adds each user only if username doesn't already exist
+  (function seedUsers() {
+    try {
+      const bcrypt = require('bcryptjs');
+      const users = [
+        { username: 'director',    password: 'director123',  full_name: 'School Director',     role: 'super_admin', assigned_class: '' },
+        { username: 'principal',   password: 'principal123', full_name: 'School Principal',    role: 'admin',       assigned_class: '' },
+        { username: 'coordinator', password: 'coord123',     full_name: 'Section Coordinator', role: 'coordinator', assigned_class: '' },
+        { username: 'manager',     password: 'manager123',   full_name: 'Deputy Manager',      role: 'manager',     assigned_class: '' },
+        { username: 'staff',       password: 'staff123',     full_name: 'Office Executive',    role: 'staff',       assigned_class: '' },
+        { username: 'teacher',     password: 'teacher123',   full_name: 'Class Teacher',       role: 'teacher',     assigned_class: 'Class 5' },
+      ];
+      const insert = db.prepare(
+        'INSERT OR IGNORE INTO users (username, password_hash, full_name, role, assigned_class, is_active) VALUES (?,?,?,?,?,1)'
+      );
+      let added = 0;
+      users.forEach(u => {
+        try {
+          const r = insert.run(u.username, bcrypt.hashSync(u.password, 10), u.full_name, u.role, u.assigned_class);
+          if (r.changes > 0) added++;
+        } catch(e) { console.error('[seed] Failed for ' + u.username + ':', e.message); }
+      });
+      if (added > 0) console.log('[DB] Added ' + added + ' new user(s)');
+    } catch(e) { console.error('[seed] Error:', e.message); }
+  })();
 
   console.log('[DB] Initialised:', DB_PATH);
 }
@@ -424,7 +487,7 @@ ipcMain.handle('auth:login', async (_evt, { username, password }) => {
     if (!match) return { success: false, message: 'Invalid username or password.' };
 
     // Update last_login
-    db.prepare('UPDATE users SET last_login = datetime("now","localtime") WHERE user_id = ?')
+    db.prepare("UPDATE users SET last_login = datetime('now','localtime') WHERE user_id = ?")
       .run(user.user_id);
 
     return {
@@ -439,7 +502,7 @@ ipcMain.handle('auth:login', async (_evt, { username, password }) => {
     };
   } catch (err) {
     console.error('[auth:login]', err);
-    return { success: false, message: 'An error occurred. Please try again.' };
+    return { success: false, message: 'Login error: ' + err.message };
   }
 });
 
@@ -1075,11 +1138,13 @@ ipcMain.handle('admission:approve', (_evt, { temp_id, approved_by }) => {
       (() => { const now = new Date(); const y = now.getFullYear(); return now.getMonth() >= 3 ? y : y - 1; })();
 
     // Find highest real BPS counter — only from enrollment (no TEMP/PENDING)
+    // BPS format: BPS{YEAR}-{NNNN} e.g. BPS2025-0517
+    // Counter always starts at position 9 (BPS + 4-digit year + dash = 8 chars)
     const lastReal = db.prepare(`
       SELECT admission_number FROM enrollment
       WHERE admission_number LIKE 'BPS${sessionYear}-%'
       AND   admission_number NOT LIKE '%-TEMP%'
-      ORDER BY CAST(SUBSTR(admission_number, INSTR(admission_number,'-',5)+1) AS INTEGER) DESC
+      ORDER BY CAST(SUBSTR(admission_number, 9) AS INTEGER) DESC
       LIMIT 1
     `).get();
 
@@ -2163,6 +2228,162 @@ ipcMain.handle('attendance:getLockedDates', (_evt, { class: cls, section, month,
       AND   SUBSTR(date, 4, 2) = ?
       AND   SUBSTR(date, 7, 4) = ?
     `).all(cls, section, month, year);
+    return { success: true, data: rows };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+// ACADEMIC CALENDAR HANDLERS
+// ══════════════════════════════════════════════════════════════
+
+// ── Get all calendar entries for a month ─────────────────────
+ipcMain.handle('calendar:getMonth', (_evt, { academic_year, month, year }) => {
+  try {
+    const rows = db.prepare(`
+      SELECT date, day_type, event_name, applies_to, created_by
+      FROM academic_calendar
+      WHERE academic_year = ?
+      AND   SUBSTR(date, 4, 2) = ?
+      AND   SUBSTR(date, 7, 4) = ?
+      ORDER BY CAST(SUBSTR(date, 1, 2) AS INTEGER)
+    `).all(academic_year, month, year);
+    return { success: true, data: rows };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Set a single day ──────────────────────────────────────────
+ipcMain.handle('calendar:setDay', (_evt, { academic_year, date, day_type, event_name, applies_to, created_by }) => {
+  try {
+    if (day_type === 'WORKING') {
+      // Removing a holiday — just delete the entry (working is the default)
+      db.prepare('DELETE FROM academic_calendar WHERE date = ? AND academic_year = ?')
+        .run(date, academic_year);
+    } else {
+      // Delete first then insert (avoids ON CONFLICT compatibility issues)
+      db.prepare('DELETE FROM academic_calendar WHERE date = ? AND academic_year = ?')
+        .run(date, academic_year);
+      db.prepare(`
+        INSERT INTO academic_calendar (academic_year, date, day_type, event_name, applies_to, created_by)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(academic_year, date, day_type, event_name || '', applies_to || 'ALL', created_by || 'admin');
+    }
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Mark a range of dates (vacation periods) ─────────────────
+ipcMain.handle('calendar:markRange', (_evt, { academic_year, from_date, to_date, day_type, event_name, applies_to, created_by }) => {
+  try {
+    // Parse DD-MM-YYYY dates
+    const parseDate = (s) => {
+      const [d, m, y] = s.split('-').map(Number);
+      return new Date(y, m - 1, d);
+    };
+    const formatDate = (dt) =>
+      `${String(dt.getDate()).padStart(2,'0')}-${String(dt.getMonth()+1).padStart(2,'0')}-${dt.getFullYear()}`;
+
+    const start = parseDate(from_date);
+    const end   = parseDate(to_date);
+
+    if (isNaN(start) || isNaN(end) || start > end)
+      return { success: false, message: 'Invalid date range.' };
+
+    const delStmt    = db.prepare('DELETE FROM academic_calendar WHERE date = ? AND academic_year = ?');
+    const insertStmt = db.prepare(`
+      INSERT INTO academic_calendar (academic_year, date, day_type, event_name, applies_to, created_by)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const upsert = { run: (yr, dt, type, name, applies, by) => {
+      delStmt.run(dt, yr);
+      insertStmt.run(yr, dt, type, name, applies, by);
+    }};
+
+    let count = 0;
+    const markAll = db.transaction(() => {
+      const cur = new Date(start);
+      while (cur <= end) {
+        // Skip Sundays (day 0) — they are auto-handled
+        if (cur.getDay() !== 0) {
+          upsert.run(academic_year, formatDate(cur), day_type, event_name || '', applies_to || 'ALL', created_by || 'admin');
+          count++;
+        }
+        cur.setDate(cur.getDate() + 1);
+      }
+    });
+    markAll();
+
+    return { success: true, count };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Clear a range (reset to working days) ─────────────────────
+ipcMain.handle('calendar:clearRange', (_evt, { academic_year, from_date, to_date }) => {
+  try {
+    const parseDate = (s) => { const [d,m,y] = s.split('-').map(Number); return new Date(y,m-1,d); };
+    const formatDate = (dt) => `${String(dt.getDate()).padStart(2,'0')}-${String(dt.getMonth()+1).padStart(2,'0')}-${dt.getFullYear()}`;
+    const start = parseDate(from_date);
+    const end   = parseDate(to_date);
+    const del   = db.prepare('DELETE FROM academic_calendar WHERE date = ? AND academic_year = ?');
+    const delAll = db.transaction(() => {
+      const cur = new Date(start);
+      while (cur <= end) { del.run(formatDate(cur), academic_year); cur.setDate(cur.getDate()+1); }
+    });
+    delAll();
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get working days count for a month (for attendance %) ─────
+ipcMain.handle('calendar:getWorkingDays', (_evt, { academic_year, month, year }) => {
+  try {
+    // Count all days in month that are NOT Sunday AND NOT in calendar as non-working
+    const y = parseInt(year), m = parseInt(month);
+    const daysInMonth = new Date(y, m, 0).getDate();
+    let workingDays = 0;
+
+    const nonWorking = db.prepare(`
+      SELECT date FROM academic_calendar
+      WHERE academic_year = ?
+      AND SUBSTR(date, 4, 2) = ?
+      AND SUBSTR(date, 7, 4) = ?
+      AND day_type != 'WORKING'
+      AND applies_to = 'ALL'
+    `).all(academic_year, String(m).padStart(2,'0'), String(y));
+
+    const nonWorkingSet = new Set(nonWorking.map(r => r.date));
+
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dt  = new Date(y, m - 1, d);
+      const str = `${String(d).padStart(2,'0')}-${String(m).padStart(2,'0')}-${y}`;
+      if (dt.getDay() === 0) continue;          // Sunday
+      if (nonWorkingSet.has(str)) continue;     // Holiday/Vacation
+      workingDays++;
+    }
+    return { success: true, working_days: workingDays };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get full year summary (for overview) ──────────────────────
+ipcMain.handle('calendar:getYearSummary', (_evt, academic_year) => {
+  try {
+    const rows = db.prepare(`
+      SELECT day_type, COUNT(*) as count
+      FROM academic_calendar
+      WHERE academic_year = ?
+      GROUP BY day_type
+    `).all(academic_year);
     return { success: true, data: rows };
   } catch (err) {
     return { success: false, message: err.message };
