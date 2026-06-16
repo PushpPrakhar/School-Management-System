@@ -44,8 +44,16 @@ function ReviewPanel({ tempId, onClose, onApproved, onRejected }) {
   const [editForm,     setEditForm]     = useState({});
 
   useEffect(() => {
+    console.log('[ReviewPanel] Loading temp_id:', tempId);
     window.api.getAdmissionForReview(tempId).then(res => {
-      if (res.success) { setStudent(res.data); setEditForm(res.data); }
+      console.log('[ReviewPanel] Response:', res);
+      if (res.success && res.data) {
+        setStudent(res.data);
+        setEditForm(res.data);
+      }
+      setLoading(false);
+    }).catch(err => {
+      console.error('[ReviewPanel] Error:', err);
       setLoading(false);
     });
   }, [tempId]);
@@ -85,7 +93,19 @@ function ReviewPanel({ tempId, onClose, onApproved, onRejected }) {
       </div>
     </div>
   );
-  if (!student) return null;
+  if (!student) return (
+    <div className="fixed inset-0 bg-black bg-opacity-40 z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8 text-center">
+        <div className="text-5xl mb-4">⚠️</div>
+        <p className="font-bold text-gray-800 text-lg">Could not load student</p>
+        <p className="text-gray-500 text-sm mt-2">The student record could not be found in pending admissions.</p>
+        <button onClick={onClose}
+          className="mt-5 bg-blue-700 text-white px-6 py-2.5 rounded-xl text-sm font-medium">
+          Close
+        </button>
+      </div>
+    </div>
+  );
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-40 z-50 flex items-end md:items-center justify-center p-4">
@@ -421,7 +441,7 @@ export default function ApproveAdmission({ onCountChange = () => {} }) {
               </p>
             </div>
             {pending.map(s => (
-              <button key={s.temp_id} onClick={() => setReviewing(s.temp_id)}
+              <button key={s.temp_id} onClick={() => { console.log('[ApproveAdmission] Opening temp_id:', s.temp_id); setReviewing(s.temp_id); }}
                 className="w-full flex items-center gap-4 px-5 py-4 border-b border-gray-100 hover:bg-blue-50 text-left last:border-0">
                 <div className="w-9 h-9 bg-amber-100 text-amber-700 rounded-full flex items-center justify-center text-sm font-bold shrink-0">
                   {(s.student_name || 'S')[0]}
@@ -527,7 +547,7 @@ export default function ApproveAdmission({ onCountChange = () => {} }) {
       )}
 
       {/* Review panel */}
-      {reviewing && (
+      {reviewing !== null && (
         <ReviewPanel
           tempId={reviewing}
           onClose={() => setReviewing(null)}

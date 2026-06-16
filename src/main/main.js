@@ -1138,13 +1138,11 @@ ipcMain.handle('admission:approve', (_evt, { temp_id, approved_by }) => {
       (() => { const now = new Date(); const y = now.getFullYear(); return now.getMonth() >= 3 ? y : y - 1; })();
 
     // Find highest real BPS counter — only from enrollment (no TEMP/PENDING)
-    // BPS format: BPS{YEAR}-{NNNN} e.g. BPS2025-0517
-    // Counter always starts at position 9 (BPS + 4-digit year + dash = 8 chars)
     const lastReal = db.prepare(`
       SELECT admission_number FROM enrollment
       WHERE admission_number LIKE 'BPS${sessionYear}-%'
       AND   admission_number NOT LIKE '%-TEMP%'
-      ORDER BY CAST(SUBSTR(admission_number, 9) AS INTEGER) DESC
+      ORDER BY CAST(SUBSTR(admission_number, INSTR(admission_number,'-',5)+1) AS INTEGER) DESC
       LIMIT 1
     `).get();
 

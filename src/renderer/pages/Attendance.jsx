@@ -57,13 +57,29 @@ function SelectorBar({ cls, setCls, section, setSection, academicYear, setAcadem
   );
 }
 
+// Day type config for attendance display
+const DAY_STATUS = {
+  SUNDAY:   { icon: '📅', label: 'Sunday',     bg: 'bg-gray-100',   text: 'text-gray-600',  border: 'border-gray-200'  },
+  HOLIDAY:  { icon: '🎉', label: 'Holiday',    bg: 'bg-red-50',     text: 'text-red-700',   border: 'border-red-200'   },
+  VACATION: { icon: '🏖️', label: 'Vacation',   bg: 'bg-amber-50',   text: 'text-amber-700', border: 'border-amber-200' },
+  HALF_DAY: { icon: '⏰', label: 'Half Day',   bg: 'bg-blue-50',    text: 'text-blue-700',  border: 'border-blue-200'  },
+  WORKING:  { icon: '✅', label: 'Working Day', bg: 'bg-green-50',  text: 'text-green-700', border: 'border-green-200' },
+};
+
+// Check if a DD-MM-YYYY date is a Sunday
+const isSundayDate = (ddmmyyyy) => {
+  if (!ddmmyyyy) return false;
+  const [d, m, y] = ddmmyyyy.split('-').map(Number);
+  return new Date(y, m - 1, d).getDay() === 0;
+};
+
 // ══════════════════════════════════════════════════════════════
 // TAB 1 — Mark Attendance
 // ══════════════════════════════════════════════════════════════
 function MarkTab() {
   const { user } = useAuth();
-  const isTeacher    = user?.role === 'teacher';
-  const canUnlock    = ['admin','super_admin','coordinator','manager'].includes(user?.role);
+  const isTeacher = user?.role === 'teacher';
+  const canUnlock = ['admin','super_admin','coordinator','manager'].includes(user?.role);
 
   const [cls,          setCls]          = useState('');
   const [section,      setSection]      = useState('A');
@@ -78,14 +94,42 @@ function MarkTab() {
   const [lockedBy,     setLockedBy]     = useState('');
   const [saved,        setSaved]        = useState(false);
   const [error,        setError]        = useState('');
+  const [dayInfo,      setDayInfo]      = useState(null); // { type, name, applies_to }
 
   const storageDate = fromInput(date);
+
+  // Check calendar whenever date or academic year changes
+  useEffect(() => {
+    if (!date) return;
+    const ddmmyyyy = fromInput(date);
+    if (!ddmmyyyy) return;
+
+    // Sunday check first (no DB call needed)
+    if (isSundayDate(ddmmyyyy)) {
+      setDayInfo({ type: 'SUNDAY', name: 'Sunday', applies_to: 'ALL' });
+      setLoaded(false);
+      return;
+    }
+
+    // Check academic calendar
+    const [d, m, y] = ddmmyyyy.split('-');
+    window.api.calendarGetMonth(academicYear, m, y).then(res => {
+      if (res.success) {
+        const entry = res.data.find(r => r.date === ddmmyyyy);
+        if (entry && entry.day_type !== 'WORKING') {
+          setDayInfo({ type: entry.day_type, name: entry.event_name, applies_to: entry.applies_to });
+          setLoaded(false);
+        } else {
+          setDayInfo(null); // Working day
+        }
+      }
+    });
+  }, [date, academicYear]);
 
   const loadStudents = async () => {
     if (!cls || !date) return;
     setLoading(true); setLoaded(false); setError('');
 
-    // Check if locked
     const lockRes = await window.api.attendanceCheckLocked(cls, section, storageDate);
     if (lockRes.success && lockRes.locked) {
       setLocked(true); setLockedBy(lockRes.locked_by);
@@ -151,6 +195,9 @@ function MarkTab() {
   const absent  = students.filter(s => attendance[s.admission_number] === 'Absent').length;
   const isEditable = !locked || canUnlock;
 
+  const isNonWorkingDay = dayInfo && dayInfo.type !== 'WORKING';
+  const dayStatus = dayInfo ? DAY_STATUS[dayInfo.type] : null;
+
   return (
     <div>
       <SelectorBar cls={cls} setCls={v => { setCls(v); setLoaded(false); }}
@@ -159,13 +206,47 @@ function MarkTab() {
         extra={
           <div>
             <label className="block text-xs font-medium text-gray-500 mb-1">Date</label>
-            <input type="date" value={date} onChange={e => { setDate(e.target.value); setLoaded(false); }}
+            <input type="date" value={date}
+              onChange={e => { setDate(e.target.value); setLoaded(false); setDayInfo(null); }}
               className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
         }
       />
 
-      {!loaded && (
+      {/* Holiday / Non-working day banner */}
+      {isNonWorkingDay && (
+        <div className={`flex items-center gap-4 ${dayStatus.bg} ${dayStatus.border} border rounded-2xl px-6 py-5 mb-4`}>
+          <div className="text-4xl">{dayStatus.icon}</div>
+          <div className="flex-1">
+            <p className={`text-lg font-bold ${dayStatus.text}`}>
+              {dayStatus.label}
+              {dayInfo.name ? ` — ${dayInfo.name}` : ''}
+            </p>
+            <p className={`text-sm mt-0.5 ${dayStatus.text} opacity-80`}>
+              {dayInfo.type === 'SUNDAY'
+                ? 'This is a Sunday — no attendance required.'
+                : dayInfo.applies_to === 'STUDENTS_ONLY'
+                  ? 'Holiday for students only — staff are working. No attendance to mark.'
+                  : 'This day is marked as a non-working day in the Academic Calendar. Attendance is not required.'}
+            </p>
+          </div>
+          {dayInfo.type !== 'SUNDAY' && (
+            <div className="text-right text-xs opacity-60">
+              <p className={dayStatus.text}>Set by Principal</p>
+              <p className={dayStatus.text}>in Academic Calendar</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Teacher class notice */}
+      {isTeacher && !isNonWorkingDay && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-2.5 mb-4 text-sm text-blue-700">
+          📌 You are marking attendance for your assigned class. Class assignment will be configured by the principal.
+        </div>
+      )}
+
+      {!loaded && !isNonWorkingDay && (
         <div className="text-center py-4">
           <button onClick={loadStudents} disabled={!cls || loading}
             className="bg-blue-700 hover:bg-blue-800 disabled:bg-blue-300 text-white font-medium px-8 py-2.5 rounded-xl text-sm">

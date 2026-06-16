@@ -14,6 +14,7 @@ import ApproveAdmission from './pages/ApproveAdmission';
 import RollNumbers from './pages/RollNumbers';
 import PromoteStudents from './pages/PromoteStudents';
 import Attendance from './pages/Attendance';
+import AcademicCalendar from './pages/AcademicCalendar';
 
 // ── Sidebar nav items (add pages here as you build each phase) ─
 const NAV_ITEMS = [
@@ -27,6 +28,7 @@ const NAV_ITEMS = [
   { key: 'feesReceipt',  label: 'Collect Fees',       icon: '💰', permission: 'feesReceipt' },
   { key: 'feesNotice',   label: 'Fees Notice',      icon: '📢', permission: 'feesNotice'  },
   { key: 'admitCard',    label: 'Admit Cards',      icon: '🪪', permission: 'admitCard'   },
+  { key: 'academicCalendar', label: 'Academic Calendar', icon: '📅', permission: 'academicCalendar' },
   { key: 'attendance',   label: 'Attendance',       icon: '📅', permission: 'attendance'  },
   { key: 'examination',  label: 'Examination',      icon: '📊', permission: 'examMarks'   },
   { key: 'tcGeneration', label: 'TC Generation',    icon: '📄', permission: 'tcGeneration'},
@@ -69,6 +71,7 @@ function AppShell() {
       case 'feesNotice':   return <ComingSoon page="Fees Notice" />;
       case 'admitCard':    return <ComingSoon page="Admit Card — Phase 4" />;
       case 'tcGeneration': return <ComingSoon page="TC Generation — Phase 4" />;
+      case 'academicCalendar':  return <AcademicCalendar />;
       case 'attendance':   return <Attendance />;
       case 'examination':  return <ComingSoon page="Examination — Phase 5" />;
       case 'backup':       return <ComingSoon page="Backup & Restore — Phase 6" />;
@@ -110,7 +113,7 @@ function AppShell() {
         {/* User info + logout */}
         <div className="p-4 border-t border-blue-700">
           <p className="text-sm font-medium truncate">{user.full_name}</p>
-          <p className="text-blue-300 text-xs capitalize">{user.role}</p>
+          <p className="text-blue-300 text-xs capitalize">{user.role.replace('_',' ')} · {user.username}</p>
           <button
             onClick={logout}
             className="mt-2 text-xs text-blue-300 hover:text-white underline"
@@ -289,6 +292,7 @@ function UserManagement() {
 // ── Root: show Login if not authenticated, AppShell if yes ───
 function AppContent() {
   const { user } = useAuth();
+  if (!user) return <Login />;
   return <AppShell />;
 }
 

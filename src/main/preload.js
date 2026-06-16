@@ -35,18 +35,18 @@ contextBridge.exposeInMainWorld('api', {
   pickDirectory:      ()                  => invoke('dialog:pickDirectory'),
   pickFile:           (filters)           => invoke('dialog:pickFile', filters),
 
-  // Approval — now uses temp_id instead of admission_number
-  getPendingAdmissions:  ()                  => invoke('admission:getPending'),
-  getAdmissionForReview: (tempId)            => invoke('admission:getForReview', tempId),
-  approveAdmission:      (tempId, by)        => invoke('admission:approve', { temp_id: tempId, approved_by: by }),
-  rejectAdmission:       (tempId, by, r)     => invoke('admission:reject',  { temp_id: tempId, rejected_by: by, reason: r }),
-  editTempAdmission:     (data)              => invoke('admission:editTemp', data),
-  getRejectedAdmissions: ()                  => invoke('admission:getRejected'),
-  getApprovalHistory:    ()                  => invoke('admission:getHistory'),
+  // Approval
+  getPendingAdmissions:  ()               => invoke('admission:getPending'),
+  getAdmissionForReview: (tempId)         => invoke('admission:getForReview', tempId),
+  approveAdmission:      (tempId, by)     => invoke('admission:approve', { temp_id: tempId, approved_by: by }),
+  rejectAdmission:       (tempId, by, r)  => invoke('admission:reject',  { temp_id: tempId, rejected_by: by, reason: r }),
+  editTempAdmission:     (data)           => invoke('admission:editTemp', data),
+  getRejectedAdmissions: ()               => invoke('admission:getRejected'),
+  getApprovalHistory:    ()               => invoke('admission:getHistory'),
 
   // Edit history
   getStudentEditHistory: (admNo)          => invoke('editHistory:getByStudent', admNo),
-  getAllEditHistory:      ()              => invoke('editHistory:getAll'),
+  getAllEditHistory:      ()               => invoke('editHistory:getAll'),
 
   // Excel
   excelPreview:       (filePath)          => invoke('excel:preview',  filePath),
@@ -73,15 +73,23 @@ contextBridge.exposeInMainWorld('api', {
   promotionHistory:   ()                  => invoke('promotion:getHistory'),
 
   // Daily Attendance
-  attendanceGetStudents:   (cls, sec, yr)                 => invoke('attendance:getStudents',     { class: cls, section: sec, academic_year: yr }),
-  attendanceGetByDate:     (cls, sec, date)               => invoke('attendance:getByDate',       { class: cls, section: sec, date }),
-  attendanceMarkDay:       (cls, sec, date, yr, recs, by) => invoke('attendance:markDay',         { class: cls, section: sec, date, academic_year: yr, records: recs, marked_by: by }),
-  attendanceGetMonthly:    (cls, sec, mon, yr, acYr)      => invoke('attendance:getMonthly',      { class: cls, section: sec, month: mon, year: yr, academic_year: acYr }),
-  attendanceGetDailyGrid:  (cls, sec, mon, yr, acYr)      => invoke('attendance:getDailyGrid',    { class: cls, section: sec, month: mon, year: yr, academic_year: acYr }),
-  attendanceGetLow:        (yr, threshold)                => invoke('attendance:getLowAttendance', { academic_year: yr, threshold }),
-  attendanceGetMarkedDates:(cls, sec, mon, yr)            => invoke('attendance:getMarkedDates',  { class: cls, section: sec, month: mon, year: yr }),
-  attendanceLockDay:       (cls, sec, date, by)           => invoke('attendance:lockDay',         { class: cls, section: sec, date, locked_by: by }),
-  attendanceUnlockDay:     (cls, sec, date)               => invoke('attendance:unlockDay',       { class: cls, section: sec, date }),
-  attendanceCheckLocked:   (cls, sec, date)               => invoke('attendance:checkLocked',     { class: cls, section: sec, date }),
-  attendanceGetLockedDates:(cls, sec, mon, yr)            => invoke('attendance:getLockedDates',  { class: cls, section: sec, month: mon, year: yr }),
+  attendanceGetStudents:    (cls, sec, yr)                 => invoke('attendance:getStudents',      { class: cls, section: sec, academic_year: yr }),
+  attendanceGetByDate:      (cls, sec, date)               => invoke('attendance:getByDate',        { class: cls, section: sec, date }),
+  attendanceMarkDay:        (cls, sec, date, yr, recs, by) => invoke('attendance:markDay',          { class: cls, section: sec, date, academic_year: yr, records: recs, marked_by: by }),
+  attendanceGetMonthly:     (cls, sec, mon, yr, acYr)      => invoke('attendance:getMonthly',       { class: cls, section: sec, month: mon, year: yr, academic_year: acYr }),
+  attendanceGetDailyGrid:   (cls, sec, mon, yr, acYr)      => invoke('attendance:getDailyGrid',     { class: cls, section: sec, month: mon, year: yr, academic_year: acYr }),
+  attendanceGetLow:         (yr, threshold)                => invoke('attendance:getLowAttendance', { academic_year: yr, threshold }),
+  attendanceGetMarkedDates: (cls, sec, mon, yr)            => invoke('attendance:getMarkedDates',   { class: cls, section: sec, month: mon, year: yr }),
+  attendanceLockDay:        (cls, sec, date, by)           => invoke('attendance:lockDay',          { class: cls, section: sec, date, locked_by: by }),
+  attendanceUnlockDay:      (cls, sec, date)               => invoke('attendance:unlockDay',        { class: cls, section: sec, date }),
+  attendanceCheckLocked:    (cls, sec, date)               => invoke('attendance:checkLocked',      { class: cls, section: sec, date }),
+  attendanceGetLockedDates: (cls, sec, mon, yr)            => invoke('attendance:getLockedDates',   { class: cls, section: sec, month: mon, year: yr }),
+
+  // Academic Calendar
+  calendarGetMonth:       (yr, mon, y)                     => invoke('calendar:getMonth',      { academic_year: yr, month: mon, year: y }),
+  calendarSetDay:         (yr, date, type, name, applies, by) => invoke('calendar:setDay',     { academic_year: yr, date, day_type: type, event_name: name, applies_to: applies, created_by: by }),
+  calendarMarkRange:      (yr, from, to, type, name, applies, by) => invoke('calendar:markRange', { academic_year: yr, from_date: from, to_date: to, day_type: type, event_name: name, applies_to: applies, created_by: by }),
+  calendarClearRange:     (yr, from, to)                   => invoke('calendar:clearRange',    { academic_year: yr, from_date: from, to_date: to }),
+  calendarGetWorkingDays: (yr, mon, y)                     => invoke('calendar:getWorkingDays',{ academic_year: yr, month: mon, year: y }),
+  calendarGetYearSummary: (yr)                             => invoke('calendar:getYearSummary', yr),
 });
