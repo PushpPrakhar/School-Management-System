@@ -206,6 +206,230 @@ function initDatabase() {
     )
   `);
 
+  // temp_admissions — students waiting for approval (no admission number yet)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS temp_admissions (
+      temp_id                INTEGER  PRIMARY KEY AUTOINCREMENT,
+      student_name           TEXT     NOT NULL DEFAULT '',
+      gender                 TEXT     NOT NULL DEFAULT '',
+      date_of_birth          TEXT     NOT NULL DEFAULT '',
+      indian_nationality     TEXT     NOT NULL DEFAULT 'YES',
+      blood_group            TEXT     NOT NULL DEFAULT 'NOT PROVIDED',
+      mother_tongue          TEXT     NOT NULL DEFAULT 'Hindi',
+      aadhar_number          TEXT     NOT NULL DEFAULT '',
+      aadhar_doc             TEXT     NOT NULL DEFAULT '',
+      birth_cert             TEXT     NOT NULL DEFAULT 'NO',
+      birth_cert_doc         TEXT     NOT NULL DEFAULT '',
+      mother_name            TEXT     NOT NULL DEFAULT 'NOT PROVIDED',
+      mother_profession      TEXT     NOT NULL DEFAULT 'NOT PROVIDED',
+      father_name            TEXT     NOT NULL DEFAULT 'NOT PROVIDED',
+      father_profession      TEXT     NOT NULL DEFAULT 'NOT PROVIDED',
+      guardian_name          TEXT     NOT NULL DEFAULT '',
+      contact_email          TEXT     NOT NULL DEFAULT '',
+      mobile_number          TEXT     NOT NULL DEFAULT '',
+      alternate_mobile       TEXT     NOT NULL DEFAULT '',
+      house_no               TEXT     NOT NULL DEFAULT '',
+      village                TEXT     NOT NULL DEFAULT 'NOT PROVIDED',
+      post                   TEXT     NOT NULL DEFAULT '',
+      district               TEXT     NOT NULL DEFAULT 'Aligarh',
+      state_name             TEXT     NOT NULL DEFAULT 'Uttar Pradesh',
+      pin_code               TEXT     NOT NULL DEFAULT '',
+      category               TEXT     NOT NULL DEFAULT 'GENERAL',
+      caste                  TEXT     NOT NULL DEFAULT 'NOT PROVIDED',
+      religion               TEXT     NOT NULL DEFAULT 'NOT PROVIDED',
+      minority_group         TEXT     NOT NULL DEFAULT 'Not Applicable',
+      bpl_beneficiary        TEXT     NOT NULL DEFAULT 'No',
+      ews_disadvantaged      TEXT     NOT NULL DEFAULT 'No',
+      cwsn                   TEXT     NOT NULL DEFAULT 'No',
+      impairment_type        TEXT     NOT NULL DEFAULT '',
+      disability_certificate TEXT     NOT NULL DEFAULT '',
+      disability_cert_doc    TEXT     NOT NULL DEFAULT '',
+      disability_percentage  TEXT     NOT NULL DEFAULT '',
+      pen_number             TEXT     NOT NULL DEFAULT '',
+      apaar_id               TEXT     NOT NULL DEFAULT '',
+      rte_section_12c        TEXT     NOT NULL DEFAULT 'No',
+      rte_amount_claimed     TEXT     NOT NULL DEFAULT '',
+      date_of_admission      TEXT     NOT NULL DEFAULT '',
+      class_of_admission     TEXT     NOT NULL DEFAULT '',
+      section                TEXT     NOT NULL DEFAULT 'A',
+      medium_of_instruction  TEXT     NOT NULL DEFAULT 'Hindi',
+      studied_elsewhere      TEXT     NOT NULL DEFAULT 'No',
+      tc_submitted           TEXT     NOT NULL DEFAULT 'No',
+      tc_doc                 TEXT     NOT NULL DEFAULT '',
+      prev_year_status       TEXT     NOT NULL DEFAULT '',
+      prev_year_class        TEXT     NOT NULL DEFAULT '',
+      prev_enrollment_number TEXT     NOT NULL DEFAULT '',
+      prev_academic_year     TEXT     NOT NULL DEFAULT '',
+      prev_school_name       TEXT     NOT NULL DEFAULT '',
+      language_group         TEXT     NOT NULL DEFAULT '',
+      academic_stream        TEXT     NOT NULL DEFAULT '',
+      subject_group          TEXT     NOT NULL DEFAULT '',
+      academic_year          TEXT     NOT NULL DEFAULT '',
+      submitted_by           TEXT     NOT NULL DEFAULT '',
+      submitted_at           DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
+    )
+  `);
+
+  // rejected_admissions — rejected students (separate from enrollment)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS rejected_admissions (
+      reject_id              INTEGER  PRIMARY KEY AUTOINCREMENT,
+      student_name           TEXT     NOT NULL DEFAULT '',
+      gender                 TEXT     NOT NULL DEFAULT '',
+      date_of_birth          TEXT     NOT NULL DEFAULT '',
+      father_name            TEXT     NOT NULL DEFAULT '',
+      mother_name            TEXT     NOT NULL DEFAULT '',
+      mobile_number          TEXT     NOT NULL DEFAULT '',
+      class_of_admission     TEXT     NOT NULL DEFAULT '',
+      section                TEXT     NOT NULL DEFAULT '',
+      academic_year          TEXT     NOT NULL DEFAULT '',
+      village                TEXT     NOT NULL DEFAULT '',
+      aadhar_number          TEXT     NOT NULL DEFAULT '',
+      pen_number             TEXT     NOT NULL DEFAULT '',
+      date_of_admission      TEXT     NOT NULL DEFAULT '',
+      submitted_by           TEXT     NOT NULL DEFAULT '',
+      submitted_at           TEXT     NOT NULL DEFAULT '',
+      rejected_by            TEXT     NOT NULL DEFAULT '',
+      rejected_reason        TEXT     NOT NULL DEFAULT '',
+      rejected_at            DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
+    )
+  `);
+
+  // Migration: move existing PENDING students from enrollment to temp_admissions
+  (function migratePendingToTemp() {
+    try {
+      const pending = db.prepare(
+        "SELECT * FROM enrollment WHERE student_status = 'PENDING'"
+      ).all();
+      if (pending.length === 0) return;
+
+      const insertTemp = db.prepare(`
+        INSERT OR IGNORE INTO temp_admissions (
+          student_name, gender, date_of_birth, indian_nationality,
+          blood_group, mother_tongue, aadhar_number, aadhar_doc,
+          birth_cert, birth_cert_doc, mother_name, mother_profession,
+          father_name, father_profession, guardian_name, contact_email,
+          mobile_number, alternate_mobile, house_no, village, post,
+          district, state_name, pin_code, category, caste, religion,
+          minority_group, bpl_beneficiary, ews_disadvantaged,
+          cwsn, impairment_type, disability_certificate, disability_cert_doc,
+          disability_percentage, pen_number, apaar_id, rte_section_12c,
+          rte_amount_claimed, date_of_admission, class_of_admission, section,
+          medium_of_instruction, studied_elsewhere, tc_submitted, tc_doc,
+          prev_year_status, prev_year_class, prev_enrollment_number,
+          prev_academic_year, prev_school_name, language_group,
+          academic_stream, subject_group, academic_year, submitted_by
+        ) VALUES (
+          @student_name, @gender, @date_of_birth, @indian_nationality,
+          @blood_group, @mother_tongue, @aadhar_number, @aadhar_doc,
+          @birth_cert, @birth_cert_doc, @mother_name, @mother_profession,
+          @father_name, @father_profession, @guardian_name, @contact_email,
+          @mobile_number, @alternate_mobile, @house_no, @village, @post,
+          @district, @state_name, @pin_code, @category, @caste, @religion,
+          @minority_group, @bpl_beneficiary, @ews_disadvantaged,
+          @cwsn, @impairment_type, @disability_certificate, @disability_cert_doc,
+          @disability_percentage, @pen_number, @apaar_id, @rte_section_12c,
+          @rte_amount_claimed, @date_of_admission, @class_of_admission, @section,
+          @medium_of_instruction, @studied_elsewhere, @tc_submitted, @tc_doc,
+          @prev_year_status, @prev_year_class, @prev_enrollment_number,
+          @prev_academic_year, @prev_school_name, @language_group,
+          @academic_stream, @subject_group, @academic_year, @submitted_by
+        )
+      `);
+
+      const migrate = db.transaction(() => {
+        pending.forEach(s => {
+          insertTemp.run({ ...s, submitted_by: s.submitted_by || '' });
+          db.prepare("DELETE FROM enrollment WHERE admission_number = ?")
+            .run(s.admission_number);
+        });
+      });
+      migrate();
+      console.log('[DB] Migrated ' + pending.length + ' PENDING student(s) to temp_admissions');
+    } catch(e) {
+      console.error('[DB] Migration error:', e.message);
+    }
+  })();
+
+  // Add submitted_by to temp_admissions if missing (migration for existing tables)
+  try { db.exec("ALTER TABLE temp_admissions ADD COLUMN submitted_by TEXT NOT NULL DEFAULT ''"); } catch(_) {}
+  // Add submitted_at to temp_admissions if missing
+  try { db.exec("ALTER TABLE temp_admissions ADD COLUMN submitted_at DATETIME NOT NULL DEFAULT (datetime('now','localtime'))"); } catch(_) {}
+
+  // ── Users table: create + ensure all columns exist ──────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      user_id       INTEGER  PRIMARY KEY AUTOINCREMENT,
+      username      TEXT     NOT NULL UNIQUE,
+      password_hash TEXT     NOT NULL,
+      full_name     TEXT     NOT NULL DEFAULT '',
+      role          TEXT     NOT NULL DEFAULT 'staff',
+      assigned_class TEXT    NOT NULL DEFAULT '',
+      is_active     INTEGER  NOT NULL DEFAULT 1,
+      created_at    DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+      last_login    TEXT     NOT NULL DEFAULT ''
+    )
+  `);
+  // Safe migrations for users table columns that may be missing in old DBs
+  [
+    "ALTER TABLE users ADD COLUMN assigned_class TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE users ADD COLUMN full_name TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE users ADD COLUMN last_login TEXT NOT NULL DEFAULT ''",
+  ].forEach(sql => { try { db.exec(sql); } catch(_) {} });
+
+  // ── Ensure all temp_admissions columns exist (safe to run repeatedly)
+  const tempCols = [
+    "ALTER TABLE temp_admissions ADD COLUMN submitted_by TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE temp_admissions ADD COLUMN submitted_at DATETIME NOT NULL DEFAULT (datetime('now','localtime'))",
+    "ALTER TABLE temp_admissions ADD COLUMN religion TEXT NOT NULL DEFAULT 'NOT PROVIDED'",
+    "ALTER TABLE temp_admissions ADD COLUMN caste TEXT NOT NULL DEFAULT 'NOT PROVIDED'",
+    "ALTER TABLE temp_admissions ADD COLUMN apaar_id TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE temp_admissions ADD COLUMN pen_number TEXT NOT NULL DEFAULT ''",
+  ];
+  tempCols.forEach(sql => { try { db.exec(sql); } catch(_) {} });
+
+  // Academic Calendar table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS academic_calendar (
+      calendar_id   INTEGER  PRIMARY KEY AUTOINCREMENT,
+      academic_year TEXT     NOT NULL DEFAULT '',
+      date          TEXT     NOT NULL DEFAULT '',
+      day_type      TEXT     NOT NULL DEFAULT 'WORKING',
+      event_name    TEXT     NOT NULL DEFAULT '',
+      applies_to    TEXT     NOT NULL DEFAULT 'ALL',
+      created_by    TEXT     NOT NULL DEFAULT '',
+      UNIQUE (date, academic_year)
+    )
+  `);
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_cal_year_date ON academic_calendar (academic_year, date)"); } catch(_) {}
+
+  // Seed dummy login accounts — adds each user only if username doesn't already exist
+  (function seedUsers() {
+    try {
+      const bcrypt = require('bcryptjs');
+      const users = [
+        { username: 'director',    password: 'director123',  full_name: 'School Director',     role: 'super_admin', assigned_class: '' },
+        { username: 'principal',   password: 'principal123', full_name: 'School Principal',    role: 'admin',       assigned_class: '' },
+        { username: 'coordinator', password: 'coord123',     full_name: 'Section Coordinator', role: 'coordinator', assigned_class: '' },
+        { username: 'manager',     password: 'manager123',   full_name: 'Deputy Manager',      role: 'manager',     assigned_class: '' },
+        { username: 'staff',       password: 'staff123',     full_name: 'Office Executive',    role: 'staff',       assigned_class: '' },
+        { username: 'teacher',     password: 'teacher123',   full_name: 'Class Teacher',       role: 'teacher',     assigned_class: 'Class 5' },
+      ];
+      const insert = db.prepare(
+        'INSERT OR IGNORE INTO users (username, password_hash, full_name, role, assigned_class, is_active) VALUES (?,?,?,?,?,1)'
+      );
+      let added = 0;
+      users.forEach(u => {
+        try {
+          const r = insert.run(u.username, bcrypt.hashSync(u.password, 10), u.full_name, u.role, u.assigned_class);
+          if (r.changes > 0) added++;
+        } catch(e) { console.error('[seed] Failed for ' + u.username + ':', e.message); }
+      });
+      if (added > 0) console.log('[DB] Added ' + added + ' new user(s)');
+    } catch(e) { console.error('[seed] Error:', e.message); }
+  })();
+
   console.log('[DB] Initialised:', DB_PATH);
 }
 
@@ -263,7 +487,7 @@ ipcMain.handle('auth:login', async (_evt, { username, password }) => {
     if (!match) return { success: false, message: 'Invalid username or password.' };
 
     // Update last_login
-    db.prepare('UPDATE users SET last_login = datetime("now","localtime") WHERE user_id = ?')
+    db.prepare("UPDATE users SET last_login = datetime('now','localtime') WHERE user_id = ?")
       .run(user.user_id);
 
     return {
@@ -278,7 +502,7 @@ ipcMain.handle('auth:login', async (_evt, { username, password }) => {
     };
   } catch (err) {
     console.error('[auth:login]', err);
-    return { success: false, message: 'An error occurred. Please try again.' };
+    return { success: false, message: 'Login error: ' + err.message };
   }
 });
 
@@ -400,208 +624,116 @@ function applyDefaults(data) {
     language_group:         data.language_group                || '',
     academic_stream:        data.academic_stream               || '',
     subject_group:          data.subject_group                 || '',
+    // Submission tracking
+    submitted_by:           data.submitted_by                  || '',
   };
 }
 
-ipcMain.handle('enrollment:add', (_evt, rawData) => {
+ipcMain.handle('enrollment:add', (_evt, raw) => {
   try {
-    const data = applyDefaults(rawData);
+    const s = raw || {};
 
-    // ── Generate TEMPORARY admission number ─────────────────────
-    // Real permanent BPS number is only assigned when Principal approves
-    // Session year comes from the FORM's academic_year field (e.g. "2025-26" → 2025)
-    // This allows adding previous year students with correct BPS year prefix
-    const academicYear = data.academic_year || rawData.academic_year || '';
-    const sessionYear  = academicYear
-      ? parseInt(academicYear.split('-')[0])
-      : (() => { const now = new Date(); const y = now.getFullYear(); return now.getMonth() >= 3 ? y : y - 1; })();
+    // Build explicit object with named params — no applyDefaults dependency
+    // submitted_by excluded — has DEFAULT '' in table, avoids any column issues
+    const row = {
+      student_name:           (s.student_name          || '').trim() || 'NOT PROVIDED',
+      gender:                 (s.gender                || '').trim() || 'NOT PROVIDED',
+      date_of_birth:          (s.date_of_birth         || '').trim() || '00-00-0000',
+      indian_nationality:     (s.indian_nationality    || '').trim() || 'YES',
+      blood_group:            (s.blood_group           || '').trim() || 'NOT PROVIDED',
+      mother_tongue:          (s.mother_tongue         || '').trim() || 'Hindi',
+      aadhar_number:          (s.aadhar_number         || '').replace(/\s/g,'') || '999999999999',
+      aadhar_doc:              s.aadhar_doc            || '',
+      birth_cert:              s.birth_cert            || 'No',
+      birth_cert_doc:          s.birth_cert_doc        || '',
+      mother_name:            (s.mother_name           || '').trim() || 'NOT PROVIDED',
+      mother_profession:       s.mother_profession     || 'Housewife',
+      father_name:            (s.father_name           || '').trim() || 'NOT PROVIDED',
+      father_profession:       s.father_profession     || 'Mazdoori',
+      guardian_name:           s.guardian_name         || '',
+      contact_email:           s.contact_email         || '',
+      mobile_number:           s.mobile_number         || '',
+      alternate_mobile:        s.alternate_mobile      || '',
+      house_no:               (s.house_no              || '').trim() || '',
+      village:                (s.village               || '').trim() || 'NOT PROVIDED',
+      post:                   (s.post                  || '').trim() || '',
+      district:               (s.district              || '').trim() || 'Aligarh',
+      state_name:             (s.state_name            || '').trim() || 'Uttar Pradesh',
+      pin_code:               (s.pin_code              || '').trim() || '',
+      category:               (s.category              || '').trim() || 'GENERAL',
+      minority_group:          s.minority_group        || 'Not Applicable',
+      bpl_beneficiary:         s.bpl_beneficiary       || 'No',
+      ews_disadvantaged:       s.ews_disadvantaged     || 'No',
+      cwsn:                    s.cwsn                  || 'No',
+      impairment_type:         s.impairment_type       || '',
+      disability_certificate:  s.disability_certificate || 'No',
+      disability_cert_doc:     s.disability_cert_doc  || '',
+      disability_percentage:   s.disability_percentage || '',
+      pen_number:             (s.pen_number            || '').trim() || '',
+      apaar_id:                s.apaar_id              || '',
+      rte_section_12c:         s.rte_section_12c       || 'No',
+      rte_amount_claimed:      s.rte_amount_claimed    || '',
+      date_of_admission:      (s.date_of_admission     || '').trim() || '00-00-0000',
+      class_of_admission:     (s.class_of_admission    || '').trim() || 'NOT PROVIDED',
+      religion:               (s.religion              || '').trim() || 'NOT PROVIDED',
+      caste:                  (s.caste                 || '').trim() || 'NOT PROVIDED',
+      section:                 s.section               || 'A',
+      medium_of_instruction:   s.medium_of_instruction || 'Hindi',
+      studied_elsewhere:       s.studied_elsewhere     || 'No',
+      tc_submitted:            s.tc_submitted          || 'No',
+      tc_doc:                  s.tc_doc                || '',
+      prev_year_status:        s.prev_year_status      || '',
+      prev_year_class:         s.prev_year_class       || '',
+      prev_enrollment_number:  s.prev_enrollment_number || '',
+      prev_academic_year:      s.prev_academic_year    || '',
+      prev_school_name:        s.prev_school_name      || '',
+      language_group:          s.language_group        || '',
+      academic_stream:         s.academic_stream       || '',
+      subject_group:           s.subject_group         || '',
+      academic_year:          (s.academic_year         || '').trim() || '2025-26',
+    };
 
-    const admissionNumber = `BPS${sessionYear}-TEMP${Date.now()}`;
-
-    db.prepare(`
-      INSERT INTO enrollment (
-        admission_number, student_status, academic_year,
+    const result = db.prepare(`
+      INSERT INTO temp_admissions (
         student_name, gender, date_of_birth, indian_nationality,
         blood_group, mother_tongue, aadhar_number, aadhar_doc,
         birth_cert, birth_cert_doc,
-        mother_name, mother_profession,
-        father_name, father_profession,
+        mother_name, mother_profession, father_name, father_profession,
         guardian_name, contact_email, mobile_number, alternate_mobile,
         house_no, village, post, district, state_name, pin_code,
         category, minority_group, bpl_beneficiary, ews_disadvantaged,
         cwsn, impairment_type, disability_certificate, disability_cert_doc, disability_percentage,
         pen_number, apaar_id, rte_section_12c, rte_amount_claimed,
-        date_of_admission, class_of_admission, current_class,
-        religion, caste,
-        section, medium_of_instruction,
+        date_of_admission, class_of_admission,
+        religion, caste, section, medium_of_instruction,
         studied_elsewhere, tc_submitted, tc_doc,
         prev_year_status, prev_year_class,
         prev_enrollment_number, prev_academic_year, prev_school_name,
-        language_group, academic_stream, subject_group
+        language_group, academic_stream, subject_group, academic_year
       ) VALUES (
-        @admission_number, @student_status, @academic_year,
         @student_name, @gender, @date_of_birth, @indian_nationality,
         @blood_group, @mother_tongue, @aadhar_number, @aadhar_doc,
         @birth_cert, @birth_cert_doc,
-        @mother_name, @mother_profession,
-        @father_name, @father_profession,
+        @mother_name, @mother_profession, @father_name, @father_profession,
         @guardian_name, @contact_email, @mobile_number, @alternate_mobile,
         @house_no, @village, @post, @district, @state_name, @pin_code,
         @category, @minority_group, @bpl_beneficiary, @ews_disadvantaged,
         @cwsn, @impairment_type, @disability_certificate, @disability_cert_doc, @disability_percentage,
         @pen_number, @apaar_id, @rte_section_12c, @rte_amount_claimed,
-        @date_of_admission, @class_of_admission, @current_class,
-        @religion, @caste,
-        @section, @medium_of_instruction,
+        @date_of_admission, @class_of_admission,
+        @religion, @caste, @section, @medium_of_instruction,
         @studied_elsewhere, @tc_submitted, @tc_doc,
         @prev_year_status, @prev_year_class,
         @prev_enrollment_number, @prev_academic_year, @prev_school_name,
-        @language_group, @academic_stream, @subject_group
+        @language_group, @academic_stream, @subject_group, @academic_year
       )
-    `).run({ ...data, admission_number: admissionNumber });
+    `).run(row);
 
-    return { success: true, admission_number: admissionNumber };
+    return { success: true, temp_id: result.lastInsertRowid };
   } catch (err) {
     return { success: false, message: err.message };
   }
-});
-
-// ── Human-readable field labels for history log ──────────────
-const FIELD_LABELS = {
-  student_name:'Student Name', gender:'Gender', date_of_birth:'Date of Birth',
-  indian_nationality:'Indian Nationality', blood_group:'Blood Group',
-  mother_tongue:'Mother Tongue', aadhar_number:'Aadhar Number',
-  birth_cert:'Birth Certificate', mother_name:"Mother's Name",
-  mother_profession:"Mother's Profession", father_name:"Father's Name",
-  father_profession:"Father's Profession", guardian_name:"Guardian's Name",
-  contact_email:'Contact Email', mobile_number:'Mobile Number',
-  alternate_mobile:'Alternate Mobile', house_no:'House No.',
-  village:'Village', post:'Post', district:'District',
-  state_name:'State', pin_code:'Pin Code', caste:'Caste', religion:'Religion',
-  category:'Category', minority_group:'Minority Group',
-  bpl_beneficiary:'BPL Beneficiary', ews_disadvantaged:'EWS / Disadvantaged',
-  cwsn:'CWSN', impairment_type:'Type of Impairment',
-  disability_certificate:'Disability Certificate',
-  disability_percentage:'Disability Percentage',
-  pen_number:'PEN Number', apaar_id:'APAAR ID',
-  rte_section_12c:'RTE Section 12C', rte_amount_claimed:'RTE Amount Claimed',
-  date_of_admission:'Date of Admission', class_of_admission:'Class of Admission',
-  current_class:'Current Class', section:'Section',
-  medium_of_instruction:'Medium of Instruction',
-  studied_elsewhere:'Studied Elsewhere', tc_submitted:'TC Submitted',
-  prev_year_status:'Previous Year Status', prev_year_class:'Previous Year Class',
-  prev_enrollment_number:'Previous Enrollment No.',
-  prev_academic_year:'Previous Academic Year',
-  prev_school_name:'Previous School Name',
-  language_group:'Language Group', academic_stream:'Academic Stream',
-  subject_group:'Subject Group', academic_year:'Academic Year',
-  student_status:'Student Status',
-};
-
-// ── Edit existing student ─────────────────────────────────────
-ipcMain.handle('enrollment:edit', (_evt, rawData) => {
-  try {
-    const { admission_number, edited_by = 'admin' } = rawData;
-    if (!admission_number) return { success: false, message: 'admission_number is required' };
-
-    const EDITABLE = [
-      'student_name','gender','date_of_birth','indian_nationality','blood_group',
-      'mother_tongue','aadhar_number','aadhar_doc','birth_cert','birth_cert_doc',
-      'mother_name','mother_profession','father_name','father_profession',
-      'guardian_name','contact_email','mobile_number','alternate_mobile',
-      'house_no','village','post','district','state_name','pin_code',
-      'caste','religion','category','minority_group','bpl_beneficiary','ews_disadvantaged',
-      'cwsn','impairment_type','disability_certificate','disability_cert_doc','disability_percentage',
-      'pen_number','apaar_id','rte_section_12c','rte_amount_claimed',
-      'date_of_admission','class_of_admission','current_class','section','medium_of_instruction',
-      'studied_elsewhere','tc_submitted','tc_doc',
-      'prev_year_status','prev_year_class','prev_enrollment_number','prev_academic_year','prev_school_name',
-      'language_group','academic_stream','subject_group',
-      'academic_year','student_status',
-    ];
-
-    // Fetch current record to compare
-    const current = db.prepare('SELECT * FROM enrollment WHERE admission_number = ?').get(admission_number);
-    if (!current) return { success: false, message: 'Student not found' };
-
-    const data   = applyDefaults(rawData);
-    const params = { admission_number };
-    EDITABLE.forEach(k => { params[k] = rawData[k] !== undefined ? rawData[k] : (data[k] ?? ''); });
-
-    // Detect what actually changed
-    const changes = EDITABLE
-      .filter(k => String(current[k] ?? '') !== String(params[k] ?? ''))
-      .map(k => ({
-        field: FIELD_LABELS[k] || k,
-        old:   String(current[k] ?? ''),
-        new:   String(params[k]  ?? ''),
-      }));
-
-    // Perform update
-    const fields = EDITABLE.map(k => `${k} = @${k}`).join(', ');
-    db.prepare(
-      `UPDATE enrollment SET ${fields}, updated_at = datetime('now','localtime')
-       WHERE admission_number = @admission_number`
-    ).run(params);
-
-    // Log changes only if something actually changed
-    if (changes.length > 0) {
-      db.prepare(`
-        INSERT INTO edit_history (admission_number, student_name, edited_by, changes)
-        VALUES (?, ?, ?, ?)
-      `).run(
-        admission_number,
-        params.student_name || current.student_name || '',
-        edited_by,
-        JSON.stringify(changes)
-      );
-    }
-
-    return { success: true, changes_count: changes.length };
-  } catch (err) {
-    return { success: false, message: err.message };
-  }
-});
-
-// ── Get edit history for a student ───────────────────────────
-ipcMain.handle('editHistory:getByStudent', (_evt, admission_number) => {
-  try {
-    const rows = db.prepare(`
-      SELECT history_id, admission_number, student_name,
-             edited_by, edited_at, changes
-      FROM edit_history
-      WHERE admission_number = ?
-      ORDER BY edited_at DESC
-    `).all(admission_number);
-
-    return {
-      success: true,
-      data: rows.map(r => ({ ...r, changes: JSON.parse(r.changes || '[]') }))
-    };
-  } catch (err) {
-    return { success: false, message: err.message };
-  }
-});
-
-// ── Get full edit history (all students) ─────────────────────
-ipcMain.handle('editHistory:getAll', () => {
-  try {
-    const rows = db.prepare(`
-      SELECT h.history_id, h.admission_number, h.student_name,
-             h.edited_by, h.edited_at, h.changes
-      FROM edit_history h
-      ORDER BY h.edited_at DESC
-      LIMIT 200
-    `).all();
-
-    return {
-      success: true,
-      data: rows.map(r => ({ ...r, changes: JSON.parse(r.changes || '[]') }))
-    };
-  } catch (err) {
-    return { success: false, message: err.message };
-  }
-});
+})
 
 ipcMain.handle('enrollment:getByClass', (_evt, { class: cls }) => {
   // Use LOWER() on both sides so 'Nursery', 'NURSERY', 'nursery' all match
@@ -634,6 +766,115 @@ ipcMain.handle('enrollment:update', (_evt, { admission_number, ...data }) => {
       `UPDATE enrollment SET ${fields}, updated_at = datetime('now','localtime') WHERE admission_number = @admission_number`
     ).run({ ...data, admission_number });
     return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Edit student & record history ────────────────────────────
+ipcMain.handle('enrollment:edit', (_evt, data) => {
+  try {
+    const {
+      admission_number, edited_by,
+      student_name, gender, date_of_birth, indian_nationality,
+      blood_group, mother_tongue, aadhar_number, birth_cert,
+      mother_name, mother_profession, father_name, father_profession,
+      guardian_name, contact_email, mobile_number, alternate_mobile,
+      house_no, village, post, district, state_name, pin_code,
+      category, caste, religion, minority_group, bpl_beneficiary,
+      ews_disadvantaged, cwsn, impairment_type, disability_certificate,
+      disability_percentage, pen_number, apaar_id,
+      date_of_admission, class_of_admission, current_class, section,
+      medium_of_instruction, academic_year, studied_elsewhere,
+      tc_submitted, prev_year_status, prev_year_class,
+      prev_enrollment_number, prev_academic_year, prev_school_name,
+      language_group, academic_stream, subject_group,
+      rte_section_12c, rte_amount_claimed,
+    } = data;
+
+    // Get current record to compute diff
+    const old = db.prepare('SELECT * FROM enrollment WHERE admission_number = ?').get(admission_number);
+    if (!old) return { success: false, message: 'Student not found.' };
+
+    const newData = {
+      student_name, gender, date_of_birth, indian_nationality,
+      blood_group, mother_tongue, aadhar_number, birth_cert,
+      mother_name, mother_profession, father_name, father_profession,
+      guardian_name, contact_email, mobile_number, alternate_mobile,
+      house_no, village, post, district, state_name, pin_code,
+      category, caste, religion, minority_group, bpl_beneficiary,
+      ews_disadvantaged, cwsn, impairment_type, disability_certificate,
+      disability_percentage, pen_number, apaar_id,
+      date_of_admission, class_of_admission, current_class, section,
+      medium_of_instruction, academic_year, studied_elsewhere,
+      tc_submitted, prev_year_status, prev_year_class,
+      prev_enrollment_number, prev_academic_year, prev_school_name,
+      language_group, academic_stream, subject_group,
+      rte_section_12c, rte_amount_claimed,
+    };
+
+    // Compute changes
+    const changes = Object.entries(newData)
+      .filter(([k, v]) => v !== undefined && String(v) !== String(old[k] ?? ''))
+      .map(([k, v]) => ({ field: k, old: String(old[k] ?? ''), new: String(v) }));
+
+    if (changes.length === 0) return { success: true, message: 'No changes detected.' };
+
+    // Build dynamic UPDATE
+    const fields = Object.keys(newData)
+      .filter(k => newData[k] !== undefined)
+      .map(k => `${k} = @${k}`)
+      .join(', ');
+
+    db.prepare(
+      `UPDATE enrollment SET ${fields}, updated_at = datetime('now','localtime') WHERE admission_number = @admission_number`
+    ).run({ ...newData, admission_number });
+
+    // Log to edit_history
+    db.prepare(`
+      INSERT INTO edit_history (admission_number, student_name, edited_by, changes)
+      VALUES (?, ?, ?, ?)
+    `).run(admission_number, old.student_name, edited_by || 'admin', JSON.stringify(changes));
+
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get edit history for one student ─────────────────────────
+ipcMain.handle('editHistory:getByStudent', (_evt, admissionNumber) => {
+  try {
+    const rows = db.prepare(`
+      SELECT edited_by, edited_at, changes
+      FROM edit_history
+      WHERE admission_number = ?
+      AND   admission_number != 'SYSTEM'
+      ORDER BY edited_at DESC
+    `).all(admissionNumber);
+    return {
+      success: true,
+      data: rows.map(r => ({ ...r, changes: JSON.parse(r.changes || '[]') }))
+    };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get all edit history (all students) ───────────────────────
+ipcMain.handle('editHistory:getAll', () => {
+  try {
+    const rows = db.prepare(`
+      SELECT admission_number, student_name, edited_by, edited_at, changes
+      FROM edit_history
+      WHERE admission_number != 'SYSTEM'
+      ORDER BY edited_at DESC
+      LIMIT 200
+    `).all();
+    return {
+      success: true,
+      data: rows.map(r => ({ ...r, changes: JSON.parse(r.changes || '[]') }))
+    };
   } catch (err) {
     return { success: false, message: err.message };
   }
@@ -837,15 +1078,15 @@ ipcMain.handle('dashboard:stats', (_evt, params) => {
 // ══════════════════════════════════════════════════════════════
 
 // ── Get all pending admissions ────────────────────────────────
+// ── Get pending admissions from temp_admissions ──────────────
 ipcMain.handle('admission:getPending', () => {
   try {
     const rows = db.prepare(`
-      SELECT admission_number, student_name, father_name, gender,
+      SELECT temp_id, student_name, father_name, gender,
              date_of_birth, class_of_admission, section, date_of_admission,
-             academic_year, submitted_by, created_at, village, mobile_number
-      FROM enrollment
-      WHERE student_status = 'PENDING'
-      ORDER BY created_at ASC
+             academic_year, submitted_by, submitted_at, village, mobile_number
+      FROM temp_admissions
+      ORDER BY submitted_at ASC
     `).all();
     return { success: true, data: rows };
   } catch (err) {
@@ -853,40 +1094,56 @@ ipcMain.handle('admission:getPending', () => {
   }
 });
 
-// ── Get full details of one student (for review panel) ────────
-ipcMain.handle('admission:getForReview', (_evt, admission_number) => {
+// ── Get full details of one pending student ───────────────────
+ipcMain.handle('admission:getForReview', (_evt, temp_id) => {
   try {
     const row = db.prepare(
-      'SELECT * FROM enrollment WHERE admission_number = ?'
-    ).get(admission_number);
-    if (!row) return { success: false, message: 'Student not found' };
+      'SELECT * FROM temp_admissions WHERE temp_id = ?'
+    ).get(temp_id);
+    if (!row) return { success: false, message: 'Student not found in pending list' };
     return { success: true, data: row };
   } catch (err) {
     return { success: false, message: err.message };
   }
 });
 
-// ── Approve admission — assign real BPS number ────────────────
-ipcMain.handle('admission:approve', (_evt, { admission_number, approved_by }) => {
+// ── Edit pending student before approving ─────────────────────
+ipcMain.handle('admission:editTemp', (_evt, data) => {
   try {
-    // Get session year from the student's academic_year field
-    const student = db.prepare(
-      'SELECT academic_year FROM enrollment WHERE admission_number = ?'
-    ).get(admission_number);
-    if (!student) return { success: false, message: 'Student not found' };
+    const { temp_id } = data;
+    db.prepare(`
+      UPDATE temp_admissions SET
+        student_name = @student_name, father_name = @father_name,
+        mother_name  = @mother_name,  mobile_number = @mobile_number,
+        date_of_birth = @date_of_birth, aadhar_number = @aadhar_number,
+        village = @village, district = @district, pin_code = @pin_code,
+        section = @section
+      WHERE temp_id = @temp_id
+    `).run(data);
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
 
-    // Session year from student's academic_year field — "2025-26" → 2025
-    // This ensures BPS2025-XXXX for 2025-26 students, BPS2026-XXXX for 2026-27 etc.
+// ── Approve admission — copy to enrollment with real BPS number ─
+ipcMain.handle('admission:approve', (_evt, { temp_id, approved_by }) => {
+  try {
+    // Get full student data from temp_admissions
+    const student = db.prepare('SELECT * FROM temp_admissions WHERE temp_id = ?').get(temp_id);
+    if (!student) return { success: false, message: 'Pending student not found' };
+
+    // Session year from student's academic_year — "2025-26" → 2025
     const sessionYear = parseInt(student.academic_year?.split('-')[0]) ||
       (() => { const now = new Date(); const y = now.getFullYear(); return now.getMonth() >= 3 ? y : y - 1; })();
 
-    // Find highest counter from all real (non-pending) admission numbers
+    // Find highest real BPS counter — only from enrollment (no TEMP/PENDING)
     const lastReal = db.prepare(`
       SELECT admission_number FROM enrollment
-      WHERE admission_number NOT LIKE '%-XXXX%'
+      WHERE admission_number LIKE 'BPS${sessionYear}-%'
       AND   admission_number NOT LIKE '%-TEMP%'
-      AND   student_status   != 'PENDING'
-      ORDER BY rowid DESC LIMIT 1
+      ORDER BY CAST(SUBSTR(admission_number, INSTR(admission_number,'-',5)+1) AS INTEGER) DESC
+      LIMIT 1
     `).get();
 
     let lastCounter = 0;
@@ -895,22 +1152,55 @@ ipcMain.handle('admission:approve', (_evt, { admission_number, approved_by }) =>
       lastCounter = parseInt(parts[parts.length - 1]) || 0;
     }
 
-    const nextCounter    = lastCounter + 1;
-    const newAdmNumber   = `BPS${sessionYear}-${String(nextCounter).padStart(4, '0')}`;
-    const approvedAt     = new Date().toLocaleString('en-IN', {
+    const newAdmNumber = "BPS" + sessionYear + "-" + String(lastCounter + 1).padStart(4, '0');
+    const approvedAt   = new Date().toLocaleString('en-IN', {
       day: '2-digit', month: '2-digit', year: 'numeric',
       hour: '2-digit', minute: '2-digit', hour12: true
     });
 
+    // Copy into enrollment with real admission number
     db.prepare(`
-      UPDATE enrollment SET
-        admission_number = @newAdmNumber,
-        student_status   = 'ACTIVE',
-        approved_by      = @approved_by,
-        approved_at      = @approvedAt,
-        updated_at       = datetime('now','localtime')
-      WHERE admission_number = @admission_number
-    `).run({ newAdmNumber, approved_by, approvedAt, admission_number });
+      INSERT INTO enrollment (
+        admission_number, student_status, academic_year,
+        student_name, gender, date_of_birth, indian_nationality,
+        blood_group, mother_tongue, aadhar_number, aadhar_doc,
+        birth_cert, birth_cert_doc,
+        mother_name, mother_profession, father_name, father_profession,
+        guardian_name, contact_email, mobile_number, alternate_mobile,
+        house_no, village, post, district, state_name, pin_code,
+        category, minority_group, bpl_beneficiary, ews_disadvantaged,
+        cwsn, impairment_type, disability_certificate, disability_cert_doc, disability_percentage,
+        pen_number, apaar_id, rte_section_12c, rte_amount_claimed,
+        date_of_admission, class_of_admission, current_class,
+        religion, caste, section, medium_of_instruction,
+        studied_elsewhere, tc_submitted, tc_doc,
+        prev_year_status, prev_year_class,
+        prev_enrollment_number, prev_academic_year, prev_school_name,
+        language_group, academic_stream, subject_group,
+        submitted_by, approved_by, approved_at
+      ) VALUES (
+        @admission_number, 'ACTIVE', @academic_year,
+        @student_name, @gender, @date_of_birth, @indian_nationality,
+        @blood_group, @mother_tongue, @aadhar_number, @aadhar_doc,
+        @birth_cert, @birth_cert_doc,
+        @mother_name, @mother_profession, @father_name, @father_profession,
+        @guardian_name, @contact_email, @mobile_number, @alternate_mobile,
+        @house_no, @village, @post, @district, @state_name, @pin_code,
+        @category, @minority_group, @bpl_beneficiary, @ews_disadvantaged,
+        @cwsn, @impairment_type, @disability_certificate, @disability_cert_doc, @disability_percentage,
+        @pen_number, @apaar_id, @rte_section_12c, @rte_amount_claimed,
+        @date_of_admission, @class_of_admission, @class_of_admission,
+        @religion, @caste, @section, @medium_of_instruction,
+        @studied_elsewhere, @tc_submitted, @tc_doc,
+        @prev_year_status, @prev_year_class,
+        @prev_enrollment_number, @prev_academic_year, @prev_school_name,
+        @language_group, @academic_stream, @subject_group,
+        @submitted_by, @approved_by, @approved_at
+      )
+    `).run({ ...student, admission_number: newAdmNumber, approved_by, approved_at: approvedAt });
+
+    // Remove from temp_admissions
+    db.prepare('DELETE FROM temp_admissions WHERE temp_id = ?').run(temp_id);
 
     return { success: true, new_admission_number: newAdmNumber };
   } catch (err) {
@@ -918,40 +1208,59 @@ ipcMain.handle('admission:approve', (_evt, { admission_number, approved_by }) =>
   }
 });
 
-// ── Reject admission ──────────────────────────────────────────
-ipcMain.handle('admission:reject', (_evt, { admission_number, rejected_by, reason }) => {
+// ── Reject admission — move to rejected_admissions ────────────
+ipcMain.handle('admission:reject', (_evt, { temp_id, rejected_by, reason }) => {
   try {
-    const rejectedAt = new Date().toLocaleString('en-IN', {
-      day: '2-digit', month: '2-digit', year: 'numeric',
-      hour: '2-digit', minute: '2-digit', hour12: true
-    });
+    const student = db.prepare('SELECT * FROM temp_admissions WHERE temp_id = ?').get(temp_id);
+    if (!student) return { success: false, message: 'Pending student not found' };
 
     db.prepare(`
-      UPDATE enrollment SET
-        student_status  = 'REJECTED',
-        approved_by     = @rejected_by,
-        approved_at     = @rejectedAt,
-        rejected_reason = @reason,
-        updated_at      = datetime('now','localtime')
-      WHERE admission_number = @admission_number
-    `).run({ rejected_by, rejectedAt, reason, admission_number });
+      INSERT INTO rejected_admissions (
+        student_name, gender, date_of_birth, father_name, mother_name,
+        mobile_number, class_of_admission, section, academic_year,
+        village, aadhar_number, pen_number, date_of_admission,
+        submitted_by, submitted_at, rejected_by, rejected_reason
+      ) VALUES (
+        @student_name, @gender, @date_of_birth, @father_name, @mother_name,
+        @mobile_number, @class_of_admission, @section, @academic_year,
+        @village, @aadhar_number, @pen_number, @date_of_admission,
+        @submitted_by, @submitted_at, @rejected_by, @rejected_reason
+      )
+    `).run({ ...student, rejected_by, rejected_reason: reason });
 
+    db.prepare('DELETE FROM temp_admissions WHERE temp_id = ?').run(temp_id);
     return { success: true };
   } catch (err) {
     return { success: false, message: err.message };
   }
 });
 
-// ── Get approval history ──────────────────────────────────────
+// ── Get rejected admissions ───────────────────────────────────
+ipcMain.handle('admission:getRejected', () => {
+  try {
+    const rows = db.prepare(`
+      SELECT reject_id, student_name, father_name, class_of_admission,
+             section, academic_year, village, submitted_by, submitted_at,
+             rejected_by, rejected_reason, rejected_at
+      FROM rejected_admissions
+      ORDER BY rejected_at DESC
+    `).all();
+    return { success: true, data: rows };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get approval history (approved students only) ─────────────
 ipcMain.handle('admission:getHistory', () => {
   try {
     const rows = db.prepare(`
       SELECT admission_number, student_name, father_name, class_of_admission,
              section, academic_year, student_status,
-             submitted_by, approved_by, approved_at, rejected_reason, created_at
+             submitted_by, approved_by, approved_at
       FROM enrollment
-      WHERE student_status IN ('ACTIVE','REJECTED')
-      AND   approved_by != ''
+      WHERE approved_by != ''
+      AND   student_status = 'ACTIVE'
       ORDER BY rowid DESC
     `).all();
     return { success: true, data: rows };
@@ -1917,6 +2226,162 @@ ipcMain.handle('attendance:getLockedDates', (_evt, { class: cls, section, month,
       AND   SUBSTR(date, 4, 2) = ?
       AND   SUBSTR(date, 7, 4) = ?
     `).all(cls, section, month, year);
+    return { success: true, data: rows };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+// ACADEMIC CALENDAR HANDLERS
+// ══════════════════════════════════════════════════════════════
+
+// ── Get all calendar entries for a month ─────────────────────
+ipcMain.handle('calendar:getMonth', (_evt, { academic_year, month, year }) => {
+  try {
+    const rows = db.prepare(`
+      SELECT date, day_type, event_name, applies_to, created_by
+      FROM academic_calendar
+      WHERE academic_year = ?
+      AND   SUBSTR(date, 4, 2) = ?
+      AND   SUBSTR(date, 7, 4) = ?
+      ORDER BY CAST(SUBSTR(date, 1, 2) AS INTEGER)
+    `).all(academic_year, month, year);
+    return { success: true, data: rows };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Set a single day ──────────────────────────────────────────
+ipcMain.handle('calendar:setDay', (_evt, { academic_year, date, day_type, event_name, applies_to, created_by }) => {
+  try {
+    if (day_type === 'WORKING') {
+      // Removing a holiday — just delete the entry (working is the default)
+      db.prepare('DELETE FROM academic_calendar WHERE date = ? AND academic_year = ?')
+        .run(date, academic_year);
+    } else {
+      // Delete first then insert (avoids ON CONFLICT compatibility issues)
+      db.prepare('DELETE FROM academic_calendar WHERE date = ? AND academic_year = ?')
+        .run(date, academic_year);
+      db.prepare(`
+        INSERT INTO academic_calendar (academic_year, date, day_type, event_name, applies_to, created_by)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(academic_year, date, day_type, event_name || '', applies_to || 'ALL', created_by || 'admin');
+    }
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Mark a range of dates (vacation periods) ─────────────────
+ipcMain.handle('calendar:markRange', (_evt, { academic_year, from_date, to_date, day_type, event_name, applies_to, created_by }) => {
+  try {
+    // Parse DD-MM-YYYY dates
+    const parseDate = (s) => {
+      const [d, m, y] = s.split('-').map(Number);
+      return new Date(y, m - 1, d);
+    };
+    const formatDate = (dt) =>
+      `${String(dt.getDate()).padStart(2,'0')}-${String(dt.getMonth()+1).padStart(2,'0')}-${dt.getFullYear()}`;
+
+    const start = parseDate(from_date);
+    const end   = parseDate(to_date);
+
+    if (isNaN(start) || isNaN(end) || start > end)
+      return { success: false, message: 'Invalid date range.' };
+
+    const delStmt    = db.prepare('DELETE FROM academic_calendar WHERE date = ? AND academic_year = ?');
+    const insertStmt = db.prepare(`
+      INSERT INTO academic_calendar (academic_year, date, day_type, event_name, applies_to, created_by)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const upsert = { run: (yr, dt, type, name, applies, by) => {
+      delStmt.run(dt, yr);
+      insertStmt.run(yr, dt, type, name, applies, by);
+    }};
+
+    let count = 0;
+    const markAll = db.transaction(() => {
+      const cur = new Date(start);
+      while (cur <= end) {
+        // Skip Sundays (day 0) — they are auto-handled
+        if (cur.getDay() !== 0) {
+          upsert.run(academic_year, formatDate(cur), day_type, event_name || '', applies_to || 'ALL', created_by || 'admin');
+          count++;
+        }
+        cur.setDate(cur.getDate() + 1);
+      }
+    });
+    markAll();
+
+    return { success: true, count };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Clear a range (reset to working days) ─────────────────────
+ipcMain.handle('calendar:clearRange', (_evt, { academic_year, from_date, to_date }) => {
+  try {
+    const parseDate = (s) => { const [d,m,y] = s.split('-').map(Number); return new Date(y,m-1,d); };
+    const formatDate = (dt) => `${String(dt.getDate()).padStart(2,'0')}-${String(dt.getMonth()+1).padStart(2,'0')}-${dt.getFullYear()}`;
+    const start = parseDate(from_date);
+    const end   = parseDate(to_date);
+    const del   = db.prepare('DELETE FROM academic_calendar WHERE date = ? AND academic_year = ?');
+    const delAll = db.transaction(() => {
+      const cur = new Date(start);
+      while (cur <= end) { del.run(formatDate(cur), academic_year); cur.setDate(cur.getDate()+1); }
+    });
+    delAll();
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get working days count for a month (for attendance %) ─────
+ipcMain.handle('calendar:getWorkingDays', (_evt, { academic_year, month, year }) => {
+  try {
+    // Count all days in month that are NOT Sunday AND NOT in calendar as non-working
+    const y = parseInt(year), m = parseInt(month);
+    const daysInMonth = new Date(y, m, 0).getDate();
+    let workingDays = 0;
+
+    const nonWorking = db.prepare(`
+      SELECT date FROM academic_calendar
+      WHERE academic_year = ?
+      AND SUBSTR(date, 4, 2) = ?
+      AND SUBSTR(date, 7, 4) = ?
+      AND day_type != 'WORKING'
+      AND applies_to = 'ALL'
+    `).all(academic_year, String(m).padStart(2,'0'), String(y));
+
+    const nonWorkingSet = new Set(nonWorking.map(r => r.date));
+
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dt  = new Date(y, m - 1, d);
+      const str = `${String(d).padStart(2,'0')}-${String(m).padStart(2,'0')}-${y}`;
+      if (dt.getDay() === 0) continue;          // Sunday
+      if (nonWorkingSet.has(str)) continue;     // Holiday/Vacation
+      workingDays++;
+    }
+    return { success: true, working_days: workingDays };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Get full year summary (for overview) ──────────────────────
+ipcMain.handle('calendar:getYearSummary', (_evt, academic_year) => {
+  try {
+    const rows = db.prepare(`
+      SELECT day_type, COUNT(*) as count
+      FROM academic_calendar
+      WHERE academic_year = ?
+      GROUP BY day_type
+    `).all(academic_year);
     return { success: true, data: rows };
   } catch (err) {
     return { success: false, message: err.message };

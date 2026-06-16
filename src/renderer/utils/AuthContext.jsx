@@ -1,54 +1,56 @@
-// AuthContext.jsx
-// Provides login state and role-based permission checks to all pages.
-
 import React, { createContext, useContext, useState, useCallback } from 'react';
 
 const AuthContext = createContext(null);
 
-// Role permissions map
+// ── Role-based permissions ────────────────────────────────────
+// Each key matches a nav item's permission field in App.jsx
 export const PERMISSIONS = {
+  super_admin: [
+    'dashboard', 'admission', 'studentList', 'editStudent',
+    'approveAdmission', 'rollNumbers', 'promoteStudents',
+    'academicCalendar', 'attendance', 'editAttendance',
+    'feesLedger', 'feesReceipt', 'feesNotice',
+    'admitCard', 'examination', 'tcGeneration',
+    'backup', 'userManagement', 'excelImport',
+  ],
   admin: [
-    'dashboard', 'admission', 'editStudent', 'deleteStudent',
-    'studentList', 'editStudent', 'approveAdmission', 'rollNumbers', 'admitCard', 'examMarks', 'feesNotice',
-    'feesReceipt', 'attendance', 'editAttendance',
-    'tcGeneration', 'backup', 'userManagement',
+    'dashboard', 'admission', 'studentList', 'editStudent',
+    'approveAdmission', 'rollNumbers', 'promoteStudents',
+    'academicCalendar', 'attendance', 'editAttendance',
+    'feesLedger', 'feesReceipt', 'feesNotice',
+    'admitCard', 'examination', 'tcGeneration',
+    'backup', 'excelImport',
+  ],
+  coordinator: [
+    'dashboard', 'studentList',
+    'rollNumbers', 'attendance', 'editAttendance',
+    'examination', 'admitCard',
+  ],
+  manager: [
+    'dashboard', 'studentList',
+    'feesLedger', 'feesReceipt', 'feesNotice',
+    'attendance',
   ],
   staff: [
-    'dashboard', 'admission', 'studentList', 'editStudent', 'approveAdmission', 'rollNumbers', 'admitCard',
-    'examMarks', 'feesNotice', 'feesReceipt', 'attendance',
+    'dashboard', 'admission', 'studentList',
+    'feesLedger', 'feesReceipt', 'feesNotice',
   ],
   teacher: [
-    'dashboard', 'studentList', 'examMarks', 'attendance',
+    'dashboard', 'studentList', 'attendance', 'examination',
   ],
-};
-
-// ── Login disabled temporarily — re-enable at end of project ──
-// To re-enable: change DEFAULT_USER to null
-const DEFAULT_USER = {
-  user_id: 1,
-  username: 'admin',
-  full_name: 'Administrator',
-  role: 'admin',
-  assigned_class: null,
 };
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(DEFAULT_USER);
+  const [user,    setUser]    = useState(null); // null = not logged in
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error,   setError]   = useState('');
 
   const login = useCallback(async (username, password) => {
-    setLoading(true);
-    setError('');
+    setLoading(true); setError('');
     try {
       const result = await window.api.login({ username, password });
-      if (result.success) {
-        setUser(result.user);
-        return true;
-      } else {
-        setError(result.message);
-        return false;
-      }
+      if (result.success) { setUser(result.user); return true; }
+      else { setError(result.message); return false; }
     } catch {
       setError('Could not connect. Please try again.');
       return false;
@@ -57,9 +59,7 @@ export function AuthProvider({ children }) {
     }
   }, []);
 
-  const logout = useCallback(() => {
-    setUser(null);
-  }, []);
+  const logout = useCallback(() => setUser(null), []);
 
   const can = useCallback((permission) => {
     if (!user) return false;
@@ -68,7 +68,8 @@ export function AuthProvider({ children }) {
 
   const canAccessClass = useCallback((className) => {
     if (!user) return false;
-    if (user.role === 'admin' || user.role === 'staff') return true;
+    if (['super_admin','admin','coordinator','manager'].includes(user.role)) return true;
+    if (user.role === 'staff') return true;
     if (user.role === 'teacher') return user.assigned_class === className;
     return false;
   }, [user]);
@@ -91,11 +92,12 @@ export function RequireAuth({ permission, children }) {
   if (!user) return null;
   if (permission && !can(permission)) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <div className="text-center">
-          <p className="text-red-600 text-lg font-medium">Access Denied</p>
-          <p className="text-gray-500 mt-1 text-sm">You do not have permission to view this page.</p>
-        </div>
+      <div className="flex flex-col items-center justify-center h-64 text-center">
+        <div className="text-5xl mb-4">🔒</div>
+        <p className="text-red-600 text-lg font-semibold">Access Denied</p>
+        <p className="text-gray-500 mt-1 text-sm">
+          You do not have permission to view this page.
+        </p>
       </div>
     );
   }
