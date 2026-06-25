@@ -35,12 +35,12 @@ contextBridge.exposeInMainWorld('api', {
   pickDirectory:      ()                  => invoke('dialog:pickDirectory'),
   pickFile:           (filters)           => invoke('dialog:pickFile', filters),
 
-  // Approval
+  // Admission approval
   getPendingAdmissions:  ()               => invoke('admission:getPending'),
   getAdmissionForReview: (tempId)         => invoke('admission:getForReview', tempId),
-  approveAdmission:      (tempId, by)     => invoke('admission:approve', { temp_id: tempId, approved_by: by }),
-  rejectAdmission:       (tempId, by, r)  => invoke('admission:reject',  { temp_id: tempId, rejected_by: by, reason: r }),
-  editTempAdmission:     (data)           => invoke('admission:editTemp', data),
+  approveAdmission:      (tempId, by)     => invoke('admission:approve',     { temp_id: tempId, approved_by: by }),
+  rejectAdmission:       (tempId, by, r)  => invoke('admission:reject',      { temp_id: tempId, rejected_by: by, reason: r }),
+  editTempAdmission:     (data)           => invoke('admission:editTemp',     data),
   getRejectedAdmissions: ()               => invoke('admission:getRejected'),
   getApprovalHistory:    ()               => invoke('admission:getHistory'),
 
@@ -48,7 +48,7 @@ contextBridge.exposeInMainWorld('api', {
   getStudentEditHistory: (admNo)          => invoke('editHistory:getByStudent', admNo),
   getAllEditHistory:      ()               => invoke('editHistory:getAll'),
 
-  // Excel
+  // Excel import
   excelPreview:       (filePath)          => invoke('excel:preview',  filePath),
   excelValidate:      (filePath)          => invoke('excel:validate', filePath),
   excelImport:        (opts)              => invoke('excel:import',   opts),
@@ -83,13 +83,26 @@ contextBridge.exposeInMainWorld('api', {
   attendanceLockDay:        (cls, sec, date, by)           => invoke('attendance:lockDay',          { class: cls, section: sec, date, locked_by: by }),
   attendanceUnlockDay:      (cls, sec, date)               => invoke('attendance:unlockDay',        { class: cls, section: sec, date }),
   attendanceCheckLocked:    (cls, sec, date)               => invoke('attendance:checkLocked',      { class: cls, section: sec, date }),
-  attendanceGetLockedDates: (cls, sec, mon, yr)            => invoke('attendance:getLockedDates',   { class: cls, section: sec, month: mon, year: yr }),
+  attendanceGetLockedDates:  (cls, sec, mon, yr)            => invoke('attendance:getLockedDates',   { class: cls, section: sec, month: mon, year: yr }),
+  attendanceSearchStudent: (query, cls, sec) => invoke('attendance:searchStudent', { query, class: cls, section: sec }),
+  attendanceGetStudentMonth: (admNo, mon, yr, acYr)         => invoke('attendance:getStudentMonth',    { admission_number: admNo, month: mon, year: yr, academic_year: acYr }),
+  attendanceSaveStudentMonth:(admNo, name, cls, sec, acYr, records, by) => invoke('attendance:saveStudentMonth', { admission_number: admNo, student_name: name, class: cls, section: sec, academic_year: acYr, records, entered_by: by }),
+  attendanceGetProgressive:  (cls, sec, yr, mon, y)         => invoke('attendance:getProgressive',    { class: cls, section: sec, academic_year: yr, up_to_month: mon, up_to_year: y }),
 
   // Academic Calendar
-  calendarGetMonth:       (yr, mon, y)                     => invoke('calendar:getMonth',      { academic_year: yr, month: mon, year: y }),
-  calendarSetDay:         (yr, date, type, name, applies, by) => invoke('calendar:setDay',     { academic_year: yr, date, day_type: type, event_name: name, applies_to: applies, created_by: by }),
-  calendarMarkRange:      (yr, from, to, type, name, applies, by) => invoke('calendar:markRange', { academic_year: yr, from_date: from, to_date: to, day_type: type, event_name: name, applies_to: applies, created_by: by }),
-  calendarClearRange:     (yr, from, to)                   => invoke('calendar:clearRange',    { academic_year: yr, from_date: from, to_date: to }),
-  calendarGetWorkingDays: (yr, mon, y)                     => invoke('calendar:getWorkingDays',{ academic_year: yr, month: mon, year: y }),
-  calendarGetYearSummary: (yr)                             => invoke('calendar:getYearSummary', yr),
+  calendarGetMonth:       (yr, mon, y)                          => invoke('calendar:getMonth',       { academic_year: yr, month: mon, year: y }),
+  calendarSetDay:         (yr, date, type, name, applies, by)   => invoke('calendar:setDay',         { academic_year: yr, date, day_type: type, event_name: name, applies_to: applies, created_by: by }),
+  calendarMarkRange:      (yr, from, to, type, name, applies, by) => invoke('calendar:markRange',    { academic_year: yr, from_date: from, to_date: to, day_type: type, event_name: name, applies_to: applies, created_by: by }),
+  calendarClearRange:     (yr, from, to)                        => invoke('calendar:clearRange',     { academic_year: yr, from_date: from, to_date: to }),
+  calendarGetWorkingDays: (yr, mon, y)                          => invoke('calendar:getWorkingDays', { academic_year: yr, month: mon, year: y }),
+  calendarGetYearSummary: (yr)                                   => invoke('calendar:getYearSummary', yr),
+
+  // Examination
+  examGetStudents:  (cls, sec, yr)                        => invoke('exam:getStudents', { class: cls, section: sec, academic_year: yr }),
+  examGetMarks:     (cls, sec, yr, type)                  => invoke('exam:getMarks',    { class: cls, section: sec, academic_year: yr, exam_type: type }),
+  examSaveMarks:    (cls, sec, yr, type, marks, by, lock) => invoke('exam:saveMarks',   { class: cls, section: sec, academic_year: yr, exam_type: type, marks, entered_by: by, auto_lock: lock }),
+  examLock:         (cls, sec, yr, type, by)              => invoke('exam:lock',        { class: cls, section: sec, academic_year: yr, exam_type: type, locked_by: by }),
+  examUnlock:       (cls, sec, yr, type)                  => invoke('exam:unlock',      { class: cls, section: sec, academic_year: yr, exam_type: type }),
+  examCheckLocked:  (cls, sec, yr, type)                  => invoke('exam:checkLocked', { class: cls, section: sec, academic_year: yr, exam_type: type }),
+  examGetStatus:    (yr, cls, sec)                        => invoke('exam:getStatus',   { academic_year: yr, class: cls, section: sec }),
 });

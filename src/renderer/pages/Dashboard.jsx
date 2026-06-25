@@ -128,8 +128,8 @@ function PendingList({ rows, onNavigate }) {
   );
   return (
     <div className="space-y-2">
-      {rows.map(r => (
-        <div key={r.admission_number}
+      {rows.map((r, i) => (
+        <div key={r.temp_id ?? r.admission_number ?? i}
           className="flex items-center justify-between bg-amber-50 border border-amber-100 rounded-lg px-4 py-2.5">
           <div>
             <p className="text-sm font-medium text-gray-800">{r.student_name}</p>

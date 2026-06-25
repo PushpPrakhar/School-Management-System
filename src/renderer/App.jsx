@@ -15,6 +15,7 @@ import RollNumbers from './pages/RollNumbers';
 import PromoteStudents from './pages/PromoteStudents';
 import Attendance from './pages/Attendance';
 import AcademicCalendar from './pages/AcademicCalendar';
+import Examination from './pages/Examination';
 
 // ── Sidebar nav items (add pages here as you build each phase) ─
 const NAV_ITEMS = [
@@ -30,7 +31,7 @@ const NAV_ITEMS = [
   { key: 'admitCard',    label: 'Admit Cards',      icon: '🪪', permission: 'admitCard'   },
   { key: 'academicCalendar', label: 'Academic Calendar', icon: '📅', permission: 'academicCalendar' },
   { key: 'attendance',   label: 'Attendance',       icon: '📅', permission: 'attendance'  },
-  { key: 'examination',  label: 'Examination',      icon: '📊', permission: 'examMarks'   },
+  { key: 'examination',  label: 'Examination',       icon: '📊', permission: 'examination' },
   { key: 'tcGeneration', label: 'TC Generation',    icon: '📄', permission: 'tcGeneration'},
   { key: 'backup',       label: 'Backup & Restore', icon: '💾', permission: 'backup'      },
   { key: 'users',        label: 'User Management',  icon: '👥', permission: 'userManagement'},
@@ -73,7 +74,7 @@ function AppShell() {
       case 'tcGeneration': return <ComingSoon page="TC Generation — Phase 4" />;
       case 'academicCalendar':  return <AcademicCalendar />;
       case 'attendance':   return <Attendance />;
-      case 'examination':  return <ComingSoon page="Examination — Phase 5" />;
+      case 'examination':  return <Examination />;
       case 'backup':       return <ComingSoon page="Backup & Restore — Phase 6" />;
       case 'users':        return <UserManagement />;
       case 'excelImport':  return <ExcelImport />;
@@ -112,8 +113,8 @@ function AppShell() {
 
         {/* User info + logout */}
         <div className="p-4 border-t border-blue-700">
-          <p className="text-sm font-medium truncate">{user.full_name}</p>
-          <p className="text-blue-300 text-xs capitalize">{user.role.replace('_',' ')} · {user.username}</p>
+          <p className="text-sm font-medium truncate">{user?.full_name}</p>
+          <p className="text-blue-300 text-xs capitalize">{user?.role?.replace('_',' ')} · {user?.username}</p>
           <button
             onClick={logout}
             className="mt-2 text-xs text-blue-300 hover:text-white underline"
