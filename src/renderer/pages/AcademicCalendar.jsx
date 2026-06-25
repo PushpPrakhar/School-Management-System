@@ -51,12 +51,12 @@ const DAY_TYPES = {
 };
 
 const VACATION_PRESETS = [
-  { label: '☀️ Summer Vacation',   name: 'SUMMER VACATION',   type: 'VACATION', applies: 'ALL'            },
-  { label: '❄️ Winter Vacation',   name: 'WINTER VACATION',   type: 'VACATION', applies: 'ALL'            },
-  { label: '🪔 Diwali Break',       name: 'DIWALI BREAK',      type: 'VACATION', applies: 'ALL'            },
-  { label: '🎉 Half-Yearly Break', name: 'HALF-YEARLY BREAK', type: 'VACATION', applies: 'STUDENTS_ONLY'  },
-  { label: '🏖️ Students Vacation', name: 'STUDENTS VACATION', type: 'VACATION', applies: 'STUDENTS_ONLY'  },
-  { label: '📅 Custom Holiday',    name: '',                  type: 'HOLIDAY',  applies: 'ALL'            },
+  { label: 'Summer Vacation',   name: 'SUMMER VACATION',   type: 'VACATION', applies: 'ALL'            },
+  { label: 'Winter Vacation',   name: 'WINTER VACATION',   type: 'VACATION', applies: 'ALL'            },
+  { label: 'Diwali Break',      name: 'DIWALI BREAK',      type: 'VACATION', applies: 'ALL'            },
+  { label: 'Holi Break',        name: 'HOLI BREAK',        type: 'VACATION', applies: 'ALL'            },
+  { label: 'Students Vacation', name: 'STUDENTS VACATION', type: 'VACATION', applies: 'STUDENTS_ONLY'  },
+  { label: 'Custom Holiday',    name: '',                  type: 'HOLIDAY',  applies: 'ALL'            },
 ];
 
 const DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];

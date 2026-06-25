@@ -430,6 +430,39 @@ function initDatabase() {
     } catch(e) { console.error('[seed] Error:', e.message); }
   })();
 
+  // Examination tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS exam_marks (
+      mark_id          INTEGER  PRIMARY KEY AUTOINCREMENT,
+      admission_number TEXT     NOT NULL,
+      student_name     TEXT     NOT NULL DEFAULT '',
+      class            TEXT     NOT NULL,
+      section          TEXT     NOT NULL,
+      academic_year    TEXT     NOT NULL,
+      exam_type        TEXT     NOT NULL,
+      subject          TEXT     NOT NULL,
+      max_marks        INTEGER  NOT NULL,
+      marks_obtained   REAL,
+      is_absent        INTEGER  NOT NULL DEFAULT 0,
+      entered_by       TEXT     NOT NULL DEFAULT '',
+      entered_at       DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+      UNIQUE(admission_number, academic_year, exam_type, subject)
+    )
+  `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS exam_locks (
+      lock_id       INTEGER  PRIMARY KEY AUTOINCREMENT,
+      class         TEXT     NOT NULL,
+      section       TEXT     NOT NULL,
+      academic_year TEXT     NOT NULL,
+      exam_type     TEXT     NOT NULL,
+      locked_by     TEXT     NOT NULL DEFAULT '',
+      locked_at     DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+      UNIQUE(class, section, academic_year, exam_type)
+    )
+  `);
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_exam_marks_class ON exam_marks (class, section, academic_year, exam_type)"); } catch(_) {}
+
   console.log('[DB] Initialised:', DB_PATH);
 }
 
@@ -759,6 +792,28 @@ ipcMain.handle('enrollment:search', (_evt, query) => {
   return { success: true, data: rows };
 });
 
+// ── Attendance-specific student search (ACTIVE only, class-filtered) ──
+ipcMain.handle('attendance:searchStudent', (_evt, { query, class: cls, section }) => {
+  try {
+    const q      = '%' + (query || '') + '%';
+    let   sql    = "SELECT admission_number, student_name, father_name, gender, current_class, section, date_of_birth FROM enrollment WHERE student_status = 'ACTIVE' AND (student_name LIKE ? OR admission_number LIKE ?)";
+    const params = [q, q];
+
+    if (cls) {
+      sql += ' AND LOWER(current_class) = LOWER(?)';
+      params.push(cls);
+    }
+    if (cls && section) {
+      sql += ' AND section = ?';
+      params.push(section);
+    }
+    sql += ' ORDER BY student_name LIMIT 20';
+
+    const rows = db.prepare(sql).all(...params);
+    return { success: true, data: rows };
+  } catch(err) { return { success: false, message: err.message }; }
+});
+
 ipcMain.handle('enrollment:update', (_evt, { admission_number, ...data }) => {
   try {
     const fields = Object.keys(data).map(k => `${k} = @${k}`).join(', ');
@@ -776,6 +831,7 @@ ipcMain.handle('enrollment:edit', (_evt, data) => {
   try {
     const {
       admission_number, edited_by,
+      student_status,
       student_name, gender, date_of_birth, indian_nationality,
       blood_group, mother_tongue, aadhar_number, birth_cert,
       mother_name, mother_profession, father_name, father_profession,
@@ -797,6 +853,7 @@ ipcMain.handle('enrollment:edit', (_evt, data) => {
     if (!old) return { success: false, message: 'Student not found.' };
 
     const newData = {
+      student_status,
       student_name, gender, date_of_birth, indian_nationality,
       blood_group, mother_tongue, aadhar_number, birth_cert,
       mother_name, mother_profession, father_name, father_profession,
@@ -991,8 +1048,8 @@ ipcMain.handle('dashboard:stats', (_evt, params) => {
 
     // ── Core counts ──────────────────────────────────────────────
     const totalActive   = db.prepare("SELECT COUNT(*) as c FROM enrollment WHERE student_status = 'ACTIVE'").get().c;
-    const totalPending  = db.prepare("SELECT COUNT(*) as c FROM enrollment WHERE student_status = 'PENDING'").get().c;
-    const totalRejected = db.prepare("SELECT COUNT(*) as c FROM enrollment WHERE student_status = 'REJECTED'").get().c;
+    const totalPending  = db.prepare("SELECT COUNT(*) as c FROM temp_admissions").get().c;
+    const totalRejected = db.prepare("SELECT COUNT(*) as c FROM rejected_admissions").get().c;
     const tcIssued      = db.prepare("SELECT COUNT(*) as c FROM enrollment WHERE tc_issued = 1").get().c;
     const totalUsers    = db.prepare("SELECT COUNT(*) as c FROM users WHERE is_active = 1").get().c;
 
@@ -1026,24 +1083,29 @@ ipcMain.handle('dashboard:stats', (_evt, params) => {
 
     // ── Recent pending admissions ────────────────────────────────
     const recentPending = db.prepare(`
-      SELECT admission_number, student_name, class_of_admission,
-             created_at
-      FROM enrollment
-      WHERE student_status = 'PENDING'
-      ORDER BY created_at ASC
+      SELECT temp_id, student_name, class_of_admission,
+             submitted_at as created_at
+      FROM temp_admissions
+      ORDER BY submitted_at ASC
       LIMIT 5
     `).all();
 
     // ── Staff's own submissions (only if submittedBy is set) ─────
     const myPending = submittedBy
-      ? db.prepare(`
-          SELECT admission_number, student_name, class_of_admission,
-                 student_status, created_at, approved_at, rejected_reason
-          FROM enrollment
-          WHERE student_status IN ('PENDING','ACTIVE','REJECTED')
-          ORDER BY created_at DESC
-          LIMIT 10
-        `).all()
+      ? [
+          ...db.prepare(`
+            SELECT temp_id as id, student_name, class_of_admission,
+                   'PENDING' as student_status, submitted_at as created_at, '' as rejected_reason
+            FROM temp_admissions WHERE submitted_by = ?
+            ORDER BY submitted_at DESC LIMIT 5
+          `).all(submittedBy),
+          ...db.prepare(`
+            SELECT reject_id as id, student_name, class_of_admission,
+                   'REJECTED' as student_status, submitted_at as created_at, rejected_reason
+            FROM rejected_admissions WHERE submitted_by = ?
+            ORDER BY rejected_at DESC LIMIT 5
+          `).all(submittedBy),
+        ]
       : [];
 
     // ── Teacher's selected class stats ───────────────────────────
@@ -2118,14 +2180,20 @@ ipcMain.handle('attendance:getMonthly', (_evt, { class: cls, section, month, yea
 ipcMain.handle('attendance:getDailyGrid', (_evt, { class: cls, section, month, year, academic_year }) => {
   try {
     const rows = db.prepare(`
-      SELECT admission_number, student_name, date, status
-      FROM attendance_daily
-      WHERE LOWER(class) = LOWER(?)
-      AND   section       = ?
-      AND   SUBSTR(date, 4, 2) = ?
-      AND   SUBSTR(date, 7, 4) = ?
-      AND   academic_year = ?
-      ORDER BY student_name, date
+      SELECT a.admission_number, a.student_name, a.date, a.status,
+             COALESCE(r.roll_number, 999) as roll_number
+      FROM attendance_daily a
+      LEFT JOIN roll_numbers r
+             ON r.admission_number = a.admission_number
+            AND r.class            = a.class
+            AND r.section          = a.section
+            AND r.academic_year    = a.academic_year
+      WHERE LOWER(a.class) = LOWER(?)
+      AND   a.section       = ?
+      AND   SUBSTR(a.date, 4, 2) = ?
+      AND   SUBSTR(a.date, 7, 4) = ?
+      AND   a.academic_year = ?
+      ORDER BY roll_number, a.student_name, a.date
     `).all(cls, section, month, year, academic_year);
     return { success: true, data: rows };
   } catch (err) {
@@ -2344,6 +2412,73 @@ ipcMain.handle('calendar:clearRange', (_evt, { academic_year, from_date, to_date
   }
 });
 
+
+// ── Get a single student's attendance for a month ─────────────
+ipcMain.handle('attendance:getStudentMonth', (_evt, { admission_number, month, year, academic_year }) => {
+  try {
+    const rows = db.prepare(`
+      SELECT date, status FROM attendance_daily
+      WHERE admission_number = ?
+      AND   SUBSTR(date, 4, 2) = ?
+      AND   SUBSTR(date, 7, 4) = ?
+      AND   academic_year = ?
+    `).all(admission_number, month, year, academic_year);
+    return { success: true, data: rows };
+  } catch(err) { return { success: false, message: err.message }; }
+});
+
+// ── Save a single student's attendance for multiple dates ──────
+ipcMain.handle('attendance:saveStudentMonth', (_evt, { admission_number, student_name, class: cls, section, academic_year, records, entered_by }) => {
+  try {
+    const del = db.prepare('DELETE FROM attendance_daily WHERE admission_number=? AND date=? AND academic_year=?');
+    const ins = db.prepare(`
+      INSERT INTO attendance_daily (admission_number, student_name, class, section, date, academic_year, status, marked_by)
+      VALUES (?,?,?,?,?,?,?,?)
+    `);
+    const saveAll = db.transaction(() => {
+      records.forEach(r => {
+        del.run(admission_number, r.date, academic_year);
+        if (r.status) ins.run(admission_number, student_name, cls, section, r.date, academic_year, r.status, entered_by || 'admin');
+      });
+    });
+    saveAll();
+    return { success: true };
+  } catch(err) { return { success: false, message: err.message }; }
+});
+// ── Get progressive (year-to-date) attendance ────────────────
+ipcMain.handle('attendance:getProgressive', (_evt, { class: cls, section, academic_year, up_to_month, up_to_year }) => {
+  try {
+    // Compare dates as YYYYMM integers to handle Jan-Mar of second year correctly
+    const upTo = parseInt(up_to_year) * 100 + parseInt(up_to_month);
+
+    const rows = db.prepare(`
+      SELECT admission_number,
+             SUM(CASE WHEN status = 'Present' THEN 1 ELSE 0 END) as total_present,
+             COUNT(*) as total_days
+      FROM   attendance_daily
+      WHERE  LOWER(class)   = LOWER(?)
+      AND    section         = ?
+      AND    academic_year   = ?
+      AND    (CAST(SUBSTR(date,7,4) AS INTEGER) * 100 + CAST(SUBSTR(date,4,2) AS INTEGER)) <= ?
+      GROUP  BY admission_number
+    `).all(cls, section, academic_year, upTo);
+
+    // Total distinct class days held up to this month
+    const totalRow = db.prepare(`
+      SELECT COUNT(DISTINCT date) as total
+      FROM   attendance_daily
+      WHERE  LOWER(class)   = LOWER(?)
+      AND    section         = ?
+      AND    academic_year   = ?
+      AND    (CAST(SUBSTR(date,7,4) AS INTEGER) * 100 + CAST(SUBSTR(date,4,2) AS INTEGER)) <= ?
+    `).get(cls, section, academic_year, upTo);
+
+    return { success: true, data: rows, total_days: totalRow?.total || 0 };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
 // ── Get working days count for a month (for attendance %) ─────
 ipcMain.handle('calendar:getWorkingDays', (_evt, { academic_year, month, year }) => {
   try {
@@ -2389,4 +2524,130 @@ ipcMain.handle('calendar:getYearSummary', (_evt, academic_year) => {
   } catch (err) {
     return { success: false, message: err.message };
   }
+});
+
+// ══════════════════════════════════════════════════════════════
+// EXAMINATION HANDLERS
+// ══════════════════════════════════════════════════════════════
+
+// ── Get students for a class ──────────────────────────────────
+ipcMain.handle('exam:getStudents', (_evt, { class: cls, section, academic_year }) => {
+  try {
+    const rows = db.prepare(`
+      SELECT e.admission_number, e.student_name, e.father_name,
+             e.mother_name, e.date_of_birth,
+             COALESCE(r.roll_number, 999) as roll_number
+      FROM   enrollment e
+      LEFT JOIN roll_numbers r
+             ON r.admission_number = e.admission_number
+            AND r.class            = e.current_class
+            AND r.section          = e.section
+            AND r.academic_year    = ?
+      WHERE  LOWER(e.current_class) = LOWER(?)
+      AND    e.section       = ?
+      AND    e.student_status = 'ACTIVE'
+      ORDER  BY roll_number, e.student_name
+    `).all(academic_year, cls, section);
+    return { success: true, data: rows };
+  } catch(err) { return { success: false, message: err.message }; }
+});
+
+// ── Get marks for a class / exam ─────────────────────────────
+ipcMain.handle('exam:getMarks', (_evt, { class: cls, section, academic_year, exam_type }) => {
+  try {
+    const where = exam_type
+      ? 'WHERE class=? AND section=? AND academic_year=? AND exam_type=?'
+      : 'WHERE class=? AND section=? AND academic_year=?';
+    const params = exam_type
+      ? [cls, section, academic_year, exam_type]
+      : [cls, section, academic_year];
+    const rows = db.prepare(
+      `SELECT admission_number, exam_type, subject, max_marks, marks_obtained, is_absent FROM exam_marks ${where}`
+    ).all(...params);
+    return { success: true, data: rows };
+  } catch(err) { return { success: false, message: err.message }; }
+});
+
+// ── Save marks ────────────────────────────────────────────────
+ipcMain.handle('exam:saveMarks', (_evt, { class: cls, section, academic_year, exam_type, marks, entered_by, auto_lock }) => {
+  try {
+    const del = db.prepare(
+      'DELETE FROM exam_marks WHERE admission_number=? AND academic_year=? AND exam_type=? AND subject=?'
+    );
+    const ins = db.prepare(`
+      INSERT INTO exam_marks
+        (admission_number, student_name, class, section, academic_year, exam_type, subject, max_marks, marks_obtained, is_absent, entered_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    `);
+    const saveAll = db.transaction(() => {
+      marks.forEach(m => {
+        del.run(m.admission_number, academic_year, exam_type, m.subject);
+        ins.run(
+          m.admission_number, m.student_name, cls, section, academic_year,
+          exam_type, m.subject, m.max_marks,
+          m.is_absent ? null : (m.marks_obtained ?? null),
+          m.is_absent ? 1 : 0,
+          entered_by || ''
+        );
+      });
+    });
+    saveAll();
+
+    // Auto-lock for teachers
+    if (auto_lock) {
+      db.prepare(`
+        INSERT OR REPLACE INTO exam_locks (class, section, academic_year, exam_type, locked_by)
+        VALUES (?,?,?,?,?)
+      `).run(cls, section, academic_year, exam_type, entered_by || '');
+    }
+    return { success: true };
+  } catch(err) { return { success: false, message: err.message }; }
+});
+
+// ── Lock / Unlock ─────────────────────────────────────────────
+ipcMain.handle('exam:lock', (_evt, { class: cls, section, academic_year, exam_type, locked_by }) => {
+  try {
+    db.prepare(`INSERT OR REPLACE INTO exam_locks (class,section,academic_year,exam_type,locked_by) VALUES (?,?,?,?,?)`)
+      .run(cls, section, academic_year, exam_type, locked_by || '');
+    return { success: true };
+  } catch(err) { return { success: false, message: err.message }; }
+});
+
+ipcMain.handle('exam:unlock', (_evt, { class: cls, section, academic_year, exam_type }) => {
+  try {
+    db.prepare('DELETE FROM exam_locks WHERE class=? AND section=? AND academic_year=? AND exam_type=?')
+      .run(cls, section, academic_year, exam_type);
+    return { success: true };
+  } catch(err) { return { success: false, message: err.message }; }
+});
+
+ipcMain.handle('exam:checkLocked', (_evt, { class: cls, section, academic_year, exam_type }) => {
+  try {
+    const row = db.prepare(
+      'SELECT locked_by, locked_at FROM exam_locks WHERE class=? AND section=? AND academic_year=? AND exam_type=?'
+    ).get(cls, section, academic_year, exam_type);
+    return { success: true, locked: !!row, locked_by: row?.locked_by || '', locked_at: row?.locked_at || '' };
+  } catch(err) { return { success: false, message: err.message }; }
+});
+
+// ── Submission status overview ────────────────────────────────
+ipcMain.handle('exam:getStatus', (_evt, { academic_year, class: cls, section }) => {
+  try {
+    const locks = db.prepare(`
+      SELECT class, section, exam_type, locked_by, locked_at
+      FROM exam_locks WHERE academic_year=?
+      ${cls ? 'AND class=?' : ''}
+      ${section ? 'AND section=?' : ''}
+    `).all(...[academic_year, cls, section].filter(Boolean));
+
+    const counts = db.prepare(`
+      SELECT class, section, exam_type, COUNT(DISTINCT admission_number) as student_count
+      FROM exam_marks WHERE academic_year=?
+      ${cls ? 'AND class=?' : ''}
+      ${section ? 'AND section=?' : ''}
+      GROUP BY class, section, exam_type
+    `).all(...[academic_year, cls, section].filter(Boolean));
+
+    return { success: true, locks, counts };
+  } catch(err) { return { success: false, message: err.message }; }
 });
