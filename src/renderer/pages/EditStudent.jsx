@@ -51,10 +51,13 @@ const CLASS_ORDER = { 'Nursery':0,'LKG':1,'UKG':2,'Class 1':3,'Class 2':4,'Class
 const isClass9Plus  = c => (CLASS_ORDER[c] ?? -1) >= 11;
 const isClass11Plus = c => (CLASS_ORDER[c] ?? -1) >= 13;
 
-const VILLAGES = ['Balrau','Badauli','Bhura Badauli','Danwar','Dushhera','Dushheri',
-  'Ishan Pur','Jawal','Kamalpur','Kathpura','Khurja','Kyoli','Madhkola','Mahmudpur',
-  'Mansoorpur','Meerpur','Nagla Sherpur','Naglakat','Nayabas Nayser','Rohinda',
-  'Shahvaj Pur','Sherpur Nayser','Thangora','Tikri','Other'];
+const VILLAGES = ['Badauli','Balrau','Bhura Badauli','Danwar',
+  'Dushhera','Dushheri','Ishan Pur','Jawal',
+  'Kamalpur','Kathpura','Khurja','Kyoli',
+  'Madhkola','Mahmudpur','Mansoorpur','Meerpur',
+  'Nagla Sherpur','Naglakat','Nayabas Nayser','Nayser',
+  'Rohinda','Shahvaj Pur','Sherpur Nayser','Thangora',
+  'Tikri','Other'];
 const CASTES         = ['Badhai','Banjara','Brahmin','Chamar','Dhobi','Dhimar',
   'Gaderia','Gujjar','Jaat','Jatav','Khatik','Kori','Kumhar','Muslim',
   'Nai','Rajput','Teli','Vaishya','Valmiki','Yadav'];

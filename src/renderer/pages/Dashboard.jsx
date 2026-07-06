@@ -3,6 +3,10 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../utils/AuthContext';
+import MissingFeesBanner from '../components/MissingFeesBanner';
+
+const SESSION_YEAR = (() => { const n = new Date(), y = n.getFullYear(); return n.getMonth() >= 3 ? y : y - 1; })();
+const CURRENT_YEAR = `${SESSION_YEAR}-${String(SESSION_YEAR + 1).slice(2)}`;
 
 const CLASSES = ['Nursery','LKG','UKG','Class 1','Class 2','Class 3',
   'Class 4','Class 5','Class 6','Class 7','Class 8',
@@ -503,6 +507,9 @@ export default function Dashboard({ onNavigate }) {
           })}
         </p>
       </div>
+
+      {/* Missing fee dues alert */}
+      {role !== 'teacher' && <MissingFeesBanner academicYear={CURRENT_YEAR} />}
 
       {/* Role-based view */}
       {(role === 'super_admin') && data && (

@@ -11,7 +11,7 @@ export const PERMISSIONS = {
     'academicCalendar', 'attendance', 'editAttendance',
     'feesLedger', 'feesReceipt', 'feesNotice',
     'admitCard', 'examination', 'tcGeneration',
-    'backup', 'userManagement', 'excelImport',
+    'backup', 'userManagement', 'excelImport', 'feeSettings',
   ],
   admin: [
     'dashboard', 'admission', 'studentList', 'editStudent',
@@ -19,7 +19,7 @@ export const PERMISSIONS = {
     'academicCalendar', 'attendance', 'editAttendance',
     'feesLedger', 'feesReceipt', 'feesNotice',
     'admitCard', 'examination', 'tcGeneration',
-    'backup', 'excelImport',
+    'backup', 'excelImport', 'feeSettings',
   ],
   coordinator: [
     'dashboard', 'studentList',

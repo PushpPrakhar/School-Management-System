@@ -11,3 +11,30 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
+
+/* ── Print scoping ──────────────────────────────────────────────
+   Printing a specific document (a receipt, a report, a notice) should
+   never print the sidebar, page headers, or buttons around it — only the
+   document itself. Any component that's meant to be printed marks its
+   root element with the "print-root" class; everything else in the app
+   is hidden the moment a print is triggered. */
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+  .print-root,
+  .print-root * {
+    visibility: visible !important;
+  }
+  .print-root {
+    position: absolute !important;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+}
+
