@@ -27,6 +27,14 @@ function amountToWords(amount) {
 }
 
 const MODE_LABEL = { CASH: 'Cash', CHEQUE: 'Cheque', ONLINE: 'Online' };
+const monthYear = (iso) => {
+  if (!iso) return 'This Month';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return 'This Month';
+  const month = d.toLocaleString('en-US', { month: 'long' });
+  const yy = String(d.getFullYear()).slice(2);
+  return `${month}'${yy}`;
+};
 
 // Self-contained: give it a receipt number + academic year, it fetches and
 // renders the print-ready receipt itself. Used identically right after a
@@ -85,14 +93,11 @@ function ReceiptContent({ data }) {
       {/* Letterhead */}
       <div className="text-center border-b-2 border-gray-800 pb-3 mb-4">
         <h1 className="text-2xl font-bold tracking-wide">BRILLIANT PUBLIC SCHOOL</h1>
-        <p className="text-xs text-gray-600 mt-0.5">(A Govt. Recognized English Medium School)</p>
         <p className="text-xs text-gray-500">Village-Sherpur-Nayser, Post-Jawal, District-Bulandshahr, UP-203131</p>
         <h2 className="text-lg font-bold mt-2 tracking-wide">FEE RECEIPT</h2>
-        <p className="text-xs text-gray-600">Academic Year: {data.academic_year}</p>
-        {data.source === 'STAGED' && (
-          <p className="text-xs text-amber-600 mt-1 font-semibold">⚠ Not yet posted (pending Day-End Posting)</p>
-        )}
       </div>
+
+      <div className="receipt-body">
 
       {/* Header info grid */}
       <table className="w-full text-xs border border-gray-400 border-collapse mb-4">
@@ -140,20 +145,20 @@ function ReceiptContent({ data }) {
         <thead>
           <tr className="bg-gray-100 text-center">
             <th rowSpan={2} className="border border-gray-400 px-1 py-1 align-middle">Student Ledger No</th>
-            <th rowSpan={2} className="border border-gray-400 px-1 py-1 align-middle">Student's Name, Father's Name &amp; Class</th>
+            <th rowSpan={2} className="border border-gray-400 px-1 py-1 align-middle">Student's Name &amp; Class</th>
             <th rowSpan={2} className="border border-gray-400 px-1 py-1 align-middle">Previous<br />Balance</th>
-            <th colSpan={5} className="border border-gray-400 px-1 py-1">Current Month Fee Details</th>
+            <th colSpan={5} className="border border-gray-400 px-1 py-1">{monthYear(data.date)} Fee Details</th>
             <th rowSpan={2} className="border border-gray-400 px-1 py-1 align-middle">Total Fees<br />Due</th>
             <th colSpan={2} className="border border-gray-400 px-1 py-1">Payments / Adjustments</th>
             <th rowSpan={2} className="border border-gray-400 px-1 py-1 align-middle">Fees<br />Balance</th>
           </tr>
           <tr className="bg-gray-100 text-center">
-            <th className="border border-gray-400 px-1 py-1">Admission<br/>Fee</th>
+            <th className="border border-gray-400 px-1 py-1">Adm.<br/>Fee</th>
             <th className="border border-gray-400 px-1 py-1">Activity<br/>Fee</th>
             <th className="border border-gray-400 px-1 py-1">Tuition<br/>Fee</th>
-            <th className="border border-gray-400 px-1 py-1">Transport<br/>Fee</th>
+            <th className="border border-gray-400 px-1 py-1">TPT<br/>Fee</th>
             <th className="border border-gray-400 px-1 py-1">Others</th>
-            <th className="border border-gray-400 px-1 py-1">Concession/<br/>Adjustment</th>
+            <th className="border border-gray-400 px-1 py-1">Con./<br/>Adj.</th>
             <th className="border border-gray-400 px-1 py-1">Fees Paid</th>
           </tr>
         </thead>
@@ -162,17 +167,17 @@ function ReceiptContent({ data }) {
             <tr key={s.ledger_id}>
               <td className="border border-gray-400 px-1 py-1 font-semibold text-blue-700">{s.sl_number}</td>
               <td className="border border-gray-400 px-1 py-1">
-                {s.student_name}, {s.father_name}
+                {s.student_name}
                 <br /><span className="text-gray-500">{s.current_class}{s.section ? ' ' + s.section : ''}</span>
               </td>
               <td className="border border-gray-400 px-1 py-1 text-right">{fmt(s.previous_balance)}</td>
-              <td className="border border-gray-400 px-1 py-1 text-right">{s.buckets.admission ? fmt(s.buckets.admission) : ''}</td>
-              <td className="border border-gray-400 px-1 py-1 text-right">{s.buckets.activity ? fmt(s.buckets.activity) : ''}</td>
-              <td className="border border-gray-400 px-1 py-1 text-right">{s.buckets.tuition ? fmt(s.buckets.tuition) : ''}</td>
-              <td className="border border-gray-400 px-1 py-1 text-right">{s.buckets.transport ? fmt(s.buckets.transport) : ''}</td>
-              <td className="border border-gray-400 px-1 py-1 text-right">{s.buckets.others ? fmt(s.buckets.others) : ''}</td>
+              <td className="border border-gray-400 px-1 py-1 text-right">{fmt(s.buckets.admission)}</td>
+              <td className="border border-gray-400 px-1 py-1 text-right">{fmt(s.buckets.activity)}</td>
+              <td className="border border-gray-400 px-1 py-1 text-right">{fmt(s.buckets.tuition)}</td>
+              <td className="border border-gray-400 px-1 py-1 text-right">{fmt(s.buckets.transport)}</td>
+              <td className="border border-gray-400 px-1 py-1 text-right">{fmt(s.buckets.others)}</td>
               <td className="border border-gray-400 px-1 py-1 text-right font-semibold">{fmt(s.total_fees_due)}</td>
-              <td className="border border-gray-400 px-1 py-1 text-right">{s.concession ? fmt(s.concession) : ''}</td>
+              <td className="border border-gray-400 px-1 py-1 text-right">{fmt(s.concession)}</td>
               <td className="border border-gray-400 px-1 py-1 text-right">{fmt(s.fees_paid)}</td>
               <td className="border border-gray-400 px-1 py-1 text-right font-semibold">{fmt(s.balance)}</td>
             </tr>
@@ -194,30 +199,18 @@ function ReceiptContent({ data }) {
       </table>
 
       {/* Bottom summary */}
-      <div className="text-sm mb-3 space-y-1">
+      <div className="flex gap-6 text-sm mb-3">
         <p><span className="text-gray-600">Amount Paid by Parent/Guardian: </span><span className="font-bold">₹{fmt(data.amount_paid_by_guardian)}</span></p>
         <p><span className="text-gray-600">Amount given at counter: </span><span className="font-bold">₹{fmt(data.amount_given_at_counter)}</span></p>
         <p><span className="text-gray-600">Return Amount: </span><span className="font-bold">₹{fmt(data.return_amount)}</span></p>
-        {totals.balance > 0 && (
-          <p className="text-amber-700">
-            <span>Balance Carried Forward: </span>
-            <span className="font-bold">₹{fmt(totals.balance)}</span>
-            <span className="text-xs"> (will show as Previous Balance next time)</span>
-          </p>
-        )}
       </div>
 
-      <p className="text-sm font-semibold mb-6">
-        Received with thanks ₹{fmt(data.amount_paid_by_guardian)}/- ({amountToWords(data.amount_paid_by_guardian)})
-      </p>
-
-      <div className="flex justify-end mb-4">
-        <p className="text-xs text-gray-500 border-t border-gray-400 pt-1 w-40 text-center">Authorized Signatory</p>
+      <div className="flex items-end justify-between">
+        <p className="text-sm font-semibold">
+          Received with thanks ₹{fmt(data.amount_paid_by_guardian)}/- ({amountToWords(data.amount_paid_by_guardian)})
+        </p>
+        <p className="text-xs text-gray-500 border-t border-gray-400 pt-1 w-40 text-center shrink-0">Authorized Signatory</p>
       </div>
-
-      <div className="border-t border-gray-300 pt-2 text-[11px] text-gray-500 space-y-0.5">
-        <p>* This is a computer generated receipt, does not required signature.</p>
-        <p>** Note: if your fee is still outstanding for payment, please arrange to clear all due fees within 7 days.</p>
       </div>
     </div>
   );

@@ -36,5 +36,15 @@ body {
     box-shadow: none !important;
     border: none !important;
   }
+
+  /* Everything below a printed document's letterhead should read at a
+     consistent, compact size on paper — this overrides whatever individual
+     Tailwind text-size classes each element uses on screen, so the printed
+     copy doesn't sprawl across a full page for what's meant to be a
+     half-page receipt or notice. */
+  .receipt-body,
+  .receipt-body * {
+    font-size: 11px !important;
+  }
 }
 

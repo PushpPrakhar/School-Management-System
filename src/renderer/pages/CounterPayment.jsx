@@ -65,19 +65,19 @@ function FeeSummaryTable({ rows, showTotal, onConcessionChange, onFeesPaidChange
           <thead className="bg-gray-50 border-b border-gray-200 text-center">
             <tr>
               <th rowSpan={2} className="px-2 py-1.5 align-middle">SL No</th>
-              <th rowSpan={2} className="px-2 py-1.5 align-middle text-left">Student, Father's Name &amp; Class</th>
+              <th rowSpan={2} className="px-2 py-1.5 align-middle text-left">Student's Name &amp; Class</th>
               <th rowSpan={2} className="px-2 py-1.5 align-middle">Previous<br/>Balance</th>
-              <th colSpan={5} className="px-2 py-1.5 border-l border-gray-200">Current Month Fee Details</th>
+              <th colSpan={5} className="px-2 py-1.5 border-l border-gray-200">{new Date().toLocaleString('en-US', { month: 'long' })}'{String(new Date().getFullYear()).slice(2)} Fee Details</th>
               <th rowSpan={2} className="px-2 py-1.5 align-middle border-l border-gray-200">Total<br/>Due</th>
               <th rowSpan={2} className="px-2 py-1.5 align-middle border-l border-gray-200 bg-amber-50">Concession</th>
               <th rowSpan={2} className="px-2 py-1.5 align-middle bg-amber-50">Fees<br/>Paid</th>
               <th rowSpan={2} className="px-2 py-1.5 align-middle border-l border-gray-200">Balance</th>
             </tr>
             <tr>
-              <th className="px-2 py-1 border-l border-gray-200">Admission</th>
+              <th className="px-2 py-1 border-l border-gray-200">Adm.</th>
               <th className="px-2 py-1">Activity</th>
               <th className="px-2 py-1">Tuition</th>
-              <th className="px-2 py-1">Transport</th>
+              <th className="px-2 py-1">TPT</th>
               <th className="px-2 py-1">Others</th>
             </tr>
           </thead>
@@ -86,15 +86,15 @@ function FeeSummaryTable({ rows, showTotal, onConcessionChange, onFeesPaidChange
               <tr key={r.sl_number} className="border-b border-gray-100">
                 <td className="px-2 py-1.5 text-center font-semibold text-blue-700">{r.sl_number}</td>
                 <td className="px-2 py-1.5">
-                  {r.student_name}, {r.father_name}
+                  {r.student_name}
                   <span className="text-gray-400"> — {r.current_class}{r.section ? ' ' + r.section : ''}</span>
                 </td>
                 <td className="px-2 py-1.5 text-right">{fmt(r.previous_balance)}</td>
-                <td className="px-2 py-1.5 text-right border-l border-gray-100" title={bucketTitle(r.bucket_items?.admission)}>{r.buckets.admission ? fmt(r.buckets.admission) : ''}</td>
-                <td className="px-2 py-1.5 text-right" title={bucketTitle(r.bucket_items?.activity)}>{r.buckets.activity ? fmt(r.buckets.activity) : ''}</td>
-                <td className="px-2 py-1.5 text-right" title={bucketTitle(r.bucket_items?.tuition)}>{r.buckets.tuition ? fmt(r.buckets.tuition) : ''}</td>
-                <td className="px-2 py-1.5 text-right" title={bucketTitle(r.bucket_items?.transport)}>{r.buckets.transport ? fmt(r.buckets.transport) : ''}</td>
-                <td className="px-2 py-1.5 text-right" title={bucketTitle(r.bucket_items?.others)}>{r.buckets.others ? fmt(r.buckets.others) : ''}</td>
+                <td className="px-2 py-1.5 text-right border-l border-gray-100" title={bucketTitle(r.bucket_items?.admission)}>{fmt(r.buckets.admission)}</td>
+                <td className="px-2 py-1.5 text-right" title={bucketTitle(r.bucket_items?.activity)}>{fmt(r.buckets.activity)}</td>
+                <td className="px-2 py-1.5 text-right" title={bucketTitle(r.bucket_items?.tuition)}>{fmt(r.buckets.tuition)}</td>
+                <td className="px-2 py-1.5 text-right" title={bucketTitle(r.bucket_items?.transport)}>{fmt(r.buckets.transport)}</td>
+                <td className="px-2 py-1.5 text-right" title={bucketTitle(r.bucket_items?.others)}>{fmt(r.buckets.others)}</td>
                 <td className="px-2 py-1.5 text-right font-semibold border-l border-gray-100">{fmt(r.total_due)}</td>
                 <td className="px-2 py-1.5 text-right border-l border-gray-100 bg-amber-50">
                   <input type="number" min="0" value={r.concession === 0 ? '' : r.concession}
@@ -343,8 +343,7 @@ function IndividualTab({ academicYear }) {
           {alreadyPaidThisMonth > 0 && (
             <div className="bg-blue-50 border border-blue-300 rounded-xl px-5 py-3 mb-4">
               <p className="text-sm text-blue-700">
-                ℹ️ <strong>₹{fmt(alreadyPaidThisMonth)} has already been paid</strong> for this student this month —
-                the Balance below already accounts for that. This receipt only records any additional amount you enter now.
+                ℹ️ The balance, as given below, has already been accounted for earlier payment of Rs. <strong>{fmt(alreadyPaidThisMonth)}</strong>
               </p>
             </div>
           )}
@@ -592,7 +591,7 @@ function GroupTab({ academicYear }) {
   const anyAlreadyPaidThisMonth = summaryRows.reduce((s, r) => s + (r.alreadyPaidThisMonth || 0), 0);
 
   const anyNotGenerated = Object.values(memberItems).some(({ member }) => !member.currentMonthGenerated);
-  const grandDue  = summaryRows.reduce((s, r) => s + (r.total_due - r.concession), 0);
+  const grandDue  = summaryRows.reduce((s, r) => s + (r.total_due - r.concession - (r.alreadyPaidThisMonth || 0)), 0);
   const paid      = summaryRows.reduce((s, r) => s + (r.fees_paid || 0), 0);
   const balance   = summaryRows.reduce((s, r) => s + r.balance, 0);
   const given     = amountGiven === '' ? paid : (parseFloat(amountGiven) || 0);
@@ -707,8 +706,7 @@ function GroupTab({ academicYear }) {
           {anyAlreadyPaidThisMonth > 0 && (
             <div className="bg-blue-50 border border-blue-300 rounded-xl px-5 py-3 mb-4">
               <p className="text-sm text-blue-700">
-                ℹ️ <strong>₹{fmt(anyAlreadyPaidThisMonth)} has already been paid</strong> for this group this month —
-                the Balance below already accounts for that. This receipt only records any additional amount you enter now.
+                ℹ️ The balance, as given below, has already been accounted for earlier payment of Rs. <strong>{fmt(anyAlreadyPaidThisMonth)}</strong>
               </p>
             </div>
           )}
