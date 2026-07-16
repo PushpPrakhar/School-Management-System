@@ -150,6 +150,29 @@ function backfillMissingFeeTypes() {
   }
 }
 
+// One-time cleanup: village dropdowns (Admission, Edit Student, Fee Settings
+// Transport Routes, Provisional students) now use ALL CAPS village names.
+// Any already-saved village text in the old mixed case would silently stop
+// matching those dropdown options — this normalizes existing data to match.
+function uppercaseExistingVillages() {
+  try {
+    let total = 0;
+    const e = db.prepare(
+      "UPDATE enrollment SET village = UPPER(village) WHERE village != UPPER(village)"
+    ).run();
+    total += e.changes;
+    try {
+      const p = db.prepare(
+        "UPDATE provisional_students SET village = UPPER(village) WHERE village != UPPER(village)"
+      ).run();
+      total += p.changes;
+    } catch { /* table may not exist yet on very old DBs — harmless */ }
+    if (total > 0) console.log(`[DB] Uppercased village on ${total} existing record(s)`);
+  } catch (e) {
+    console.log('[DB] village uppercase migration skipped:', e.message);
+  }
+}
+
 
 // ── Fee accrual (auto-generate monthly & annual dues) ──────────
 const ACADEMIC_MONTH_ORDER = ['04','05','06','07','08','09','10','11','12','01','02','03'];
@@ -207,7 +230,7 @@ function _computeAccrualPlan(academic_year) {
     SELECT l.*, gm.group_id as gm_group_id, e.date_of_admission
     FROM   fee_ledger l
     LEFT JOIN fee_group_members gm ON gm.ledger_id = l.ledger_id
-    LEFT JOIN enrollment e ON e.admission_number = l.admission_number
+    LEFT JOIN student_directory e ON e.admission_number = l.admission_number
     WHERE  l.academic_year = ?
   `).all(academic_year);
 
@@ -940,6 +963,71 @@ function initDatabase() {
     created_at       DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
   )`);
 
+  // ── Counter Other Payment — Tie, Belt, ID Card, damage recovery, scrap
+  // sale, donations, etc. Charges anyone who walks up to the counter, not
+  // necessarily an enrolled student. No managed price catalog — staff type
+  // the exact amount for whichever charge type(s) apply, since these vary
+  // person to person. Fully standalone from the fee ledger.
+  db.exec(`CREATE TABLE IF NOT EXISTS counter_other_transactions (
+    txn_id           INTEGER  PRIMARY KEY AUTOINCREMENT,
+    receipt_number   TEXT     NOT NULL DEFAULT '',
+    academic_year    TEXT     NOT NULL DEFAULT '',
+    paid_by          TEXT     NOT NULL DEFAULT '',
+    reference_note   TEXT     NOT NULL DEFAULT '',
+    charge_type      TEXT     NOT NULL DEFAULT '',
+    description      TEXT     NOT NULL DEFAULT '',
+    amount           REAL     NOT NULL DEFAULT 0,
+    amount_paid      REAL     NOT NULL DEFAULT 0,
+    payment_mode     TEXT     NOT NULL DEFAULT 'CASH',
+    cheque_details   TEXT     NOT NULL DEFAULT '',
+    amount_tendered  REAL     NOT NULL DEFAULT 0,
+    center_id        INTEGER  DEFAULT 1,
+    counter_id       INTEGER  DEFAULT 1,
+    collected_by     TEXT     NOT NULL DEFAULT '',
+    collected_at     DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
+  )`);
+
+  // Students who are attending and being charged (fee, transport, other
+  // charges) but have NOT been formally admitted through New Admission —
+  // deliberately kept out of `enrollment`, which is reserved strictly for
+  // real SR Register entries. fee_ledger.admission_number can point at
+  // either a real enrollment.admission_number (BPS...) or a student_ref
+  // here (PR...) — the two are distinguishable by prefix and never collide.
+  db.exec(`CREATE TABLE IF NOT EXISTS provisional_students (
+    student_ref    TEXT     PRIMARY KEY,
+    student_name   TEXT     NOT NULL DEFAULT '',
+    father_name    TEXT     NOT NULL DEFAULT '',
+    current_class  TEXT     NOT NULL DEFAULT '',
+    section        TEXT     NOT NULL DEFAULT 'A',
+    village        TEXT     NOT NULL DEFAULT '',
+    academic_year  TEXT     NOT NULL DEFAULT '',
+    status         TEXT     NOT NULL DEFAULT 'ACTIVE',
+    created_by     TEXT     NOT NULL DEFAULT '',
+    created_at     DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
+  )`);
+
+  // Unions enrollment + provisional_students behind one consistent set of
+  // column names, so every existing query that does
+  // "LEFT JOIN student_directory e ON e.admission_number = l.admission_number"
+  // can be pointed at this view instead and keep working unchanged for
+  // BOTH formally-admitted and provisional students — without duplicating
+  // fallback/COALESCE logic across a dozen separate queries.
+  db.exec(`DROP VIEW IF EXISTS student_directory`);
+  db.exec(`CREATE VIEW student_directory AS
+    SELECT admission_number, student_name, father_name, mother_name,
+           mobile_number, current_class, section, village,
+           category, gender, date_of_admission, date_of_birth,
+           student_status, academic_year
+    FROM   enrollment
+    UNION ALL
+    SELECT student_ref as admission_number, student_name, father_name, '' as mother_name,
+           '' as mobile_number, current_class, section, village,
+           '' as category, '' as gender, '' as date_of_admission, '' as date_of_birth,
+           status as student_status, academic_year
+    FROM   provisional_students
+  `);
+
+
   db.exec(`CREATE TABLE IF NOT EXISTS fee_transactions_stage (
     stage_id          INTEGER  PRIMARY KEY AUTOINCREMENT,
     receipt_number    TEXT     NOT NULL DEFAULT '',
@@ -1052,6 +1140,9 @@ function initDatabase() {
   backfillFeeMonths();
   backfillNonMonthlyFeeDescriptions();
   backfillMissingFeeTypes();
+  uppercaseExistingVillages();
+  try { db.prepare('SELECT amount_paid FROM counter_other_transactions LIMIT 1').get(); }
+  catch { db.exec("ALTER TABLE counter_other_transactions ADD COLUMN amount_paid REAL NOT NULL DEFAULT 0"); console.log('[DB] Migrated: added amount_paid to counter_other_transactions'); }
 
   // Seed default center + counter
   const centerCount = db.prepare('SELECT COUNT(*) as c FROM collection_centers').get().c;
@@ -3503,6 +3594,56 @@ ipcMain.handle('feeLedger:createBulk', (_evt, { academic_year, entries, created_
   } catch(e) { return { success: false, message: e.message }; }
 });
 
+// Create a ledger entry for a student who has NOT been formally admitted
+// through New Admission (documents missing, etc.) but is attending and
+// needs to be charged. Stores their details in provisional_students —
+// never in enrollment — and assigns them the next SL number using the
+// exact same query as createBulk above, so the sequence stays unified no
+// matter which tab was used last.
+ipcMain.handle('feeLedger:createProvisionalStudent', (_evt, { academic_year, student_name, father_name, current_class, section, village, opening_balance, created_by }) => {
+  try {
+    if (!student_name?.trim() || !father_name?.trim() || !current_class) {
+      return { success: false, message: "Student name, father's name and class are required." };
+    }
+
+    // Reference number — own PR{year}-{NNNN} sequence, deliberately distinct
+    // from BPS admission numbers so the two can never collide or be confused.
+    const sessionYear = academic_year.split('-')[0];
+    const lastRef = db.prepare(`
+      SELECT student_ref FROM provisional_students
+      WHERE  student_ref LIKE 'PR' || ? || '-%'
+      ORDER  BY CAST(SUBSTR(student_ref, 8) AS INTEGER) DESC LIMIT 1
+    `).get(sessionYear);
+    const lastCounter = lastRef ? (parseInt(lastRef.student_ref.split('-')[1], 10) || 0) : 0;
+    const student_ref = 'PR' + sessionYear + '-' + String(lastCounter + 1).padStart(4, '0');
+
+    const maxRow = db.prepare(
+      "SELECT MAX(CAST(SUBSTR(sl_number,4) AS INTEGER)) as mx FROM fee_ledger WHERE academic_year=?"
+    ).get(academic_year);
+    const nextSL = (maxRow?.mx || 0) + 1;
+    const sl_number = 'SL-' + String(nextSL).padStart(4, '0');
+
+    const doAll = db.transaction(() => {
+      db.prepare(`
+        INSERT INTO provisional_students
+          (student_ref, student_name, father_name, current_class, section, village, academic_year, created_by)
+        VALUES (?,?,?,?,?,?,?,?)
+      `).run(student_ref, student_name.trim(), father_name.trim(), current_class, section || 'A', village || '', academic_year, created_by || '');
+
+      db.prepare(`
+        INSERT INTO fee_ledger
+          (sl_number, admission_number, student_name, current_class, section,
+           academic_year, opening_balance, transport_route_id, created_by)
+        VALUES (?,?,?,?,?,?,?,?,?)
+      `).run(sl_number, student_ref, student_name.trim(), current_class, section || 'A',
+             academic_year, opening_balance || 0, null, created_by || '');
+    });
+    doAll();
+
+    return { success: true, student_ref, sl_number };
+  } catch(e) { return { success: false, message: e.message }; }
+});
+
 // Remove a single member from their sibling group
 ipcMain.handle('feeLedger:removeFromGroup', (_evt, { ledger_id }) => {
   try {
@@ -3534,7 +3675,7 @@ ipcMain.handle('feeLedger:getUngrouped', (_evt, academic_year) => {
     const rows = db.prepare(`
       SELECT l.*, e.father_name
       FROM   fee_ledger l
-      LEFT JOIN enrollment e ON e.admission_number = l.admission_number
+      LEFT JOIN student_directory e ON e.admission_number = l.admission_number
       WHERE  l.academic_year = ? AND l.group_id IS NULL
       ORDER  BY CAST(SUBSTR(l.sl_number,4) AS INTEGER)
     `).all(academic_year);
@@ -3600,7 +3741,7 @@ ipcMain.handle('feeLedger:getAll', (_evt, academic_year) => {
       FROM   fee_ledger l
       LEFT JOIN fee_groups        g ON g.group_id  = l.group_id
       LEFT JOIN transport_routes  t ON t.route_id  = l.transport_route_id
-      LEFT JOIN enrollment        e ON e.admission_number = l.admission_number
+      LEFT JOIN student_directory        e ON e.admission_number = l.admission_number
       WHERE  l.academic_year = ?
       ORDER  BY CAST(SUBSTR(l.sl_number, 4) AS INTEGER)
     `).all(academic_year);
@@ -3616,7 +3757,7 @@ ipcMain.handle('feeLedger:getTransactions', (_evt, { ledger_id, academic_year })
              t.route_name, t.monthly_amount AS transport_amount
       FROM   fee_ledger l
       LEFT JOIN fee_groups       g ON g.group_id = l.group_id
-      LEFT JOIN enrollment       e ON e.admission_number = l.admission_number
+      LEFT JOIN student_directory       e ON e.admission_number = l.admission_number
       LEFT JOIN transport_routes t ON t.route_id  = l.transport_route_id
       WHERE  l.ledger_id = ?
     `).get(ledger_id);
@@ -3627,17 +3768,23 @@ ipcMain.handle('feeLedger:getTransactions', (_evt, { ledger_id, academic_year })
     const posted = db.prepare(`
       SELECT *, 'POSTED' as source FROM fee_transactions
       WHERE  ledger_id = ? AND academic_year = ?
-      ORDER  BY collected_at, txn_id
     `).all(ledger_id, academic_year);
 
     // Staged (pending, not yet posted)
     const staged = db.prepare(`
       SELECT *, 'STAGED' as source FROM fee_transactions_stage
       WHERE  ledger_id = ? AND academic_year = ? AND status = 'PENDING'
-      ORDER  BY collected_at, stage_id
     `).all(ledger_id, academic_year);
 
-    const all = [...posted, ...staged];
+    // Posted and staged rows for the same student can be interleaved in time
+    // (some transactions get posted before others, depending on when Day-End
+    // Posting last ran) — so they need to be merged into one true
+    // chronological order here, not just concatenated as two separate lists.
+    const all = [...posted, ...staged].sort((a, b) => {
+      const byDate = String(a.collected_at).localeCompare(String(b.collected_at));
+      if (byDate !== 0) return byDate;
+      return (a.txn_id || a.stage_id || 0) - (b.txn_id || b.stage_id || 0);
+    });
 
     // Calculate running balance
     let balance = ledger.opening_balance || 0;
@@ -3661,7 +3808,7 @@ ipcMain.handle('feeLedger:getGroupTransactions', (_evt, { group_id, academic_yea
              t.route_name
       FROM   fee_group_members gm
       JOIN   fee_ledger   l  ON l.ledger_id = gm.ledger_id
-      JOIN   enrollment   e  ON e.admission_number = l.admission_number
+      JOIN   student_directory   e  ON e.admission_number = l.admission_number
       LEFT JOIN transport_routes t ON t.route_id = l.transport_route_id
       WHERE  gm.group_id = ?
       ORDER  BY gm.sibling_position
@@ -3715,7 +3862,7 @@ ipcMain.handle('feeLedger:search', (_evt, { query, academic_year }) => {
       SELECT l.*, g.gsl_number, g.group_id as gsl_group_id, e.father_name, t.route_name
       FROM   fee_ledger l
       LEFT JOIN fee_groups       g ON g.group_id = l.group_id
-      LEFT JOIN enrollment       e ON e.admission_number = l.admission_number
+      LEFT JOIN student_directory       e ON e.admission_number = l.admission_number
       LEFT JOIN transport_routes t ON t.route_id = l.transport_route_id
       WHERE  l.academic_year = ?
       AND   (l.sl_number LIKE ? OR l.student_name LIKE ? OR g.gsl_number LIKE ?)
@@ -3733,7 +3880,7 @@ ipcMain.handle('feeLedger:search', (_evt, { query, academic_year }) => {
         const members = db.prepare(`
           SELECT l.*, e.father_name FROM fee_group_members gm
           JOIN fee_ledger l ON l.ledger_id = gm.ledger_id
-          LEFT JOIN enrollment e ON e.admission_number = l.admission_number
+          LEFT JOIN student_directory e ON e.admission_number = l.admission_number
           WHERE gm.group_id = ?
           ORDER BY gm.sibling_position
         `).all(grp.group_id);
@@ -3769,7 +3916,7 @@ ipcMain.handle('feeLedger:getMonthlyReport', (_evt, { academic_year, month, year
       SELECT l.ledger_id, l.sl_number, l.student_name, l.current_class, l.section,
              l.opening_balance, e.father_name
       FROM   fee_ledger l
-      LEFT JOIN enrollment e ON e.admission_number = l.admission_number
+      LEFT JOIN student_directory e ON e.admission_number = l.admission_number
       WHERE  l.academic_year = ?
       AND    (? IS NULL OR l.current_class = ?)
       ORDER  BY CAST(SUBSTR(l.sl_number, 4) AS INTEGER)
@@ -3785,7 +3932,7 @@ ipcMain.handle('feeLedger:getMonthlyReport', (_evt, { academic_year, month, year
         WHERE  ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVABLE'
         UNION ALL
         SELECT debit, concession, fee_month, collected_at FROM fee_transactions_stage
-        WHERE  ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVABLE' AND status != 'CANCELLED'
+        WHERE  ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVABLE' AND status = 'PENDING'
       )
       WHERE  COALESCE(NULLIF(fee_month,''), strftime('%Y-%m', collected_at)) < ?
     `);
@@ -3796,7 +3943,7 @@ ipcMain.handle('feeLedger:getMonthlyReport', (_evt, { academic_year, month, year
         WHERE  ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVABLE'
         UNION ALL
         SELECT debit, concession, fee_month, collected_at FROM fee_transactions_stage
-        WHERE  ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVABLE' AND status != 'CANCELLED'
+        WHERE  ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVABLE' AND status = 'PENDING'
       )
       WHERE  COALESCE(NULLIF(fee_month,''), strftime('%Y-%m', collected_at)) = ?
     `);
@@ -3807,7 +3954,7 @@ ipcMain.handle('feeLedger:getMonthlyReport', (_evt, { academic_year, month, year
         WHERE  ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVED'
         UNION ALL
         SELECT credit, collected_at FROM fee_transactions_stage
-        WHERE  ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVED' AND status != 'CANCELLED'
+        WHERE  ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVED' AND status = 'PENDING'
       )
       WHERE  DATE(collected_at) < ?
     `);
@@ -3818,7 +3965,7 @@ ipcMain.handle('feeLedger:getMonthlyReport', (_evt, { academic_year, month, year
         WHERE  ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVED'
         UNION ALL
         SELECT credit, collected_at FROM fee_transactions_stage
-        WHERE  ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVED' AND status != 'CANCELLED'
+        WHERE  ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVED' AND status = 'PENDING'
       )
       WHERE  strftime('%Y-%m', collected_at) = ?
     `);
@@ -3868,12 +4015,22 @@ ipcMain.handle('counter:getNextReceipt', (_evt, academic_year) => {
     // no matches yet). The broader 'yr%' prefix (rather than 'yr-%') is what
     // catches every format this receipt number has ever used, so the count
     // stays continuous even across a format change like this one.
-    const rows = db.prepare(
+    //
+    // Counter Other Payment receipts share this exact same sequence and
+    // format (no distinguishing prefix) — at the counter it's one physical
+    // receipt book regardless of whether it's a fee or an "other" charge,
+    // so the number must stay continuous across both. Type is what
+    // distinguishes them everywhere they're displayed (Daily Collection,
+    // reprints), not the receipt number itself.
+    const feeRows = db.prepare(
       'SELECT receipt_number FROM fee_transactions_stage WHERE academic_year = ? AND receipt_number LIKE ?'
+    ).all(academic_year, yr + '%');
+    const otherRows = db.prepare(
+      'SELECT receipt_number FROM counter_other_transactions WHERE academic_year = ? AND receipt_number LIKE ?'
     ).all(academic_year, yr + '%');
 
     let maxSeq = 0;
-    rows.forEach(r => {
+    [...feeRows, ...otherRows].forEach(r => {
       const parts = String(r.receipt_number).split('-');
       const seq = parseInt(parts[parts.length - 1], 10);
       if (!isNaN(seq) && seq > maxSeq) maxSeq = seq;
@@ -3897,7 +4054,7 @@ ipcMain.handle('counter:getLedgerForPayment', (_evt, { query, academic_year }) =
              c.center_name, c.center_code
       FROM   fee_ledger l
       LEFT JOIN fee_groups       g  ON g.group_id = l.group_id
-      LEFT JOIN enrollment       e  ON e.admission_number = l.admission_number
+      LEFT JOIN student_directory       e  ON e.admission_number = l.admission_number
       LEFT JOIN transport_routes t  ON t.route_id = l.transport_route_id
       LEFT JOIN collection_centers c ON c.center_id = 1
       WHERE  l.academic_year = ?
@@ -3916,15 +4073,32 @@ ipcMain.handle('counter:getLedgerForPayment', (_evt, { query, academic_year }) =
       'SELECT description, SUM(debit) as total FROM fee_transactions WHERE ledger_id = ? AND academic_year = ? GROUP BY description'
     ).all(ledger.ledger_id, academic_year);
 
-    // Previous Balance — everything owed BEFORE the current month. The
-    // current month's own dues are shown separately (currentMonthItems
-    // below), so they're deliberately excluded here to avoid counting twice.
+    // Previous Balance — everything owed BEFORE the current month's own
+    // still-*unclaimed* dues (those are shown separately in the Current
+    // Month columns, via currentMonthItems, to avoid counting twice). The
+    // distinction is NOT "is this tagged the current month" — it's "is this
+    // an unclaimed current-month due". A current-month debit that's already
+    // been claimed by an EARLIER receipt this month (receipt_number
+    // stamped) is settled history and must be counted fully here, exactly
+    // like any past debit — otherwise its matching credit still reduces the
+    // balance while the debit it paid off silently vanishes, making
+    // Previous Balance drift lower than the true ledger balance with every
+    // payment made earlier in the same month. Credits always count
+    // regardless of month, as before.
+    //
+    // fee_transactions (the permanent/posted table) never contains
+    // unclaimed rows at all — a row only lands there via Day-End Posting a
+    // real receipt — so no month exclusion applies there; every row counts.
     const postedBal = db.prepare(
-      'SELECT COALESCE(SUM(debit),0) - COALESCE(SUM(credit),0) - COALESCE(SUM(concession),0) as bal FROM fee_transactions WHERE ledger_id = ? AND academic_year = ? AND fee_month != ?'
-    ).get(ledger.ledger_id, academic_year, currentFeeMonth);
+      `SELECT COALESCE(SUM(debit),0) - COALESCE(SUM(credit),0) - COALESCE(SUM(concession),0) as bal
+       FROM fee_transactions WHERE ledger_id = ? AND academic_year = ?`
+    ).get(ledger.ledger_id, academic_year);
     const stagedBal = db.prepare(
-      'SELECT COALESCE(SUM(debit),0) - COALESCE(SUM(credit),0) - COALESCE(SUM(concession),0) as bal FROM fee_transactions_stage WHERE ledger_id = ? AND academic_year = ? AND status = ? AND fee_month != ?'
-    ).get(ledger.ledger_id, academic_year, 'PENDING', currentFeeMonth);
+      `SELECT COALESCE(SUM(CASE WHEN NOT (fee_month = ? AND (receipt_number IS NULL OR receipt_number = ''))
+                                 THEN debit - concession ELSE 0 END),0)
+            - COALESCE(SUM(credit),0) as bal
+       FROM fee_transactions_stage WHERE ledger_id = ? AND academic_year = ? AND status = 'PENDING'`
+    ).get(currentFeeMonth, ledger.ledger_id, academic_year);
 
     const prevBalance = (ledger.opening_balance || 0) + (postedBal?.bal || 0) + (stagedBal?.bal || 0);
 
@@ -3937,7 +4111,7 @@ ipcMain.handle('counter:getLedgerForPayment', (_evt, { query, academic_year }) =
       SELECT COALESCE(SUM(credit),0) as paid FROM (
         SELECT credit FROM fee_transactions WHERE ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVED' AND fee_month = ?
         UNION ALL
-        SELECT credit FROM fee_transactions_stage WHERE ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVED' AND fee_month = ? AND status != 'CANCELLED'
+        SELECT credit FROM fee_transactions_stage WHERE ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVED' AND fee_month = ? AND status = 'PENDING'
       )
     `).get(ledger.ledger_id, academic_year, currentFeeMonth, ledger.ledger_id, academic_year, currentFeeMonth);
     const alreadyPaidThisMonth = paidThisMonth?.paid || 0;
@@ -3950,8 +4124,22 @@ ipcMain.handle('counter:getLedgerForPayment', (_evt, { query, academic_year }) =
       FROM   fee_transactions_stage
       WHERE  ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVABLE'
         AND  fee_month = ? AND status != 'CANCELLED'
+        AND  (receipt_number IS NULL OR receipt_number = '')
     `).all(ledger.ledger_id, academic_year, currentFeeMonth)
       .map(i => ({ ...i, fee_type: i.fee_type || _guessFeeTypeFromDescription(i.description) || '' }));
+
+    // Whether Auto Accrual has generated this month's charges AT ALL —
+    // deliberately independent of currentMonthItems above, since a charge
+    // that's already been fully claimed by an earlier payment this month
+    // (receipt_number stamped) is correctly excluded from currentMonthItems
+    // but the month clearly HAS been generated, so the "Generate Now"
+    // banner must not reappear for it.
+    const monthGeneratedCheck = db.prepare(`
+      SELECT 1 FROM fee_transactions_stage
+      WHERE  ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVABLE'
+        AND  fee_month = ? AND status != 'CANCELLED'
+      LIMIT 1
+    `).get(ledger.ledger_id, academic_year, currentFeeMonth);
 
     // Fee settings for late fee calc
     const settings = db.prepare('SELECT * FROM fee_settings WHERE academic_year = ?').get(academic_year)
@@ -3970,7 +4158,7 @@ ipcMain.handle('counter:getLedgerForPayment', (_evt, { query, academic_year }) =
       prevBalance,
       settings,
       currentMonthItems,
-      currentMonthGenerated: currentMonthItems.length > 0,
+      currentMonthGenerated: !!monthGeneratedCheck,
       current_fee_month: currentFeeMonth,
       alreadyPaidThisMonth,
     };
@@ -3992,7 +4180,7 @@ ipcMain.handle('counter:getGroupForPayment', (_evt, { query, academic_year }) =>
              t.route_name, t.monthly_amount as transport_amount
       FROM   fee_group_members gm
       JOIN   fee_ledger   l  ON l.ledger_id = gm.ledger_id
-      JOIN   enrollment   e  ON e.admission_number = l.admission_number
+      JOIN   student_directory   e  ON e.admission_number = l.admission_number
       LEFT JOIN transport_routes t ON t.route_id = l.transport_route_id
       WHERE  gm.group_id = ?
       ORDER  BY gm.sibling_position
@@ -4001,18 +4189,27 @@ ipcMain.handle('counter:getGroupForPayment', (_evt, { query, academic_year }) =>
     // For each member get their balance and current month's already-generated dues
     const currentFeeMonth = new Date().toISOString().slice(0, 7);
     const memberDetails = members.map(m => {
+      // See identical comment in getLedgerForPayment: only *unclaimed*
+      // current-month debits are excluded here (they're shown separately as
+      // currentMonthItems); anything already claimed by an earlier receipt
+      // this month counts fully, same as any past debit. fee_transactions
+      // (permanent/posted) never holds unclaimed rows, so no exclusion there.
       const postedBal = db.prepare(
-        'SELECT COALESCE(SUM(debit),0)-COALESCE(SUM(credit),0)-COALESCE(SUM(concession),0) as bal FROM fee_transactions WHERE ledger_id=? AND academic_year=? AND fee_month != ?'
-      ).get(m.ledger_id, academic_year, currentFeeMonth);
+        `SELECT COALESCE(SUM(debit),0) - COALESCE(SUM(credit),0) - COALESCE(SUM(concession),0) as bal
+         FROM fee_transactions WHERE ledger_id=? AND academic_year=?`
+      ).get(m.ledger_id, academic_year);
       const stagedBal = db.prepare(
-        'SELECT COALESCE(SUM(debit),0)-COALESCE(SUM(credit),0)-COALESCE(SUM(concession),0) as bal FROM fee_transactions_stage WHERE ledger_id=? AND academic_year=? AND status=? AND fee_month != ?'
-      ).get(m.ledger_id, academic_year, 'PENDING', currentFeeMonth);
+        `SELECT COALESCE(SUM(CASE WHEN NOT (fee_month = ? AND (receipt_number IS NULL OR receipt_number = ''))
+                                   THEN debit - concession ELSE 0 END),0)
+              - COALESCE(SUM(credit),0) as bal
+         FROM fee_transactions_stage WHERE ledger_id=? AND academic_year=? AND status='PENDING'`
+      ).get(currentFeeMonth, m.ledger_id, academic_year);
       const prevBalance = (m.opening_balance || 0) + (postedBal?.bal || 0) + (stagedBal?.bal || 0);
       const paidThisMonth = db.prepare(`
         SELECT COALESCE(SUM(credit),0) as paid FROM (
           SELECT credit FROM fee_transactions WHERE ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVED' AND fee_month = ?
           UNION ALL
-          SELECT credit FROM fee_transactions_stage WHERE ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVED' AND fee_month = ? AND status != 'CANCELLED'
+          SELECT credit FROM fee_transactions_stage WHERE ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVED' AND fee_month = ? AND status = 'PENDING'
         )
       `).get(m.ledger_id, academic_year, currentFeeMonth, m.ledger_id, academic_year, currentFeeMonth);
       const alreadyPaidThisMonth = paidThisMonth?.paid || 0;
@@ -4021,9 +4218,19 @@ ipcMain.handle('counter:getGroupForPayment', (_evt, { query, academic_year }) =>
         FROM   fee_transactions_stage
         WHERE  ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVABLE'
           AND  fee_month = ? AND status != 'CANCELLED'
+          AND  (receipt_number IS NULL OR receipt_number = '')
       `).all(m.ledger_id, academic_year, currentFeeMonth)
         .map(i => ({ ...i, fee_type: i.fee_type || _guessFeeTypeFromDescription(i.description) || '' }));
-      return { ...m, prevBalance, alreadyPaidThisMonth, currentMonthItems, currentMonthGenerated: currentMonthItems.length > 0 };
+      // Whether this month's charges have been generated AT ALL, independent
+      // of currentMonthItems — a fully-claimed month must not re-trigger the
+      // "Generate Now" banner. See identical comment in getLedgerForPayment.
+      const monthGeneratedCheck = db.prepare(`
+        SELECT 1 FROM fee_transactions_stage
+        WHERE  ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVABLE'
+          AND  fee_month = ? AND status != 'CANCELLED'
+        LIMIT 1
+      `).get(m.ledger_id, academic_year, currentFeeMonth);
+      return { ...m, prevBalance, alreadyPaidThisMonth, currentMonthItems, currentMonthGenerated: !!monthGeneratedCheck };
     });
 
     const settings = db.prepare('SELECT * FROM fee_settings WHERE academic_year=?').get(academic_year)
@@ -4060,7 +4267,7 @@ ipcMain.handle('counter:savePayment', (_evt, { academic_year, ledger_id, group_i
     // since the receipt reads its header details from whichever row it finds.
     const updateConcession = db.prepare(`
       UPDATE fee_transactions_stage
-      SET    concession = ?, concession_reason = ?, receipt_number = ?,
+      SET    concession = ?, concession_reason = ?, receipt_number = ?, group_id = ?,
              payment_mode = ?, cheque_details = ?, paid_by = ?, amount_tendered = ?,
              collected_by = ?, center_id = ?, counter_id = ?,
              collected_at = datetime('now','localtime')
@@ -4081,7 +4288,7 @@ ipcMain.handle('counter:savePayment', (_evt, { academic_year, ledger_id, group_i
         // never insert a second due for the same charge.
         if (item.existing_stage_id) {
           updateConcession.run(
-            item.concession || 0, item.concession_reason || '', receipt_number,
+            item.concession || 0, item.concession_reason || '', receipt_number, group_id || null,
             mode, chequeDetails, paid_by || '', tendered,
             collected_by, center_id || 1, counter_id || 1,
             item.existing_stage_id, ledger_id || null
@@ -4143,7 +4350,7 @@ ipcMain.handle('counter:getReceipt', (_evt, { receipt_number, academic_year }) =
              ct.counter_name, ct.counter_code
       FROM   fee_transactions_stage s
       LEFT JOIN fee_ledger          l  ON l.ledger_id   = s.ledger_id
-      LEFT JOIN enrollment          e  ON e.admission_number = l.admission_number
+      LEFT JOIN student_directory          e  ON e.admission_number = l.admission_number
       LEFT JOIN fee_groups          g  ON g.group_id    = l.group_id
       LEFT JOIN collection_centers  c  ON c.center_id   = s.center_id
       LEFT JOIN fee_counters        ct ON ct.counter_id = s.counter_id
@@ -4202,7 +4409,7 @@ function _buildReceiptPrintData(receipt_number, academic_year) {
            g.gsl_number, c.center_name, c.center_code, ct.counter_name, ct.counter_code
     FROM   fee_transactions t
     LEFT JOIN fee_ledger         l  ON l.ledger_id = t.ledger_id
-    LEFT JOIN enrollment         e  ON e.admission_number = l.admission_number
+    LEFT JOIN student_directory         e  ON e.admission_number = l.admission_number
     LEFT JOIN fee_groups         g  ON g.group_id = t.group_id
     LEFT JOIN collection_centers c  ON c.center_id = t.center_id
     LEFT JOIN fee_counters       ct ON ct.counter_id = t.counter_id
@@ -4216,7 +4423,7 @@ function _buildReceiptPrintData(receipt_number, academic_year) {
              g.gsl_number, c.center_name, c.center_code, ct.counter_name, ct.counter_code
       FROM   fee_transactions_stage s
       LEFT JOIN fee_ledger         l  ON l.ledger_id = s.ledger_id
-      LEFT JOIN enrollment         e  ON e.admission_number = l.admission_number
+      LEFT JOIN student_directory         e  ON e.admission_number = l.admission_number
       LEFT JOIN fee_groups         g  ON g.group_id = s.group_id
       LEFT JOIN collection_centers c  ON c.center_id = s.center_id
       LEFT JOIN fee_counters       ct ON ct.counter_id = s.counter_id
@@ -4227,9 +4434,8 @@ function _buildReceiptPrintData(receipt_number, academic_year) {
   if (rows.length === 0) return null;
 
   const header = rows[0];
-  const isGroup = !!header.group_id;
+  const isGroup = rows.some(r => r.group_id) || new Set(rows.map(r => r.ledger_id)).size > 1;
   const table = source === 'POSTED' ? 'fee_transactions' : 'fee_transactions_stage';
-  const statusFilter = source === 'POSTED' ? '' : "AND status != 'CANCELLED'";
 
   const prevBalStmt = db.prepare(`
     SELECT COALESCE(SUM(debit),0) - COALESCE(SUM(credit),0) - COALESCE(SUM(concession),0) as bal
@@ -4238,7 +4444,7 @@ function _buildReceiptPrintData(receipt_number, academic_year) {
       WHERE ledger_id = ? AND academic_year = ? AND receipt_number != ?
       UNION ALL
       SELECT debit, credit, concession FROM fee_transactions_stage
-      WHERE ledger_id = ? AND academic_year = ? AND receipt_number != ? ${statusFilter}
+      WHERE ledger_id = ? AND academic_year = ? AND receipt_number != ? AND status = 'PENDING'
     )
   `);
   const openingBalStmt = db.prepare('SELECT opening_balance FROM fee_ledger WHERE ledger_id = ?');
@@ -4397,10 +4603,16 @@ ipcMain.handle('posting:getStaged', (_evt, { center_id, counter_id, date, academ
   try {
     const d = date || new Date().toISOString().slice(0, 10);
 
-    // Get unique receipts for the day
+    // One row per (receipt, student) — a group receipt with 2 siblings
+    // shows as 2 rows, each with their own amount, not collapsed into one.
+    // Includes CANCELLED receipts for the day too (visible for audit, never
+    // selectable/postable) so a cancellation never makes a transaction
+    // record disappear from this list — only POSTED excludes purely because
+    // that's already visible in the History tab.
     const receipts = db.prepare(`
       SELECT
         s.receipt_number,
+        s.ledger_id,
         s.sl_number,
         s.payment_mode,
         s.status,
@@ -4417,28 +4629,31 @@ ipcMain.handle('posting:getStaged', (_evt, { center_id, counter_id, date, academ
       LEFT JOIN fee_ledger l ON l.ledger_id = s.ledger_id
       WHERE  DATE(s.collected_at) = ?
       AND    s.academic_year      = ?
-      AND    s.status             = 'PENDING'
+      AND    s.status             IN ('PENDING', 'CANCELLED')
       AND    (? IS NULL OR s.center_id  = ?)
       AND    (? IS NULL OR s.counter_id = ?)
-      GROUP  BY s.receipt_number
-      ORDER  BY s.receipt_number
+      GROUP  BY s.receipt_number, s.ledger_id
+      ORDER  BY s.receipt_number, CAST(SUBSTR(s.sl_number,4) AS INTEGER)
     `).all(d, academic_year, center_id || null, center_id || null, counter_id || null, counter_id || null);
 
-    // Mode summary
+    // Only PENDING rows are postable — summary totals reflect what will
+    // actually be posted, not the cancelled rows kept visible above.
+    const postable = receipts.filter(r => r.status === 'PENDING');
+
     const modeSummary = {};
-    receipts.filter(r => r.status === 'PENDING').forEach(r => {
+    postable.forEach(r => {
       if (!modeSummary[r.payment_mode]) modeSummary[r.payment_mode] = { count: 0, amount: 0 };
       modeSummary[r.payment_mode].count  += 1;
       modeSummary[r.payment_mode].amount += r.amount_paid || 0;
     });
 
-    const total = receipts.reduce((s, r) => s + (r.amount_paid || 0), 0);
-    return { success: true, receipts, modeSummary, total, count: receipts.length };
+    const total = postable.reduce((s, r) => s + (r.amount_paid || 0), 0);
+    return { success: true, receipts, modeSummary, total, count: postable.length };
   } catch(e) { return { success: false, message: e.message }; }
 });
 
 // Post all pending transactions for a day
-ipcMain.handle('posting:createAndPost', (_evt, { center_id, counter_id, date, academic_year, posted_by }) => {
+ipcMain.handle('posting:createAndPost', (_evt, { center_id, counter_id, date, academic_year, posted_by, selected_keys }) => {
   try {
     const d = date || new Date().toISOString().slice(0, 10);
 
@@ -4460,7 +4675,7 @@ ipcMain.handle('posting:createAndPost', (_evt, { center_id, counter_id, date, ac
     }
 
     // Get all pending staged records for the day
-    const staged = db.prepare(`
+    let staged = db.prepare(`
       SELECT * FROM fee_transactions_stage
       WHERE  DATE(collected_at) = ?
       AND    academic_year       = ?
@@ -4469,7 +4684,14 @@ ipcMain.handle('posting:createAndPost', (_evt, { center_id, counter_id, date, ac
       AND    (? IS NULL OR counter_id = ?)
     `).all(d, academic_year, center_id || null, center_id || null, counter_id || null, counter_id || null);
 
-    if (staged.length === 0) return { success: false, message: 'No pending transactions found for ' + d };
+    // If specific (receipt_number, ledger_id) pairs were selected, only post
+    // those students' rows — anything unchecked stays PENDING, untouched.
+    if (Array.isArray(selected_keys) && selected_keys.length > 0) {
+      const keySet = new Set(selected_keys);
+      staged = staged.filter(r => keySet.has(r.receipt_number + '::' + r.ledger_id));
+    }
+
+    if (staged.length === 0) return { success: false, message: 'No pending transactions selected for ' + d };
 
     const totalAmount = staged
       .filter(r => r.transaction_type === 'RECEIVED')
@@ -4491,8 +4713,9 @@ ipcMain.handle('posting:createAndPost', (_evt, { center_id, counter_id, date, ac
         (receipt_number, ledger_id, group_id, sl_number, academic_year,
          transaction_type, description, debit, credit, concession, concession_reason,
          late_fee, late_fee_waived, payment_mode, cheque_details,
-         center_id, counter_id, collected_by, collected_at, schedule_id)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         center_id, counter_id, collected_by, collected_at, schedule_id,
+         fee_month, paid_by, amount_tendered, fee_type)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
 
     const upd = db.prepare(
@@ -4505,7 +4728,8 @@ ipcMain.handle('posting:createAndPost', (_evt, { center_id, counter_id, date, ac
           r.receipt_number, r.ledger_id, r.group_id, r.sl_number, r.academic_year,
           r.transaction_type, r.description, r.debit, r.credit, r.concession, r.concession_reason,
           r.late_fee, r.late_fee_waived, r.payment_mode, r.cheque_details || '',
-          r.center_id, r.counter_id, r.collected_by, r.collected_at, scheduleId
+          r.center_id, r.counter_id, r.collected_by, r.collected_at, scheduleId,
+          r.fee_month || '', r.paid_by || '', r.amount_tendered || 0, r.fee_type || ''
         );
         upd.run(scheduleId, 'POSTED', r.stage_id);
       });
@@ -4542,11 +4766,13 @@ ipcMain.handle('posting:getScheduleDetails', (_evt, schedule_id) => {
       ORDER  BY t.receipt_number, t.txn_id
     `).all(schedule_id);
 
-    // Group by receipt
+    // Group by (receipt, student) — a group receipt with 2 siblings shows
+    // as 2 entries, each with their own lines, not collapsed into one.
     const receipts = {};
     rows.forEach(r => {
-      if (!receipts[r.receipt_number]) receipts[r.receipt_number] = { ...r, lines: [] };
-      receipts[r.receipt_number].lines.push(r);
+      const key = r.receipt_number + '::' + r.ledger_id;
+      if (!receipts[key]) receipts[key] = { ...r, lines: [] };
+      receipts[key].lines.push(r);
     });
 
     return { success: true, schedule, receipts: Object.values(receipts) };
@@ -4559,7 +4785,7 @@ ipcMain.handle('posting:getReconciliation', (_evt, { center_id, counter_id, date
     const d = date || new Date().toISOString().slice(0, 10);
     let sql = `
       SELECT
-        s.receipt_number, s.sl_number, s.payment_mode, s.status,
+        s.receipt_number, s.ledger_id, s.sl_number, s.payment_mode, s.status,
         s.collected_by, s.collected_at, s.schedule_id,
         l.student_name, l.current_class,
         SUM(CASE WHEN s.transaction_type = 'RECEIVED' THEN s.credit ELSE 0 END) as amount_paid
@@ -4575,7 +4801,7 @@ ipcMain.handle('posting:getReconciliation', (_evt, { center_id, counter_id, date
     if (payment_mode && payment_mode !== 'ALL') { sql += ' AND s.payment_mode = ?'; params.push(payment_mode); }
     if (status_filter && status_filter !== 'ALL') { sql += ' AND s.status = ?'; params.push(status_filter); }
 
-    sql += ' GROUP BY s.receipt_number ORDER BY s.payment_mode, s.receipt_number';
+    sql += ' GROUP BY s.receipt_number, s.ledger_id ORDER BY s.payment_mode, s.receipt_number';
 
     const rows = db.prepare(sql).all(...params);
 
@@ -4672,7 +4898,7 @@ ipcMain.handle('reports:getDefaulters', (_evt, { academic_year, class: cls }) =>
              st.last_payment
       FROM   fee_ledger l
       LEFT JOIN fee_groups g ON g.group_id = l.group_id
-      LEFT JOIN enrollment e ON e.admission_number = l.admission_number
+      LEFT JOIN student_directory e ON e.admission_number = l.admission_number
       LEFT JOIN (
         SELECT ledger_id,
                SUM(debit) as debit, SUM(credit) as credit, SUM(concession) as conc
@@ -4684,7 +4910,7 @@ ipcMain.handle('reports:getDefaulters', (_evt, { academic_year, class: cls }) =>
                SUM(debit) as debit, SUM(credit) as credit, SUM(concession) as conc,
                MAX(CASE WHEN transaction_type='RECEIVED' THEN collected_at END) as last_payment
         FROM   fee_transactions_stage
-        WHERE  academic_year = ? AND status != 'CANCELLED'
+        WHERE  academic_year = ? AND status = 'PENDING'
         GROUP  BY ledger_id
       ) st ON st.ledger_id = l.ledger_id
       WHERE l.academic_year = ?
@@ -4713,7 +4939,7 @@ ipcMain.handle('reports:getReceiptForPrint', (_evt, { receipt_number, academic_y
              g.gsl_number, c.center_name, c.center_code, ct.counter_name, ct.counter_code
       FROM   fee_transactions t
       LEFT JOIN fee_ledger         l  ON l.ledger_id = t.ledger_id
-      LEFT JOIN enrollment         e  ON e.admission_number = l.admission_number
+      LEFT JOIN student_directory         e  ON e.admission_number = l.admission_number
       LEFT JOIN fee_groups         g  ON g.group_id = l.group_id
       LEFT JOIN collection_centers c  ON c.center_id = t.center_id
       LEFT JOIN fee_counters       ct ON ct.counter_id = t.counter_id
@@ -4728,7 +4954,7 @@ ipcMain.handle('reports:getReceiptForPrint', (_evt, { receipt_number, academic_y
                g.gsl_number, c.center_name, c.center_code, ct.counter_name, ct.counter_code
         FROM   fee_transactions_stage s
         LEFT JOIN fee_ledger         l  ON l.ledger_id = s.ledger_id
-        LEFT JOIN enrollment         e  ON e.admission_number = l.admission_number
+        LEFT JOIN student_directory         e  ON e.admission_number = l.admission_number
         LEFT JOIN fee_groups         g  ON g.group_id = l.group_id
         LEFT JOIN collection_centers c  ON c.center_id = s.center_id
         LEFT JOIN fee_counters       ct ON ct.counter_id = s.counter_id
@@ -4770,7 +4996,7 @@ ipcMain.handle('reports:getReceiptHistory', (_evt, { academic_year, month, year,
         SELECT receipt_number, ledger_id, group_id, transaction_type, credit,
                payment_mode, paid_by, collected_by, collected_at
         FROM   fee_transactions_stage
-        WHERE  academic_year = ? AND status != 'CANCELLED'
+        WHERE  academic_year = ? AND status = 'PENDING'
       ) t
       LEFT JOIN fee_ledger l ON l.ledger_id = t.ledger_id
       LEFT JOIN fee_groups g ON g.group_id  = t.group_id
@@ -5042,6 +5268,256 @@ ipcMain.handle('prospectus:getStats', () => {
 });
 
 // ══════════════════════════════════════════════════════════════
+// COUNTER OTHER PAYMENT — Tie, Belt, ID Card, damage recovery, scrap
+// sale, donations, etc. Charges anyone at the counter, not necessarily
+// an enrolled student. Fully standalone from the fee ledger.
+// ══════════════════════════════════════════════════════════════
+
+const COUNTER_OTHER_CHARGE_LABELS = {
+  TIE_BELT: 'Tie & Belt', ID_CARD: 'ID Card', PROSPECTUS: 'Prospectus',
+  DAMAGE: 'School Property Damage', SCRAP: 'Sale of Scrap',
+  GENERAL_DONATION: 'General Donations', SPECIFIC_DONATION: 'Specific Donations',
+  OTHERS: 'Others',
+};
+
+// Receipt numbering — own sequence, prefixed CO so it's never confused with
+// a fee receipt or a Prospectus receipt. Same continuous-within-academic-
+// year, resets-on-new-year logic as the others.
+ipcMain.handle('counterOther:getNextReceipt', (_evt, academic_year) => {
+  try {
+    const yr = academic_year.split('-')[0];
+    const currentMonth = String(new Date().getMonth() + 1).padStart(2, '0');
+    // Same shared sequence as counter:getNextReceipt — see comment there.
+    const feeRows = db.prepare(
+      'SELECT receipt_number FROM fee_transactions_stage WHERE academic_year = ? AND receipt_number LIKE ?'
+    ).all(academic_year, yr + '%');
+    const otherRows = db.prepare(
+      'SELECT receipt_number FROM counter_other_transactions WHERE academic_year = ? AND receipt_number LIKE ?'
+    ).all(academic_year, yr + '%');
+    let maxSeq = 0;
+    [...feeRows, ...otherRows].forEach(r => {
+      const parts = String(r.receipt_number).split('-');
+      const seq = parseInt(parts[parts.length - 1], 10);
+      if (!isNaN(seq) && seq > maxSeq) maxSeq = seq;
+    });
+    const receipt_number = `${yr}${currentMonth}-${String(maxSeq + 1).padStart(4, '0')}`;
+    return { success: true, receipt_number };
+  } catch(e) { return { success: false, message: e.message }; }
+});
+
+ipcMain.handle('counterOther:savePayment', (_evt, { academic_year, receipt_number, paid_by, reference_note,
+  entries, payment_mode, amount_paid, amount_tendered, cheque_no, bank_name, txn_number,
+  center_id, counter_id, collected_by }) => {
+  try {
+    if (!paid_by || !paid_by.trim()) return { success: false, message: 'Paid By is required.' };
+    const active = (entries || []).filter(e => (e.amount || 0) > 0);
+    if (active.length === 0) return { success: false, message: 'Enter an amount for at least one charge type.' };
+
+    const VALID_MODES = ['CASH', 'CHEQUE', 'ONLINE'];
+    const mode = VALID_MODES.includes(payment_mode) ? payment_mode : 'CASH';
+    let chequeDetails = '';
+    if (mode === 'CHEQUE') chequeDetails = JSON.stringify({ cheque_no: cheque_no || '', bank_name: bank_name || '' });
+    if (mode === 'ONLINE') chequeDetails = JSON.stringify({ txn_number: txn_number || '' });
+
+    const ins = db.prepare(`
+      INSERT INTO counter_other_transactions
+        (receipt_number, academic_year, paid_by, reference_note, charge_type, description, amount, amount_paid,
+         payment_mode, cheque_details, amount_tendered, center_id, counter_id, collected_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `);
+    let total = 0;
+    const saveAll = db.transaction(() => {
+      active.forEach(e => {
+        const label = COUNTER_OTHER_CHARGE_LABELS[e.charge_type] || e.charge_type;
+        const desc = e.charge_type === 'OTHERS' ? (e.description || 'Others').trim() : label;
+        ins.run(
+          receipt_number, academic_year, paid_by.trim(), (reference_note || '').trim(),
+          e.charge_type, desc, e.amount, amount_paid || 0,
+          mode, chequeDetails, amount_tendered || 0, center_id || 1, counter_id || 1, collected_by || ''
+        );
+        total += e.amount;
+      });
+    });
+    saveAll();
+    return { success: true, total: Math.round(total * 100) / 100 };
+  } catch(e) { return { success: false, message: e.message }; }
+});
+
+// Print-ready data for the Counter Other Payment receipt — charge types as
+// columns, one row for the payee, matching the fee receipt's structure.
+ipcMain.handle('counterOther:getReceiptPrintData', (_evt, { receipt_number, academic_year }) => {
+  try {
+    const rows = db.prepare(
+      'SELECT * FROM counter_other_transactions WHERE receipt_number = ? AND academic_year = ? ORDER BY txn_id'
+    ).all(receipt_number, academic_year);
+    if (rows.length === 0) return { success: false, message: 'Receipt not found: ' + receipt_number };
+
+    const header = rows[0];
+    const charges = rows.map(r => ({ charge_type: r.charge_type, description: r.description, amount: r.amount }));
+    const totalCharged = rows.reduce((s, r) => s + (r.amount || 0), 0);
+    const amountPaid = header.amount_paid || 0;
+    const balance = Math.max(0, Math.round((totalCharged - amountPaid) * 100) / 100);
+
+    let chequeInfo = {};
+    try { chequeInfo = header.cheque_details ? JSON.parse(header.cheque_details) : {}; } catch { chequeInfo = {}; }
+
+    const amountTendered = header.amount_tendered || amountPaid;
+    const returnAmount = Math.max(0, Math.round((amountTendered - amountPaid) * 100) / 100);
+
+    return {
+      success: true,
+      data: {
+        receipt_number, academic_year, date: header.collected_at,
+        paid_by: header.paid_by || '', reference_note: header.reference_note || '',
+        payment_mode: header.payment_mode,
+        cheque_no: chequeInfo.cheque_no || '', bank_name: chequeInfo.bank_name || '', txn_number: chequeInfo.txn_number || '',
+        charges,
+        total_charged: Math.round(totalCharged * 100) / 100,
+        amount_paid: Math.round(amountPaid * 100) / 100,
+        balance,
+        amount_given_at_counter: Math.round(amountTendered * 100) / 100,
+        return_amount: returnAmount,
+      },
+    };
+  } catch(e) { return { success: false, message: e.message }; }
+});
+
+// Daily Collection — everything collected at the counter today, fee
+// payments and other payments combined into one list, so staff don't need
+// to check two different places to see "how much came in today."
+ipcMain.handle('counterPayment:getDailyCollection', (_evt, { date, academic_year }) => {
+  try {
+    const d = date || new Date().toISOString().slice(0, 10);
+
+    const feeRows = db.prepare(`
+      SELECT s.receipt_number, s.collected_at, s.payment_mode, s.collected_by, s.paid_by,
+             s.credit as amount,
+             COALESCE(NULLIF(l.student_name,''), sd.student_name) as student_name,
+             COALESCE(NULLIF(l.current_class,''), sd.current_class) as current_class,
+             l.section, l.sl_number
+      FROM   fee_transactions_stage s
+      LEFT JOIN fee_ledger l ON l.ledger_id = s.ledger_id
+      LEFT JOIN student_directory sd ON sd.admission_number = l.admission_number
+      WHERE  s.transaction_type = 'RECEIVED' AND s.status != 'CANCELLED'
+      AND    DATE(s.collected_at) = ? AND s.academic_year = ?
+      ORDER  BY s.collected_at
+    `).all(d, academic_year);
+
+    const otherRows = db.prepare(`
+      SELECT receipt_number, MAX(amount_paid) as amount, MAX(collected_at) as collected_at,
+             MAX(payment_mode) as payment_mode, MAX(collected_by) as collected_by, MAX(paid_by) as paid_by,
+             GROUP_CONCAT(DISTINCT description) as charge_desc
+      FROM   counter_other_transactions
+      WHERE  DATE(collected_at) = ? AND academic_year = ?
+      GROUP  BY receipt_number
+      ORDER  BY collected_at
+    `).all(d, academic_year);
+
+    const fee = feeRows.map(r => ({
+      receipt_number: r.receipt_number, type: 'FEE', collected_at: r.collected_at,
+      payment_mode: r.payment_mode, collected_by: r.collected_by, paid_by: r.paid_by,
+      amount: r.amount || 0,
+      description: r.student_name ? `${r.student_name} — ${r.current_class}${r.section ? ' ' + r.section : ''}` : (r.sl_number || '—'),
+      sl_number: r.sl_number || '',
+    }));
+
+    const other = otherRows.map(r => ({
+      receipt_number: r.receipt_number, type: 'OTHER', collected_at: r.collected_at,
+      payment_mode: r.payment_mode, collected_by: r.collected_by, paid_by: r.paid_by,
+      amount: r.amount || 0, description: r.charge_desc || '—', sl_number: '',
+    }));
+
+    const all = [...fee, ...other].sort((a, b) => String(a.collected_at).localeCompare(String(b.collected_at)));
+
+    const totalFee   = fee.reduce((s, r) => s + r.amount, 0);
+    const totalOther = other.reduce((s, r) => s + r.amount, 0);
+
+    const modeSummary = {};
+    all.forEach(r => {
+      if (!modeSummary[r.payment_mode]) modeSummary[r.payment_mode] = { count: 0, amount: 0 };
+      modeSummary[r.payment_mode].count  += 1;
+      modeSummary[r.payment_mode].amount += r.amount;
+    });
+
+    return {
+      success: true, date: d, rows: all,
+      totalFee: Math.round(totalFee * 100) / 100,
+      totalOther: Math.round(totalOther * 100) / 100,
+      total: Math.round((totalFee + totalOther) * 100) / 100,
+      modeSummary,
+    };
+  } catch(e) { return { success: false, message: e.message }; }
+});
+
+// Daily Collection — everything actually collected at the counter today,
+// combining Fee payments and Counter Other payments into one list. Purely
+// a read-only summary view; doesn't touch either table.
+ipcMain.handle('counter:getDailyCollection', (_evt, { date, academic_year }) => {
+  try {
+    const d = date || new Date().toISOString().slice(0, 10);
+
+    const feeRows = db.prepare(`
+      SELECT s.receipt_number, 'FEE' as type, s.sl_number,
+             l.student_name, l.current_class, l.section,
+             MAX(s.paid_by) as paid_by,
+             SUM(s.credit) as amount, s.payment_mode, s.collected_by, s.collected_at,
+             MAX(s.status) as status
+      FROM   fee_transactions_stage s
+      LEFT JOIN fee_ledger l ON l.ledger_id = s.ledger_id
+      WHERE  s.transaction_type = 'RECEIVED'
+      AND    DATE(s.collected_at) = ? AND s.academic_year = ?
+      GROUP  BY s.receipt_number, s.ledger_id
+      HAVING SUM(s.credit) > 0
+    `).all(d, academic_year);
+
+    const otherRows = db.prepare(`
+      SELECT receipt_number, 'OTHER' as type, '' as sl_number,
+             '' as student_name, '' as current_class, '' as section,
+             MAX(paid_by) as paid_by,
+             MAX(amount_paid) as amount, payment_mode, collected_by, collected_at,
+             GROUP_CONCAT(DISTINCT description) as charge_desc
+      FROM   counter_other_transactions
+      WHERE  DATE(collected_at) = ? AND academic_year = ?
+      GROUP  BY receipt_number
+      HAVING MAX(amount_paid) > 0
+    `).all(d, academic_year);
+
+    const fee = feeRows.map(r => ({
+      receipt_number: r.receipt_number, type: r.type, sl_number: r.sl_number || '',
+      student_name: r.student_name || '', class_label: r.current_class ? `${r.current_class}${r.section ? ' ' + r.section : ''}` : '',
+      paid_by: r.paid_by || '', amount: r.amount || 0, status: r.status,
+      description: r.student_name ? `${r.student_name} — ${r.current_class}${r.section ? ' ' + r.section : ''}` : (r.sl_number || '—'),
+      payment_mode: r.payment_mode, collected_by: r.collected_by, collected_at: r.collected_at,
+    }));
+
+    const other = otherRows.map(r => ({
+      receipt_number: r.receipt_number, type: r.type, sl_number: '',
+      student_name: '', class_label: '',
+      paid_by: r.paid_by || '', amount: r.amount || 0, status: 'PENDING', // Counter Other Payment has no cancellation yet
+      description: r.charge_desc || '—',
+      payment_mode: r.payment_mode, collected_by: r.collected_by, collected_at: r.collected_at,
+    }));
+
+    const rows = [...fee, ...other].sort((a, b) => String(a.collected_at).localeCompare(String(b.collected_at)));
+
+    // Cancelled receipts stay in `rows` for visibility, but never count
+    // toward money totals — that cash was never actually collected.
+    const feeTotal   = fee.filter(r => r.status !== 'CANCELLED').reduce((s, r) => s + (r.amount || 0), 0);
+    const otherTotal = other.reduce((s, r) => s + (r.amount || 0), 0);
+    const total       = feeTotal + otherTotal;
+
+    const modeSummary = {};
+    rows.filter(r => r.status !== 'CANCELLED').forEach(r => {
+      if (!modeSummary[r.payment_mode]) modeSummary[r.payment_mode] = { count: 0, amount: 0 };
+      modeSummary[r.payment_mode].count  += 1;
+      modeSummary[r.payment_mode].amount += r.amount || 0;
+    });
+
+    return { success: true, rows, total, totalFee: feeTotal, totalOther: otherTotal, modeSummary, count: rows.length };
+  } catch(e) { return { success: false, message: e.message }; }
+});
+
+// ══════════════════════════════════════════════════════════════
 // PHASE 9 — TRANSPORT MONTHLY + SIBLING CONCESSION HANDLERS
 // ══════════════════════════════════════════════════════════════
 
@@ -5055,7 +5531,7 @@ ipcMain.handle('transport:getMonthly', (_evt, { academic_year, month }) => {
              r.route_name, r.monthly_amount,
              ar.route_id as auto_route_id, ar.route_name as auto_route_name, ar.monthly_amount as auto_monthly_amount
       FROM   fee_ledger l
-      LEFT JOIN enrollment e ON e.admission_number = l.admission_number
+      LEFT JOIN student_directory e ON e.admission_number = l.admission_number
       LEFT JOIN student_transport_monthly tm
              ON tm.admission_number = l.admission_number
             AND tm.academic_year    = l.academic_year
@@ -5080,7 +5556,7 @@ ipcMain.handle('transport:saveMonthly', (_evt, { academic_year, month, assignmen
   try {
     const findRoute = db.prepare(`
       SELECT r.route_id
-      FROM   enrollment e
+      FROM   student_directory e
       JOIN   transport_routes r
              ON r.academic_year = ? AND r.is_active = 1
             AND r.route_name    = (UPPER(e.village) || '-SHERPUR ROUTE')
@@ -5176,7 +5652,7 @@ ipcMain.handle('counter:getBulkPreview', (_evt, { academic_year, month, year, fe
       SELECT l.*, e.father_name, e.date_of_admission,
              gm.sibling_position, gm.group_id as gm_group_id
       FROM   fee_ledger l
-      LEFT JOIN enrollment e ON e.admission_number = l.admission_number
+      LEFT JOIN student_directory e ON e.admission_number = l.admission_number
       LEFT JOIN fee_group_members gm ON gm.ledger_id = l.ledger_id
       WHERE  l.academic_year = ?
       ORDER  BY CAST(SUBSTR(l.sl_number,4) AS INTEGER)

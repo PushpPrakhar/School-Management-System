@@ -53,11 +53,14 @@ function PostTab({ centers, counters, academicYear, setAcademicYear }) {
   const [centerId,  setCenterId]  = useState(centers[0]?.center_id || 1);
   const [counterId, setCounterId] = useState(0);
   const [data,      setData]      = useState(null);
+  const [selected,  setSelected]  = useState(new Set()); // Set of 'receipt_number::ledger_id'
   const [loading,   setLoading]   = useState(false);
   const [posting,   setPosting]   = useState(false);
   const [result,    setResult]    = useState(null);
   const [error,     setError]     = useState('');
   const [confirm,   setConfirm]   = useState(false);
+
+  const rowKey = (r) => r.receipt_number + '::' + r.ledger_id;
 
   const load = async () => {
     setLoading(true); setError(''); setData(null); setResult(null); setConfirm(false);
@@ -65,11 +68,31 @@ function PostTab({ centers, counters, academicYear, setAcademicYear }) {
     setLoading(false);
     if (!res.success) { setError(res.message); return; }
     setData(res);
+    setSelected(new Set(res.receipts.filter(r => r.status === 'PENDING').map(rowKey))); // only pending selected by default
   };
+
+  const toggleRow = (r) => {
+    if (r.status !== 'PENDING') return; // cancelled rows are never postable
+    setSelected(prev => {
+      const next = new Set(prev);
+      const key = rowKey(r);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+  const postableRows = data ? data.receipts.filter(r => r.status === 'PENDING') : [];
+  const toggleAll = () => {
+    if (!data) return;
+    setSelected(prev => prev.size === postableRows.length ? new Set() : new Set(postableRows.map(rowKey)));
+  };
+
+  const selectedRows  = data ? data.receipts.filter(r => selected.has(rowKey(r))) : [];
+  const selectedCount = selectedRows.length;
+  const selectedTotal = selectedRows.reduce((s, r) => s + (r.amount_paid || 0), 0);
 
   const post = async () => {
     setPosting(true); setError('');
-    const res = await window.api.postingCreateAndPost(centerId, counterId || null, date, academicYear, user?.username);
+    const res = await window.api.postingCreateAndPost(centerId, counterId || null, date, academicYear, user?.username, [...selected]);
     setPosting(false);
     if (!res.success) { setError(res.message); return; }
     setResult(res);
@@ -136,32 +159,58 @@ function PostTab({ centers, counters, academicYear, setAcademicYear }) {
 
           {/* Receipt list */}
           <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden mb-4">
-            <div className="bg-gray-50 border-b border-gray-200 px-5 py-3">
-              <p className="text-sm font-semibold text-gray-700">{data.receipts.length} pending receipt{data.receipts.length !== 1 ? 's' : ''} for {fmtDate(date)}</p>
+            <div className="bg-gray-50 border-b border-gray-200 px-5 py-3 flex items-center justify-between">
+              <p className="text-sm font-semibold text-gray-700">{postableRows.length} pending receipt{postableRows.length !== 1 ? 's' : ''} for {fmtDate(date)}{data.receipts.length > postableRows.length ? ` (+${data.receipts.length - postableRows.length} cancelled, shown below)` : ''}</p>
+              <p className="text-xs text-gray-400">{selectedCount} of {postableRows.length} selected to post</p>
             </div>
             <table className="w-full text-sm">
               <thead className="bg-gray-50 border-b border-gray-100">
                 <tr>
-                  {['Receipt No','Student','Class','Amount','Mode','Collected At'].map(h => (
-                    <th key={h} className="px-4 py-2.5 text-left text-xs text-gray-500 font-semibold">{h}</th>
-                  ))}
+                  <th className="px-4 py-2.5 text-left text-xs text-gray-500 font-semibold">Receipt No</th>
+                  <th className="px-4 py-2.5 text-left text-xs text-gray-500 font-semibold">SL No.</th>
+                  <th className="px-4 py-2.5 text-left text-xs text-gray-500 font-semibold">Student</th>
+                  <th className="px-4 py-2.5 text-left text-xs text-gray-500 font-semibold">Class</th>
+                  <th className="px-4 py-2.5 text-left text-xs text-gray-500 font-semibold">Amount</th>
+                  <th className="px-4 py-2.5 text-center text-xs text-gray-500 font-semibold">
+                    <label className="flex items-center gap-1.5 justify-center cursor-pointer">
+                      <input type="checkbox" checked={postableRows.length > 0 && selectedCount === postableRows.length}
+                        onChange={toggleAll} className="w-3.5 h-3.5" />
+                      Select
+                    </label>
+                  </th>
+                  <th className="px-4 py-2.5 text-left text-xs text-gray-500 font-semibold">Mode</th>
+                  <th className="px-4 py-2.5 text-left text-xs text-gray-500 font-semibold">Status</th>
+                  <th className="px-4 py-2.5 text-left text-xs text-gray-500 font-semibold">Collected By</th>
+                  <th className="px-4 py-2.5 text-left text-xs text-gray-500 font-semibold">Time</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {data.receipts.map((r, i) => (
-                  <tr key={r.receipt_number} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
-                    <td className="px-4 py-2.5 font-mono font-bold text-blue-700 text-xs">{r.receipt_number}</td>
-                    <td className="px-4 py-2.5 font-medium text-gray-800">{r.student_name || r.sl_number}</td>
-                    <td className="px-4 py-2.5 text-gray-500 text-xs">{r.current_class || '—'}</td>
-                    <td className="px-4 py-2.5 font-bold text-green-700">{fmt(r.amount_paid)}</td>
-                    <td className="px-4 py-2.5">
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${MODE_COLORS[r.payment_mode] || 'bg-gray-100 text-gray-600'}`}>
-                        {r.payment_mode}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5 text-gray-400 text-xs">{r.collected_at ? String(r.collected_at).slice(0,16).replace('T',' ') : '—'}</td>
-                  </tr>
-                ))}
+                {data.receipts.map((r, i) => {
+                  const checked = selected.has(rowKey(r));
+                  const isCancelled = r.status === 'CANCELLED';
+                  return (
+                    <tr key={rowKey(r)} className={isCancelled ? 'opacity-40 line-through bg-red-50' : checked ? (i % 2 === 0 ? 'bg-white' : 'bg-gray-50') : 'bg-red-50 opacity-60'}>
+                      <td className="px-4 py-2.5 font-mono font-bold text-blue-700 text-xs">{r.receipt_number}</td>
+                      <td className="px-4 py-2.5 text-xs text-blue-700 font-semibold">{r.sl_number || '—'}</td>
+                      <td className="px-4 py-2.5 font-medium text-gray-800">{r.student_name || r.sl_number}</td>
+                      <td className="px-4 py-2.5 text-gray-500 text-xs">{r.current_class || '—'}</td>
+                      <td className="px-4 py-2.5 font-bold text-green-700">{fmt(r.amount_paid)}</td>
+                      <td className="px-4 py-2.5 text-center">
+                        {!isCancelled && <input type="checkbox" checked={checked} onChange={() => toggleRow(r)} className="w-4 h-4" />}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${MODE_COLORS[r.payment_mode] || 'bg-gray-100 text-gray-600'}`}>
+                          {r.payment_mode}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${isCancelled ? 'bg-red-100 text-red-600' : 'bg-amber-100 text-amber-700'}`}>{r.status}</span>
+                      </td>
+                      <td className="px-4 py-2.5 text-gray-500 text-xs">{r.collected_by || '—'}</td>
+                      <td className="px-4 py-2.5 text-gray-400 text-xs">{r.collected_at ? String(r.collected_at).slice(11,16) : '—'}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -169,9 +218,9 @@ function PostTab({ centers, counters, academicYear, setAcademicYear }) {
           {/* Post button */}
           {!confirm ? (
             <div className="flex justify-end">
-              <button onClick={() => setConfirm(true)} disabled={data.count === 0}
+              <button onClick={() => setConfirm(true)} disabled={selectedCount === 0}
                 className="px-8 py-3 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-bold rounded-xl text-sm shadow-sm">
-                📮 Post {data.count} Receipt{data.count !== 1 ? 's' : ''} to Ledger
+                📮 Post {selectedCount} Receipt{selectedCount !== 1 ? 's' : ''} to Ledger
               </button>
             </div>
           ) : (
@@ -179,7 +228,8 @@ function PostTab({ centers, counters, academicYear, setAcademicYear }) {
               <div>
                 <p className="font-bold text-amber-800">Confirm Posting</p>
                 <p className="text-sm text-amber-700 mt-0.5">
-                  This will post <strong>{data.count}</strong> receipts totalling <strong>{fmt(data.total)}</strong> to the main ledger.
+                  This will post <strong>{selectedCount}</strong> receipt{selectedCount !== 1 ? 's' : ''} totalling <strong>{fmt(selectedTotal)}</strong> to the main ledger.
+                  {selectedCount < postableRows.length && <> {postableRows.length - selectedCount} unselected receipt{postableRows.length - selectedCount !== 1 ? 's' : ''} will remain pending.</>}
                   <br />Schedule ID: <span className="font-mono font-bold">{previewId}</span>. This cannot be undone at counter level.
                 </p>
               </div>
@@ -291,14 +341,15 @@ function ReconcileTab({ centers, counters, academicYear, setAcademicYear }) {
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 border-b border-gray-200">
                   <tr>
-                    {['Receipt No','SL No','Student','Class','Amount','Mode','Status','Collected By','Time'].map(h => (
+                    {['#','Receipt No','SL No','Student','Class','Amount','Mode','Status','Collected By','Time'].map(h => (
                       <th key={h} className="px-3 py-2.5 text-left text-xs text-gray-500 font-semibold">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {data.data.map((r, i) => (
-                    <tr key={r.receipt_number} className={`${r.status === 'CANCELLED' ? 'opacity-40 line-through' : i%2===0 ? 'bg-white' : 'bg-gray-50'}`}>
+                    <tr key={r.receipt_number + '-' + i} className={`${r.status === 'CANCELLED' ? 'opacity-40 line-through' : i%2===0 ? 'bg-white' : 'bg-gray-50'}`}>
+                      <td className="px-3 py-2 text-gray-400">{i + 1}</td>
                       <td className="px-3 py-2 font-mono font-bold text-blue-700 text-xs">{r.receipt_number}</td>
                       <td className="px-3 py-2 text-xs text-gray-500">{r.sl_number}</td>
                       <td className="px-3 py-2 font-medium text-gray-800">{r.student_name || '—'}</td>
@@ -423,14 +474,15 @@ function HistoryTab({ centers, academicYear, setAcademicYear }) {
                 <table className="w-full text-xs">
                   <thead className="bg-gray-50 border-b border-gray-200 sticky top-0">
                     <tr>
-                      {['Receipt No','Student','Class','Amount','Mode','Collected By'].map(h => (
+                      {['#','Receipt No','Student','Class','Amount','Mode','Collected By'].map(h => (
                         <th key={h} className="px-3 py-2.5 text-left text-gray-500 font-semibold">{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {details.receipts.map((r, i) => (
-                      <tr key={r.receipt_number} className={i%2===0?'bg-white':'bg-gray-50'}>
+                      <tr key={r.receipt_number + '-' + i} className={i%2===0?'bg-white':'bg-gray-50'}>
+                        <td className="px-3 py-2 text-gray-400">{i + 1}</td>
                         <td className="px-3 py-2 font-mono font-bold text-blue-700">{r.receipt_number}</td>
                         <td className="px-3 py-2 font-medium text-gray-800">{r.student_name || r.sl_number}</td>
                         <td className="px-3 py-2 text-gray-500">{r.current_class || '—'}</td>

@@ -21,13 +21,13 @@ const fromInputDate = (v) => {
 };
 
 const VILLAGES = [
-  'Badauli','Balrau','Bhura Badauli','Danwar',
-  'Dushhera','Dushheri','Ishan Pur','Jawal',
-  'Kamalpur','Kathpura','Khurja','Kyoli',
-  'Madhkola','Mahmudpur','Mansoorpur','Meerpur',
-  'Nagla Sherpur','Naglakat','Nayabas Nayser','Nayser',
-  'Rohinda','Shahvaj Pur','Sherpur Nayser','Thangora',
-  'Tikri','Other',
+  'BADAULI','BALRAU','BHURA BADAULI','DANWAR',
+  'DUSHHERA','DUSHHERI','ISHAN PUR','JAWAL',
+  'KAMALPUR','KATHPURA','KHURJA','KYOLI',
+  'MADHKOLA','MAHMUDPUR','MANSOORPUR','MEERPUR',
+  'NAGLA SHERPUR','NAGLAKAT','NAYABAS NAYSER','NAYSER',
+  'ROHINDA','SHAHVAJ PUR','SHERPUR NAYSER','THANGORA',
+  'TIKRI','OTHER',
 ];
 
 const CLASSES = [

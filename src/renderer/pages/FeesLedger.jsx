@@ -14,6 +14,13 @@ const CLASSES = ['Nursery','LKG','UKG','Class 1','Class 2','Class 3',
   'Class 4','Class 5','Class 6','Class 7','Class 8'];
 const CLASS_RANK = { 'Nursery':0,'LKG':1,'UKG':2,'Class 1':3,'Class 2':4,'Class 3':5,
   'Class 4':6,'Class 5':7,'Class 6':8,'Class 7':9,'Class 8':10 };
+const VILLAGES = ['BADAULI','BALRAU','BHURA BADAULI','DANWAR',
+  'DUSHHERA','DUSHHERI','ISHAN PUR','JAWAL',
+  'KAMALPUR','KATHPURA','KHURJA','KYOLI',
+  'MADHKOLA','MAHMUDPUR','MANSOORPUR','MEERPUR',
+  'NAGLA SHERPUR','NAGLAKAT','NAYABAS NAYSER','NAYSER',
+  'ROHINDA','SHAHVAJ PUR','SHERPUR NAYSER','THANGORA',
+  'TIKRI','OTHER'];
 
 // Confirmation modal (generic)
 function ConfirmModal({ title, message, confirmLabel, onConfirm, onCancel, saving, danger }) {
@@ -238,7 +245,97 @@ function AddStudentsStep({ academicYear, onAdded }) {
   );
 }
 
-// Step 2 — Make Groups (from ungrouped students only)
+// Step 1b — New Students (bypass formal admission, charge them anyway)
+function NewStudentStep({ academicYear, onAdded }) {
+  const { user } = useAuth();
+  const blank = { student_name: '', father_name: '', current_class: '', section: 'A', village: '', opening_balance: 0 };
+  const [form,    setForm]    = useState(blank);
+  const [saving,  setSaving]  = useState(false);
+  const [error,   setError]   = useState('');
+  const [result,  setResult]  = useState(null); // { student_ref, sl_number } after a successful add
+
+  const set = (field, val) => { setForm(prev => ({ ...prev, [field]: val })); setResult(null); };
+
+  const submit = async () => {
+    if (!form.student_name.trim() || !form.father_name.trim() || !form.current_class) {
+      setError('Student name, father\'s name and class are required.'); return;
+    }
+    setSaving(true); setError('');
+    const res = await window.api.feeLedgerCreateProvisional(
+      academicYear, form.student_name.trim(), form.father_name.trim(),
+      form.current_class, form.section, form.village, form.opening_balance || 0, user?.username
+    );
+    setSaving(false);
+    if (!res.success) { setError(res.message); return; }
+    setResult({ student_ref: res.student_ref, sl_number: res.sl_number });
+    setForm(blank);
+    onAdded?.();
+  };
+
+  return (
+    <div className="max-w-xl">
+      <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4 text-sm text-amber-700">
+        💡 For students who are attending but have NOT been formally admitted through New Admission. They're stored
+        separately — never added to the official enrollment / SR Register — but can still be charged fee, transport
+        and other charges like any other student.
+      </div>
+
+      {error && <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-4 text-sm text-red-600">{error}</div>}
+      {result && (
+        <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 mb-4 text-sm text-green-700">
+          ✅ Added — assigned <strong>{result.sl_number}</strong> (Reference No: {result.student_ref})
+        </div>
+      )}
+
+      <div className="bg-white border border-gray-200 rounded-2xl p-5 space-y-4">
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">Student Name <span className="text-red-400">*</span></label>
+          <input value={form.student_name} onChange={e => set('student_name', e.target.value)}
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400" />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">Father's Name <span className="text-red-400">*</span></label>
+          <input value={form.father_name} onChange={e => set('father_name', e.target.value)}
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400" />
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Class <span className="text-red-400">*</span></label>
+            <select value={form.current_class} onChange={e => set('current_class', e.target.value)}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-blue-400">
+              <option value="">Select class</option>
+              {CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Section</label>
+            <input value={form.section} onChange={e => set('section', e.target.value)}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400" />
+          </div>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">Village <span className="text-gray-400">(needed if they'll use transport)</span></label>
+          <select value={form.village} onChange={e => set('village', e.target.value)}
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-blue-400">
+            <option value="">Select village</option>
+            {VILLAGES.map(v => <option key={v} value={v}>{v}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">Opening Balance (previous year carry-forward, if any)</label>
+          <input type="number" min="0" value={form.opening_balance} onChange={e => set('opening_balance', parseFloat(e.target.value) || 0)}
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400" />
+        </div>
+        <button onClick={submit} disabled={saving}
+          className="w-full px-6 py-2.5 bg-blue-700 hover:bg-blue-800 disabled:bg-blue-300 text-white rounded-xl text-sm font-medium">
+          {saving ? '⏳ Adding...' : '+ Add to Ledger'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
 function MakeGroupsStep({ academicYear, refreshKey }) {
   const { user }    = useAuth();
   const [ungrouped, setUngrouped] = useState([]);
@@ -563,9 +660,10 @@ function CreateLedgerTab({ academicYear }) {
   const [refreshKey, setRefreshKey] = useState(0);
 
   const STEPS = [
-    { key: 'add',    label: '➕ Add Students'   },
-    { key: 'make',   label: '👨‍👧‍👦 Make Groups'    },
-    { key: 'manage', label: '⚙️ Manage Groups'  },
+    { key: 'add',        label: '➕ Existing Students' },
+    { key: 'newstudent', label: '🆕 New Students'      },
+    { key: 'make',       label: '👨‍👧‍👦 Make Groups'       },
+    { key: 'manage',     label: '⚙️ Manage Groups'     },
   ];
 
   return (
@@ -580,9 +678,10 @@ function CreateLedgerTab({ academicYear }) {
         ))}
       </div>
 
-      {step === 'add'    && <AddStudentsStep  academicYear={academicYear} onAdded={() => setRefreshKey(k => k+1)} />}
-      {step === 'make'   && <MakeGroupsStep   academicYear={academicYear} refreshKey={refreshKey} />}
-      {step === 'manage' && <ManageGroupsStep academicYear={academicYear} key={refreshKey} />}
+      {step === 'add'        && <AddStudentsStep  academicYear={academicYear} onAdded={() => setRefreshKey(k => k+1)} />}
+      {step === 'newstudent' && <NewStudentStep    academicYear={academicYear} onAdded={() => setRefreshKey(k => k+1)} />}
+      {step === 'make'       && <MakeGroupsStep    academicYear={academicYear} refreshKey={refreshKey} />}
+      {step === 'manage'     && <ManageGroupsStep  academicYear={academicYear} key={refreshKey} />}
     </div>
   );
 }
@@ -716,8 +815,8 @@ function TransportMonthlyTab({ academicYear }) {
           </div>
 
           <div className="px-5 py-2 bg-blue-50 border-b border-blue-100 text-xs text-blue-600">
-            Routes are matched automatically from each student's village (Enrollment → Address). To change a student's
-            route, correct their village under Edit Student — not here.
+            Routes are matched automatically from each student's village. To change a formally admitted student's village,
+            use Edit Student — not here. Provisional students (added via New Students) don't have a village edit screen yet.
           </div>
 
           {/* Quick assign all */}

@@ -86,7 +86,7 @@ export default function PaperReceiptModal({ receiptNumber, academicYear, onClose
 function ReceiptContent({ data }) {
   const { students, totals } = data;
   const modeLabel = MODE_LABEL[data.payment_mode] || data.payment_mode;
-  const studentLedgerNo = data.is_group ? `${data.sl_number}/${data.gsl_number}` : data.sl_number;
+  const studentLedgerNo = data.is_group ? (data.gsl_number || data.sl_number) : data.sl_number;
 
   return (
     <div className="print-root border border-gray-300 p-6 text-sm print:border-none" id="receipt-print">
@@ -103,23 +103,23 @@ function ReceiptContent({ data }) {
       <table className="w-full text-xs border border-gray-400 border-collapse mb-4">
         <tbody>
           <tr>
-            <td className="border border-gray-400 px-2 py-1.5 font-semibold w-36 bg-gray-50">Group Student Ledger</td>
-            <td className="border border-gray-400 px-2 py-1.5 w-14">{data.is_group ? 'Yes' : 'No'}</td>
+            <td className="border border-gray-400 px-2 py-1.5 font-semibold w-28 whitespace-nowrap bg-gray-50">Ledger Type</td>
+            <td className="border border-gray-400 px-2 py-1.5 w-20 whitespace-nowrap">{data.is_group ? 'Grouped' : 'Single'}</td>
             <td className="border border-gray-400 px-2 py-1.5 font-semibold w-24 bg-gray-50">Receipt No.</td>
             <td className="border border-gray-400 px-2 py-1.5 font-bold text-blue-700">{data.receipt_number}</td>
             <td className="border border-gray-400 px-2 py-1.5 font-semibold w-16 bg-gray-50">Date</td>
             <td className="border border-gray-400 px-2 py-1.5">{fmtDate(data.date)}</td>
           </tr>
           <tr>
-            <td className="border border-gray-400 px-2 py-1.5 font-semibold bg-gray-50">Student Ledger No</td>
-            <td className="border border-gray-400 px-2 py-1.5" colSpan={1}>{studentLedgerNo}</td>
+            <td className="border border-gray-400 px-2 py-1.5 font-semibold whitespace-nowrap bg-gray-50">SL No.</td>
+            <td className="border border-gray-400 px-2 py-1.5 whitespace-nowrap" colSpan={1}>{studentLedgerNo}</td>
             <td className="border border-gray-400 px-2 py-1.5 font-semibold bg-gray-50">Paid By</td>
             <td className="border border-gray-400 px-2 py-1.5">{data.paid_by || '—'}</td>
             <td className="border border-gray-400 px-2 py-1.5 font-semibold bg-gray-50">Counter</td>
             <td className="border border-gray-400 px-2 py-1.5">{data.counter_code || '—'}</td>
           </tr>
           <tr>
-            <td className="border border-gray-400 px-2 py-1.5 font-semibold bg-gray-50">Payment Mode</td>
+            <td className="border border-gray-400 px-2 py-1.5 font-semibold whitespace-nowrap bg-gray-50">Payment Mode</td>
             <td className="border border-gray-400 px-2 py-1.5">{modeLabel}</td>
             {data.payment_mode === 'CHEQUE' && (
               <>
@@ -144,7 +144,7 @@ function ReceiptContent({ data }) {
       <table className="w-full text-[11px] border border-gray-400 border-collapse mb-3">
         <thead>
           <tr className="bg-gray-100 text-center">
-            <th rowSpan={2} className="border border-gray-400 px-1 py-1 align-middle">Student Ledger No</th>
+            <th rowSpan={2} className="border border-gray-400 px-1 py-1 align-middle">SL No.</th>
             <th rowSpan={2} className="border border-gray-400 px-1 py-1 align-middle">Student's Name &amp; Class</th>
             <th rowSpan={2} className="border border-gray-400 px-1 py-1 align-middle">Previous<br />Balance</th>
             <th colSpan={5} className="border border-gray-400 px-1 py-1">{monthYear(data.date)} Fee Details</th>

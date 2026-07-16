@@ -116,6 +116,8 @@ contextBridge.exposeInMainWorld('api', {
   feeLedgerGetPrevBalance:    (admNo, yr)             => invoke('feeLedger:getPrevBalance', { admission_number: admNo, academic_year: yr }),
   feeLedgerGetNextSL:         (yr)                    => invoke('feeLedger:getNextSL', yr),
   feeLedgerCreateBulk:        (yr, entries, by)       => invoke('feeLedger:createBulk', { academic_year: yr, entries, created_by: by }),
+  feeLedgerCreateProvisional: (yr, student_name, father_name, current_class, section, village, opening_balance, by) =>
+    invoke('feeLedger:createProvisionalStudent', { academic_year: yr, student_name, father_name, current_class, section, village, opening_balance, created_by: by }),
   feeLedgerCreateGroup:       (yr, ids, by, gsl)      => invoke('feeLedger:createGroup', { academic_year: yr, ledger_ids: ids, created_by: by, gsl_number_manual: gsl }),
   feeLedgerGetAll:            (yr)                    => invoke('feeLedger:getAll', yr),
   feeLedgerGetTransactions:   (lid, yr)               => invoke('feeLedger:getTransactions', { ledger_id: lid, academic_year: yr }),
@@ -137,7 +139,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // Day-End Posting (Phase 4)
   postingGetStaged:          (cid, ctid, date, yr)               => invoke('posting:getStaged',          { center_id: cid, counter_id: ctid, date, academic_year: yr }),
-  postingCreateAndPost:      (cid, ctid, date, yr, by)           => invoke('posting:createAndPost',      { center_id: cid, counter_id: ctid, date, academic_year: yr, posted_by: by }),
+  postingCreateAndPost:      (cid, ctid, date, yr, by, selectedKeys)  => invoke('posting:createAndPost',      { center_id: cid, counter_id: ctid, date, academic_year: yr, posted_by: by, selected_keys: selectedKeys }),
   postingGetHistory:         (cid, yr)                           => invoke('posting:getHistory',         { center_id: cid, academic_year: yr }),
   postingGetScheduleDetails: (sid)                               => invoke('posting:getScheduleDetails', sid),
   postingGetReconciliation:  (cid, ctid, date, yr, mode, status) => invoke('posting:getReconciliation',  { center_id: cid, counter_id: ctid, date, academic_year: yr, payment_mode: mode, status_filter: status }),
@@ -161,6 +163,12 @@ contextBridge.exposeInMainWorld('api', {
   prospectusUpdate:       (data)                          => invoke('prospectus:update',        data),
   prospectusMarkAdmitted: (id, admNo, adjust)             => invoke('prospectus:markAdmitted',  { inquiry_id: id, admission_number: admNo, adjust_fee: adjust }),
   prospectusGetStats:     ()                              => invoke('prospectus:getStats'),
+
+  // Counter Other Payment — Tie, Belt, ID Card, damage, scrap, donations, etc.
+  counterOtherGetNextReceipt:     (yr)                  => invoke('counterOther:getNextReceipt', yr),
+  counterOtherSavePayment:        (data)                => invoke('counterOther:savePayment', data),
+  counterOtherGetReceiptPrintData:(rcpt, yr)             => invoke('counterOther:getReceiptPrintData', { receipt_number: rcpt, academic_year: yr }),
+  counterGetDailyCollection:      (date, yr)             => invoke('counter:getDailyCollection', { date, academic_year: yr }),
 
   // Phase 9 — Transport Monthly + Sibling Concession
   transportGetMonthly:       (yr, mon)                        => invoke('transport:getMonthly',     { academic_year: yr, month: mon }),
