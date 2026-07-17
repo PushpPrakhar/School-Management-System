@@ -28,6 +28,15 @@ const toInput   = v => { if (!v) return ''; const p = v.split('-'); return p.len
 
 // ── Selector bar ──────────────────────────────────────────────
 function SelectorBar({ cls, setCls, section, setSection, academicYear, setAcademicYear, extra }) {
+  const { user } = useAuth();
+  const isTeacher = user?.role === 'teacher';
+  const allowedClasses = isTeacher ? (user.classes || []) : CLASSES;
+
+  // Single-class teacher: skip the extra click, auto-select their one class.
+  useEffect(() => {
+    if (isTeacher && allowedClasses.length === 1 && !cls) setCls(allowedClasses[0]);
+  }, [isTeacher, allowedClasses, cls]);
+
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-4 mb-5 flex flex-wrap gap-3 items-end">
       <div>
@@ -35,7 +44,7 @@ function SelectorBar({ cls, setCls, section, setSection, academicYear, setAcadem
         <select value={cls} onChange={e => setCls(e.target.value)}
           className="border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 w-36">
           <option value="">Select</option>
-          {CLASSES.map(c => <option key={c}>{c}</option>)}
+          {allowedClasses.map(c => <option key={c}>{c}</option>)}
         </select>
       </div>
       <div>
@@ -115,7 +124,7 @@ function StudentMonthlyMark({ academicYear, filterClass, filterSection, onClose 
     const [attRes, holRes, lockRes] = await Promise.all([
       window.api.attendanceGetStudentMonth(s.admission_number, mon, yr, academicYear),
       window.api.calendarGetMonth(academicYear, mon, yr),
-      window.api.attendanceGetLockedDates(s.current_class, s.section, mon, yr),
+      window.api.attendanceGetLockedDates(s.current_class, s.section, mon, yr, user?.user_id),
     ]);
     const status = {};
     if (attRes.success) attRes.data.forEach(r => { status[r.date] = r.status; });
@@ -515,16 +524,18 @@ function MarkTab() {
     setLoading(true); setLoaded(false); setError('');
 
     const lockRes = await window.api.attendanceCheckLocked(cls, section, storageDate);
+    // (checkLocked is read-only lock-status; not enforced server-side since
+    // it reveals nothing beyond whether a date is locked, no student data)
     if (lockRes.success && lockRes.locked) {
       setLocked(true); setLockedBy(lockRes.locked_by);
     } else {
       setLocked(false); setLockedBy('');
     }
 
-    const res = await window.api.attendanceGetStudents(cls, section, academicYear);
+    const res = await window.api.attendanceGetStudents(cls, section, academicYear, user?.user_id);
     if (!res.success) { setError(res.message); setLoading(false); return; }
 
-    const existing = await window.api.attendanceGetByDate(cls, section, storageDate);
+    const existing = await window.api.attendanceGetByDate(cls, section, storageDate, user?.user_id);
     const existingMap = {};
     if (existing.success) existing.data.forEach(r => { existingMap[r.admission_number] = r.status; });
 
@@ -533,7 +544,17 @@ function MarkTab() {
 
     setStudents(res.data);
     setAttendance(init);
-    setSavedSnapshot({ ...init }); // treat loaded data as the baseline
+    // Only treat this as a genuinely complete, already-saved baseline if
+    // EVERY current student actually has a record for this date — not just
+    // "at least one record exists". If the roster has grown since the last
+    // real save (a new admission, for instance), or an earlier save was
+    // ever partial, existing.data.length stays below the full roster size.
+    // Treating that as "already saved" would make an all-defaults-Present
+    // screen look identical to a real save and silently block the actual
+    // save via the no-changes guard below — exactly the "all present,
+    // doesn't actually save" bug this replaces.
+    const isFullySaved = existing.success && existing.data.length === res.data.length && res.data.length > 0;
+    setSavedSnapshot(isFullySaved ? { ...init } : null);
     setLoading(false);
     setLoaded(true);
     setSaved(false);
@@ -569,13 +590,13 @@ function MarkTab() {
       status:           attendance[s.admission_number] || 'Present',
     }));
     const res = await window.api.attendanceMarkDay(
-      cls, section, storageDate, academicYear, records, user?.username || 'admin'
+      cls, section, storageDate, academicYear, records, user?.username || 'admin', user?.user_id
     );
     if (!res.success) { setError(res.message); setSaving(false); return; }
 
     // Teachers auto-lock after saving
     if (isTeacher) {
-      await window.api.attendanceLockDay(cls, section, storageDate, user?.username);
+      await window.api.attendanceLockDay(cls, section, storageDate, user?.username, user?.user_id);
       setLocked(true);
       setLockedBy(user?.username);
     }
@@ -586,7 +607,7 @@ function MarkTab() {
   };
 
   const unlock = async () => {
-    await window.api.attendanceUnlockDay(cls, section, storageDate);
+    await window.api.attendanceUnlockDay(cls, section, storageDate, user?.user_id);
     setLocked(false); setLockedBy(''); setSaved(false);
   };
 
@@ -849,6 +870,7 @@ function MarkTab() {
 // TAB 2 — Monthly Report
 // ══════════════════════════════════════════════════════════════
 function MonthlyTab() {
+  const { user } = useAuth();
   const [cls,          setCls]          = useState('');
   const [section,      setSection]      = useState('A');
   const [academicYear, setAcademicYear] = useState(CURRENT_YEAR);
@@ -866,8 +888,8 @@ function MonthlyTab() {
     setLoading(true);
 
     const [gridRes, progRes] = await Promise.all([
-      window.api.attendanceGetDailyGrid(cls, section, month, year, academicYear),
-      window.api.attendanceGetProgressive(cls, section, academicYear, month, year),
+      window.api.attendanceGetDailyGrid(cls, section, month, year, academicYear, user?.user_id),
+      window.api.attendanceGetProgressive(cls, section, academicYear, month, year, user?.user_id),
     ]);
 
     if (gridRes.success) setGrid(gridRes.data);
@@ -1106,6 +1128,7 @@ function MonthlyTab() {
 // TAB 3 — Low Attendance Alerts
 // ══════════════════════════════════════════════════════════════
 function LowAttendanceTab() {
+  const { user } = useAuth();
   const [academicYear, setAcademicYear] = useState(CURRENT_YEAR);
   const [threshold,    setThreshold]    = useState('75'); // stored as string to allow backspace clearing
   const [data,         setData]         = useState([]);
@@ -1116,7 +1139,7 @@ function LowAttendanceTab() {
   const load = async () => {
     setLoading(true);
     // Parse to number — passing string to SQLite causes type comparison bugs
-    const res = await window.api.attendanceGetLow(academicYear, parseInt(threshold) || 75);
+    const res = await window.api.attendanceGetLow(academicYear, parseInt(threshold) || 75, user?.user_id);
     if (res.success) setData(res.data);
     setLoading(false);
     setLoaded(true);
@@ -1198,7 +1221,10 @@ function LowAttendanceTab() {
 // MAIN
 // ══════════════════════════════════════════════════════════════
 export default function Attendance() {
+  const { user } = useAuth();
+  const isTeacher = user?.role === 'teacher';
   const [tab, setTab] = useState('mark');
+  const tabs = [['mark','Mark Attendance'],['monthly','Monthly Report'], ...(isTeacher ? [] : [['low','Low Attendance']])];
   return (
     <div className="max-w-5xl">
       <div className="mb-6">
@@ -1206,7 +1232,7 @@ export default function Attendance() {
         <p className="text-sm text-gray-500 mt-0.5">Daily attendance — P Present · A Absent</p>
       </div>
       <div className="flex gap-1 bg-gray-100 p-1 rounded-xl mb-6 w-fit">
-        {[['mark','Mark Attendance'],['monthly','Monthly Report'],['low','Low Attendance']].map(([key, label]) => (
+        {tabs.map(([key, label]) => (
           <button key={key} onClick={() => setTab(key)}
             className={`px-5 py-2 rounded-lg text-sm font-medium transition-colors
               ${tab === key ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
@@ -1216,7 +1242,7 @@ export default function Attendance() {
       </div>
       {tab === 'mark'    && <MarkTab />}
       {tab === 'monthly' && <MonthlyTab />}
-      {tab === 'low'     && <LowAttendanceTab />}
+      {tab === 'low' && !isTeacher && <LowAttendanceTab />}
     </div>
   );
 }

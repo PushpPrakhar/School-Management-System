@@ -350,43 +350,62 @@ function StaffDashboard({ data, user, onNavigate }) {
 // TEACHER DASHBOARD
 // ══════════════════════════════════════════════════════════════
 function TeacherDashboard({ onNavigate }) {
-  const [selectedClass, setSelectedClass] = useState('');
-  const [classData,     setClassData]     = useState(null);
-  const [loading,       setLoading]       = useState(false);
+  const { user } = useAuth();
+  const myClasses = user?.classes || [];
+
+  // Remember last-viewed class across sessions (per-teacher, local only)
+  const storageKey = `bps_teacher_last_class_${user?.user_id || ''}`;
+  const [selectedClass, setSelectedClass] = useState(() => {
+    if (myClasses.length === 1) return myClasses[0];
+    try {
+      const saved = localStorage.getItem(storageKey);
+      return (saved && myClasses.includes(saved)) ? saved : '';
+    } catch { return ''; }
+  });
+  const [classData, setClassData] = useState(null);
+  const [loading,   setLoading]   = useState(false);
 
   const loadClass = useCallback(async (cls) => {
     if (!cls) return;
     setLoading(true);
-    const res = await window.api.dashboardStats({ role: 'teacher', cls: cls });
+    const res = await window.api.dashboardStats({ role: 'teacher', cls, requesting_user_id: user?.user_id });
     setLoading(false);
     if (res.success) setClassData(res.data);
-  }, []);
+  }, [user?.user_id]);
+
+  useEffect(() => { if (selectedClass) loadClass(selectedClass); }, [selectedClass, loadClass]);
 
   const handleClassChange = (cls) => {
     setSelectedClass(cls);
-    loadClass(cls);
+    try { localStorage.setItem(storageKey, cls); } catch {}
   };
+
+  if (myClasses.length === 0) {
+    return (
+      <div className="text-center py-16 text-gray-400">
+        <div className="text-5xl mb-4">🏫</div>
+        <p className="font-medium text-gray-600">No class has been assigned to you yet.</p>
+        <p className="text-sm mt-1">Ask your Principal or Manager to assign a class in Teacher Management.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
-      {/* Class selector */}
-      <div className="bg-white border border-gray-200 rounded-xl p-5">
-        <label className="block text-xs font-medium text-gray-500 mb-2">Select Your Class</label>
-        <div className="flex gap-3 items-center">
-          <select value={selectedClass} onChange={e => handleClassChange(e.target.value)}
-            className="w-64 border border-gray-300 rounded-lg px-3 py-2 text-sm
-                       focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
-            <option value="">— Choose a class —</option>
-            {CLASSES.map(c => <option key={c}>{c}</option>)}
-          </select>
-          {loading && <span className="text-sm text-gray-400 animate-pulse">Loading…</span>}
-        </div>
-      </div>
-
-      {!selectedClass && (
-        <div className="text-center py-16 text-gray-400">
-          <div className="text-5xl mb-4">🏫</div>
-          <p className="font-medium text-gray-600">Select a class to view your dashboard</p>
+      {/* Class switcher — only shown when the teacher actually has a choice */}
+      {myClasses.length > 1 && (
+        <div className="bg-white border border-gray-200 rounded-xl p-4">
+          <label className="block text-xs font-medium text-gray-500 mb-2">Your Classes</label>
+          <div className="flex flex-wrap gap-2">
+            {myClasses.map(c => (
+              <button key={c} onClick={() => handleClassChange(c)}
+                className={`px-4 py-2 rounded-xl text-sm font-medium border transition-colors
+                  ${selectedClass === c ? 'bg-blue-700 text-white border-blue-700' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'}`}>
+                {c}
+              </button>
+            ))}
+            {loading && <span className="text-sm text-gray-400 animate-pulse self-center">Loading…</span>}
+          </div>
         </div>
       )}
 
@@ -402,39 +421,12 @@ function TeacherDashboard({ onNavigate }) {
             <PlaceholderCard label="Last Exam Avg Score"     icon="📝" />
           </div>
 
-          {/* Attendance status */}
-          <SectionCard title="Attendance Status">
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 flex items-center justify-between">
-              <div>
-                <p className="text-sm font-semibold text-amber-800">Attendance module not yet built</p>
-                <p className="text-xs text-amber-600 mt-0.5">
-                  Once built, you can mark and view attendance for {selectedClass} here.
-                </p>
-              </div>
-              <span className="text-amber-200 text-3xl">📅</span>
-            </div>
-          </SectionCard>
-
-          {/* Exam marks status */}
-          <SectionCard title="Exam Marks">
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-center justify-between">
-              <div>
-                <p className="text-sm font-semibold text-blue-800">Examination module not yet built</p>
-                <p className="text-xs text-blue-600 mt-0.5">
-                  Once built, you can enter marks for {selectedClass} here.
-                </p>
-              </div>
-              <span className="text-blue-200 text-3xl">📊</span>
-            </div>
-          </SectionCard>
-
           {/* Quick actions */}
           <SectionCard title="Quick Actions">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <QuickAction label="My Class List"   icon="📋" onClick={() => onNavigate('studentList')} />
               <QuickAction label="Mark Attendance" icon="📅" onClick={() => onNavigate('attendance')} />
-              <QuickAction label="Enter Marks"     icon="📝" onClick={() => onNavigate('examMarks')} />
-              <QuickAction label="Admit Cards"     icon="🪪" onClick={() => onNavigate('admitCard')} />
+              <QuickAction label="Enter Marks"     icon="📝" onClick={() => onNavigate('examination')} />
             </div>
           </SectionCard>
         </>

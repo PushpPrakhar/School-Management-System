@@ -108,6 +108,14 @@ const calcFinal = (admNo, subjects, marksMap) => {
 
 // ── Selector Bar ──────────────────────────────────────────────
 function SelectorBar({ cls, setCls, section, setSection, academicYear, setAcademicYear, extra }) {
+  const { user } = useAuth();
+  const isTeacher = user?.role === 'teacher';
+  const allowedClasses = isTeacher ? (user.classes || []) : CLASSES;
+
+  useEffect(() => {
+    if (isTeacher && allowedClasses.length === 1 && !cls) setCls(allowedClasses[0]);
+  }, [isTeacher, allowedClasses, cls]);
+
   return (
     <div className="bg-white border border-gray-200 rounded-2xl p-4 mb-5 flex flex-wrap gap-3 items-end">
       <div>
@@ -115,7 +123,7 @@ function SelectorBar({ cls, setCls, section, setSection, academicYear, setAcadem
         <select value={cls} onChange={e => setCls(e.target.value)}
           className="border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 w-32">
           <option value="">Select</option>
-          {CLASSES.map(c => <option key={c}>{c}</option>)}
+          {allowedClasses.map(c => <option key={c}>{c}</option>)}
         </select>
       </div>
       <div>
@@ -168,10 +176,10 @@ function EnterMarksTab() {
     const lockRes = await window.api.examCheckLocked(cls, section, academicYear, examType);
     if (lockRes.success) { setLocked(lockRes.locked); setLockedBy(lockRes.locked_by); }
 
-    const stuRes = await window.api.examGetStudents(cls, section, academicYear);
+    const stuRes = await window.api.examGetStudents(cls, section, academicYear, user?.user_id);
     if (!stuRes.success) { setError(stuRes.message); setLoading(false); return; }
 
-    const markRes = await window.api.examGetMarks(cls, section, academicYear, examType);
+    const markRes = await window.api.examGetMarks(cls, section, academicYear, examType, user?.user_id);
     const existing = {};
     if (markRes.success) {
       markRes.data.forEach(r => {
@@ -227,14 +235,14 @@ function EnterMarksTab() {
         });
       });
     });
-    const res = await window.api.examSaveMarks(cls, section, academicYear, examType, rows, user?.username, doLock);
+    const res = await window.api.examSaveMarks(cls, section, academicYear, examType, rows, user?.username, doLock, user?.user_id);
     setSaving(false);
     if (res.success) { setSaved(true); if (doLock) setLocked(true); setTimeout(() => setSaved(false), 3000); }
     else setError(res.message);
   };
 
   const handleUnlock = async () => {
-    await window.api.examUnlock(cls, section, academicYear, examType);
+    await window.api.examUnlock(cls, section, academicYear, examType, user?.user_id);
     setLocked(false);
   };
 
@@ -656,6 +664,7 @@ function ReportCard({ student, marksMap, subjects, cls, section, academicYear, t
 
 // ── Result View ───────────────────────────────────────────────
 function ResultView({ type }) {
+  const { user } = useAuth();
   const [cls,          setCls]         = useState('');
   const [section,      setSection]     = useState('A');
   const [academicYear, setAcademicYear]= useState(CURRENT_YEAR);
@@ -673,8 +682,8 @@ function ResultView({ type }) {
     if (!cls) return;
     setLoading(true); setLoaded(false); setError('');
     const [stuRes, markRes] = await Promise.all([
-      window.api.examGetStudents(cls, section, academicYear),
-      window.api.examGetMarks(cls, section, academicYear, null),
+      window.api.examGetStudents(cls, section, academicYear, user?.user_id),
+      window.api.examGetMarks(cls, section, academicYear, null, user?.user_id),
     ]);
     if (!stuRes.success) { setError(stuRes.message); setLoading(false); return; }
     if (!markRes.success){ setError(markRes.message); setLoading(false); return; }

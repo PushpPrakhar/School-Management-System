@@ -3,6 +3,7 @@
 // Features: search, PDF export, print, view student detail.
 
 import React, { useState, useEffect, useRef } from 'react';
+import { useAuth } from '../utils/AuthContext';
 
 const CLASSES = [
   'Nursery', 'LKG', 'UKG',
@@ -117,6 +118,10 @@ function StudentModal({ student, onClose }) {
 
 // ── Main component ────────────────────────────────────────────
 export default function StudentList() {
+  const { user } = useAuth();
+  const isTeacher = user?.role === 'teacher';
+  const allowedClasses = isTeacher ? (user.classes || []) : CLASSES;
+
   const [selectedClass, setSelectedClass]     = useState('');
   const [academicYear, setAcademicYear]       = useState(CURRENT_YEAR);
   const [students, setStudents]               = useState([]);
@@ -125,6 +130,11 @@ export default function StudentList() {
   const [query, setQuery]                     = useState('');
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [exportMsg, setExportMsg]             = useState('');
+
+  // Single-class teacher: skip the extra click.
+  useEffect(() => {
+    if (isTeacher && allowedClasses.length === 1 && !selectedClass) setSelectedClass(allowedClasses[0]);
+  }, [isTeacher, allowedClasses, selectedClass]);
 
   // Filtered list
   const filtered = students.filter(s => {
@@ -141,9 +151,10 @@ export default function StudentList() {
     if (!selectedClass) return;
     setLoading(true);
     setSearched(true);
-    const result = await window.api.getByClass(selectedClass, ''); // academic_year not used — list shows current enrollment
+    const result = await window.api.getByClass(selectedClass, '', user?.user_id); // academic_year not used — list shows current enrollment
     setLoading(false);
     if (result.success) setStudents(result.data);
+    else { setStudents([]); }
   };
 
   // Reload when filters change (if already searched)
@@ -262,7 +273,7 @@ export default function StudentList() {
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
             <option value="">Select a class</option>
-            {CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
+            {allowedClasses.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
 

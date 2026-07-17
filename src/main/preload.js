@@ -4,17 +4,30 @@ const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args);
 contextBridge.exposeInMainWorld('api', {
   // Auth
   login:              (creds)             => invoke('auth:login', creds),
+  resumeSession:      (token)             => invoke('auth:resumeSession', { session_token: token }),
+  logoutSession:      (token)             => invoke('auth:logout', { session_token: token }),
   changePassword:     (data)              => invoke('auth:changePassword', data),
+  setPin:             (userId, currentPassword, pin) => invoke('auth:setPin', { userId, currentPassword, pin }),
+  removePin:          (userId, currentPassword)      => invoke('auth:removePin', { userId, currentPassword }),
+  verifyPin:          (userId, pin)       => invoke('auth:verifyPin', { userId, pin }),
 
   // Users
   getUsers:           ()                  => invoke('users:getAll'),
   createUser:         (data)              => invoke('users:create', data),
   toggleUser:         (id, active)        => invoke('users:toggle', { userId: id, isActive: active }),
 
+  // Teacher Management
+  teachersGetAll:      ()                  => invoke('teachers:getAll'),
+  teachersGetOne:      (userId)            => invoke('teachers:getOne', { userId }),
+  teachersCreate:      (data)              => invoke('teachers:create', data),
+  teachersUpdate:      (data)              => invoke('teachers:update', data),
+  teachersResetPassword: (userId)          => invoke('teachers:resetPassword', { userId }),
+  teachersToggle:      (id, active)        => invoke('users:toggle', { userId: id, isActive: active }),
+
   // Enrollment
   addStudent:         (data)              => invoke('enrollment:add', data),
   editStudent:        (data)              => invoke('enrollment:edit', data),
-  getByClass:         (cls, year)         => invoke('enrollment:getByClass', { class: cls, academic_year: year }),
+  getByClass:         (cls, year, requestingUserId) => invoke('enrollment:getByClass', { class: cls, academic_year: year, requesting_user_id: requestingUserId }),
   getStudent:         (admNo)             => invoke('enrollment:getById', admNo),
   searchStudents:     (query)             => invoke('enrollment:search', query),
 
@@ -65,18 +78,18 @@ contextBridge.exposeInMainWorld('api', {
   promotionHistory:   ()                  => invoke('promotion:getHistory'),
 
   // Daily Attendance
-  attendanceGetStudents:    (cls, sec, yr)                 => invoke('attendance:getStudents',      { class: cls, section: sec, academic_year: yr }),
-  attendanceGetByDate:      (cls, sec, date)               => invoke('attendance:getByDate',        { class: cls, section: sec, date }),
-  attendanceMarkDay:        (cls, sec, date, yr, recs, by) => invoke('attendance:markDay',          { class: cls, section: sec, date, academic_year: yr, records: recs, marked_by: by }),
-  attendanceGetMonthly:     (cls, sec, mon, yr, acYr)      => invoke('attendance:getMonthly',       { class: cls, section: sec, month: mon, year: yr, academic_year: acYr }),
-  attendanceGetDailyGrid:   (cls, sec, mon, yr, acYr)      => invoke('attendance:getDailyGrid',     { class: cls, section: sec, month: mon, year: yr, academic_year: acYr }),
-  attendanceGetLow:         (yr, threshold)                => invoke('attendance:getLowAttendance', { academic_year: yr, threshold }),
-  attendanceGetMarkedDates: (cls, sec, mon, yr)            => invoke('attendance:getMarkedDates',   { class: cls, section: sec, month: mon, year: yr }),
-  attendanceLockDay:        (cls, sec, date, by)           => invoke('attendance:lockDay',          { class: cls, section: sec, date, locked_by: by }),
-  attendanceUnlockDay:      (cls, sec, date)               => invoke('attendance:unlockDay',        { class: cls, section: sec, date }),
+  attendanceGetStudents:    (cls, sec, yr, uid)            => invoke('attendance:getStudents',      { class: cls, section: sec, academic_year: yr, requesting_user_id: uid }),
+  attendanceGetByDate:      (cls, sec, date, uid)          => invoke('attendance:getByDate',        { class: cls, section: sec, date, requesting_user_id: uid }),
+  attendanceMarkDay:        (cls, sec, date, yr, recs, by, uid) => invoke('attendance:markDay',      { class: cls, section: sec, date, academic_year: yr, records: recs, marked_by: by, requesting_user_id: uid }),
+  attendanceGetMonthly:     (cls, sec, mon, yr, acYr, uid) => invoke('attendance:getMonthly',       { class: cls, section: sec, month: mon, year: yr, academic_year: acYr, requesting_user_id: uid }),
+  attendanceGetDailyGrid:   (cls, sec, mon, yr, acYr, uid) => invoke('attendance:getDailyGrid',     { class: cls, section: sec, month: mon, year: yr, academic_year: acYr, requesting_user_id: uid }),
+  attendanceGetLow:         (yr, threshold, uid)           => invoke('attendance:getLowAttendance', { academic_year: yr, threshold, requesting_user_id: uid }),
+  attendanceGetMarkedDates: (cls, sec, mon, yr, uid)       => invoke('attendance:getMarkedDates',   { class: cls, section: sec, month: mon, year: yr, requesting_user_id: uid }),
+  attendanceLockDay:        (cls, sec, date, by, uid)      => invoke('attendance:lockDay',          { class: cls, section: sec, date, locked_by: by, requesting_user_id: uid }),
+  attendanceUnlockDay:      (cls, sec, date, uid)          => invoke('attendance:unlockDay',        { class: cls, section: sec, date, requesting_user_id: uid }),
   attendanceCheckLocked:    (cls, sec, date)               => invoke('attendance:checkLocked',      { class: cls, section: sec, date }),
-  attendanceGetLockedDates: (cls, sec, mon, yr)            => invoke('attendance:getLockedDates',   { class: cls, section: sec, month: mon, year: yr }),
-  attendanceGetProgressive: (cls, sec, yr, mon, y)         => invoke('attendance:getProgressive',   { class: cls, section: sec, academic_year: yr, up_to_month: mon, up_to_year: y }),
+  attendanceGetLockedDates: (cls, sec, mon, yr, uid)       => invoke('attendance:getLockedDates',   { class: cls, section: sec, month: mon, year: yr, requesting_user_id: uid }),
+  attendanceGetProgressive: (cls, sec, yr, mon, y, uid)    => invoke('attendance:getProgressive',   { class: cls, section: sec, academic_year: yr, up_to_month: mon, up_to_year: y, requesting_user_id: uid }),
   attendanceGetStudentMonth:(admNo, mon, yr, acYr)         => invoke('attendance:getStudentMonth',  { admission_number: admNo, month: mon, year: yr, academic_year: acYr }),
   attendanceSaveStudentMonth:(admNo, name, cls, sec, acYr, records, by) => invoke('attendance:saveStudentMonth', { admission_number: admNo, student_name: name, class: cls, section: sec, academic_year: acYr, records, entered_by: by }),
   attendanceSearchStudent:  (query, cls, sec)              => invoke('attendance:searchStudent',    { query, class: cls, section: sec }),
@@ -90,11 +103,11 @@ contextBridge.exposeInMainWorld('api', {
   calendarGetYearSummary: (yr)                                     => invoke('calendar:getYearSummary', yr),
 
   // Examination
-  examGetStudents:  (cls, sec, yr)                        => invoke('exam:getStudents', { class: cls, section: sec, academic_year: yr }),
-  examGetMarks:     (cls, sec, yr, type)                  => invoke('exam:getMarks',    { class: cls, section: sec, academic_year: yr, exam_type: type }),
-  examSaveMarks:    (cls, sec, yr, type, marks, by, lock) => invoke('exam:saveMarks',   { class: cls, section: sec, academic_year: yr, exam_type: type, marks, entered_by: by, auto_lock: lock }),
+  examGetStudents:  (cls, sec, yr, uid)                   => invoke('exam:getStudents', { class: cls, section: sec, academic_year: yr, requesting_user_id: uid }),
+  examGetMarks:     (cls, sec, yr, type, uid)              => invoke('exam:getMarks',    { class: cls, section: sec, academic_year: yr, exam_type: type, requesting_user_id: uid }),
+  examSaveMarks:    (cls, sec, yr, type, marks, by, lock, uid) => invoke('exam:saveMarks',   { class: cls, section: sec, academic_year: yr, exam_type: type, marks, entered_by: by, auto_lock: lock, requesting_user_id: uid }),
   examLock:         (cls, sec, yr, type, by)              => invoke('exam:lock',        { class: cls, section: sec, academic_year: yr, exam_type: type, locked_by: by }),
-  examUnlock:       (cls, sec, yr, type)                  => invoke('exam:unlock',      { class: cls, section: sec, academic_year: yr, exam_type: type }),
+  examUnlock:       (cls, sec, yr, type, uid)              => invoke('exam:unlock',      { class: cls, section: sec, academic_year: yr, exam_type: type, requesting_user_id: uid }),
   examCheckLocked:  (cls, sec, yr, type)                  => invoke('exam:checkLocked', { class: cls, section: sec, academic_year: yr, exam_type: type }),
   examGetStatus:    (yr, cls, sec)                        => invoke('exam:getStatus',   { academic_year: yr, class: cls, section: sec }),
 

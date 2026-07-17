@@ -11,6 +11,7 @@ const fs = require('fs');
 const Database = require('better-sqlite3');
 const bcrypt = require('bcryptjs');
 const XLSX = require('xlsx');
+const crypto = require('crypto');
 
 // ── Paths ────────────────────────────────────────────────────
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
@@ -752,7 +753,75 @@ function initDatabase() {
     "ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1",
     "ALTER TABLE users ADD COLUMN full_name TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE users ADD COLUMN last_login TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE users ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN locked_until TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN pin_hash TEXT NOT NULL DEFAULT ''",
   ].forEach(sql => { try { db.exec(sql); } catch(_) {} });
+
+  // ── Employee Details: one row per user with extended personal/employment
+  // info. Currently populated for teachers only (via Teacher Management),
+  // but keyed generically so other roles can use it later without a schema
+  // change.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS employee_details (
+      employee_id          INTEGER  PRIMARY KEY AUTOINCREMENT,
+      user_id               INTEGER  NOT NULL UNIQUE REFERENCES users(user_id),
+      father_husband_name   TEXT     NOT NULL DEFAULT '',
+      date_of_birth         TEXT     NOT NULL DEFAULT '',
+      aadhar_number         TEXT     NOT NULL DEFAULT '',
+      pan_number            TEXT     NOT NULL DEFAULT '',
+      qualification         TEXT     NOT NULL DEFAULT '',
+      mobile_number         TEXT     NOT NULL DEFAULT '',
+      address               TEXT     NOT NULL DEFAULT '',
+      created_at            DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+      updated_at            DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
+    )
+  `);
+
+  // ── Teacher Classes: proper join table for multi-class assignment.
+  // Replaces users.assigned_class (single value) as the source of truth
+  // for anything built going forward — assigned_class is left in place
+  // only for backward compatibility with existing seeded accounts.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS teacher_classes (
+      id       INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id  INTEGER NOT NULL REFERENCES users(user_id),
+      class    TEXT    NOT NULL,
+      UNIQUE (user_id, class)
+    )
+  `);
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_teacher_classes_user ON teacher_classes (user_id)"); } catch(_) {}
+
+  // Migrate any existing teacher's single assigned_class into the new
+  // join table, so nobody who was already working loses their class access
+  // when class-scoping switches over to teacher_classes.
+  try {
+    const legacyTeachers = db.prepare(
+      "SELECT user_id, assigned_class FROM users WHERE role = 'teacher' AND assigned_class != ''"
+    ).all();
+    const insertClass = db.prepare('INSERT OR IGNORE INTO teacher_classes (user_id, class) VALUES (?, ?)');
+    legacyTeachers.forEach(t => insertClass.run(t.user_id, t.assigned_class));
+  } catch(_) {}
+
+  // ── Sessions: lets login persist across app restarts. Only a hash of the
+  // token is ever stored — same idea as password hashing, so a raw copy of
+  // the database alone isn't enough to resume someone's session. This is
+  // entirely separate from auto-lock (see renderer AuthContext), which is
+  // just an in-memory UI state and never touches this table — locking the
+  // screen doesn't end the session, only a real sign-out deletes a row here.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      token_hash    TEXT PRIMARY KEY,
+      user_id       INTEGER  NOT NULL REFERENCES users(user_id),
+      created_at    DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+      last_seen_at  DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
+      expires_at    DATETIME NOT NULL
+    )
+  `);
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id)"); } catch(_) {}
+  // Sweep out anything already expired so the table doesn't grow forever.
+  try { db.prepare("DELETE FROM sessions WHERE expires_at < datetime('now','localtime')").run(); } catch(_) {}
 
   // ── Ensure all temp_admissions columns exist (safe to run repeatedly)
   const tempCols = [
@@ -1212,7 +1281,109 @@ app.on('window-all-closed', () => {
 //  IPC HANDLERS
 // ============================================================
 
+// ── Class-scoping enforcement (point 4) ────────────────────────
+// Used by every handler that returns or modifies per-class student data
+// (Attendance, Examination, Student List). Re-derives the truth from the
+// database itself rather than trusting anything the renderer claims about
+// its own user — a teacher's real class list always comes from
+// teacher_classes, keyed off their actual user_id.
+//
+// requestingUserId is optional/undefined for calls made before login (or
+// from non-teacher-only screens that don't pass it yet) — in that case we
+// don't block, since the UI-level restriction (dropdowns only showing
+// allowed classes) is already in place; this is defense-in-depth on top of
+// that, not a replacement for a real server-side session model, which this
+// single-process offline app doesn't have.
+function _classAccessDenied(requestingUserId, className) {
+  if (!requestingUserId || !className) return false;
+  const requester = db.prepare('SELECT role FROM users WHERE user_id = ?').get(requestingUserId);
+  if (!requester || requester.role !== 'teacher') return false; // only teachers are restricted
+  const allowed = db.prepare('SELECT 1 FROM teacher_classes WHERE user_id = ? AND class = ?').get(requestingUserId, className);
+  return !allowed;
+}
+
 // ── AUTH ─────────────────────────────────────────────────────
+const LOGIN_ATTEMPT_LIMIT = 5;
+const LOGIN_LOCKOUT_SECONDS = 60;
+const SESSION_TTL_DAYS = 30;
+
+// ── TOGGLE: forced password change on first login / after a reset ─────
+// true  = teachers/reset accounts must set their own password before
+//         using the app (the original design).
+// false = Principal/Manager's chosen password is used as-is; teachers
+//         never see the forced-change screen. Nothing else in the login
+//         module depends on this — the ForcedPasswordChange screen and
+//         the App.jsx gate simply never trigger, since the flag they key
+//         off is never set to 1 anywhere when this is false.
+const REQUIRE_PASSWORD_CHANGE_ON_FIRST_LOGIN = true;
+
+function _hashToken(rawToken) {
+  return crypto.createHash('sha256').update(rawToken).digest('hex');
+}
+
+// Single source of truth for the user object shape returned to the
+// renderer — used by both auth:login and auth:resumeSession, so a session
+// resumed after a restart always reflects the same (possibly changed since
+// last login) role/classes/must_change_password as a fresh login would.
+function _buildUserPayload(user) {
+  const classes = db.prepare('SELECT class FROM teacher_classes WHERE user_id = ? ORDER BY class')
+    .all(user.user_id).map(r => r.class);
+  return {
+    user_id: user.user_id,
+    username: user.username,
+    full_name: user.full_name,
+    role: user.role,
+    assigned_class: user.assigned_class,
+    classes,
+    must_change_password: !!user.must_change_password,
+  };
+}
+
+function _createSession(userId) {
+  const rawToken = crypto.randomBytes(32).toString('hex');
+  db.prepare(`
+    INSERT INTO sessions (token_hash, user_id, expires_at)
+    VALUES (?, ?, datetime('now','localtime','+${SESSION_TTL_DAYS} days'))
+  `).run(_hashToken(rawToken), userId);
+  return rawToken;
+}
+
+// Shared by password login AND PIN verification — a PIN is much lower
+// entropy than a password, so it's more important, not less, that it's
+// protected by the same rate limit rather than a separate, easily
+// forgotten-about implementation.
+function _checkLockout(user) {
+  if (!user.locked_until) return null;
+  const remainingMs = new Date(user.locked_until.replace(' ', 'T')).getTime() - Date.now();
+  if (remainingMs <= 0) return null;
+  return {
+    success: false, locked: true,
+    retry_after_seconds: Math.ceil(remainingMs / 1000),
+    message: `Too many failed attempts. Try again in ${Math.ceil(remainingMs / 1000)} seconds.`,
+  };
+}
+
+function _recordFailedAttempt(user, genericMessage) {
+  const attempts = (user.failed_attempts || 0) + 1;
+  if (attempts >= LOGIN_ATTEMPT_LIMIT) {
+    db.prepare(`
+      UPDATE users SET failed_attempts = 0,
+        locked_until = datetime('now','localtime','+${LOGIN_LOCKOUT_SECONDS} seconds')
+      WHERE user_id = ?
+    `).run(user.user_id);
+    return {
+      success: false, locked: true, retry_after_seconds: LOGIN_LOCKOUT_SECONDS,
+      message: `Too many failed attempts. Try again in ${LOGIN_LOCKOUT_SECONDS} seconds.`,
+    };
+  }
+  db.prepare('UPDATE users SET failed_attempts = ? WHERE user_id = ?').run(attempts, user.user_id);
+  return { success: false, message: genericMessage };
+}
+
+function _clearLockout(userId) {
+  db.prepare("UPDATE users SET failed_attempts = 0, locked_until = '' WHERE user_id = ?").run(userId);
+}
+
 ipcMain.handle('auth:login', async (_evt, { username, password }) => {
   try {
     const user = db
@@ -1221,26 +1392,137 @@ ipcMain.handle('auth:login', async (_evt, { username, password }) => {
 
     if (!user) return { success: false, message: 'Invalid username or password.' };
 
+    const lockoutResponse = _checkLockout(user);
+    if (lockoutResponse) return lockoutResponse;
+
     const match = await bcrypt.compare(password, user.password_hash);
-    if (!match) return { success: false, message: 'Invalid username or password.' };
+    if (!match) return _recordFailedAttempt(user, 'Invalid username or password.');
 
-    // Update last_login
-    db.prepare("UPDATE users SET last_login = datetime('now','localtime') WHERE user_id = ?")
-      .run(user.user_id);
+    // Successful login — clear any lockout state and record last_login.
+    _clearLockout(user.user_id);
+    db.prepare("UPDATE users SET last_login = datetime('now','localtime') WHERE user_id = ?").run(user.user_id);
 
-    return {
-      success: true,
-      user: {
-        user_id: user.user_id,
-        username: user.username,
-        full_name: user.full_name,
-        role: user.role,
-        assigned_class: user.assigned_class,
-      },
-    };
+    const session_token = _createSession(user.user_id);
+
+    return { success: true, user: _buildUserPayload(user), session_token };
   } catch (err) {
     console.error('[auth:login]', err);
     return { success: false, message: 'Login error: ' + err.message };
+  }
+});
+
+// Restores a session after the app is closed and reopened. Re-validates
+// against the database each time (account could have been deactivated,
+// role/classes could have changed) rather than trusting anything the
+// renderer cached locally.
+ipcMain.handle('auth:resumeSession', (_evt, { session_token }) => {
+  try {
+    if (!session_token) return { success: false };
+    const tokenHash = _hashToken(session_token);
+
+    const session = db.prepare('SELECT * FROM sessions WHERE token_hash = ?').get(tokenHash);
+    if (!session) return { success: false };
+
+    if (new Date(session.expires_at.replace(' ', 'T')).getTime() < Date.now()) {
+      db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash);
+      return { success: false, message: 'Session expired. Please sign in again.' };
+    }
+
+    const user = db.prepare('SELECT * FROM users WHERE user_id = ? AND is_active = 1').get(session.user_id);
+    if (!user) {
+      // Account deactivated (or deleted) since this session was created —
+      // the session is no longer valid regardless of its own expiry.
+      db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash);
+      return { success: false };
+    }
+
+    // Sliding expiry — staying active resets the 30-day countdown.
+    db.prepare(`
+      UPDATE sessions SET last_seen_at = datetime('now','localtime'),
+        expires_at = datetime('now','localtime','+${SESSION_TTL_DAYS} days')
+      WHERE token_hash = ?
+    `).run(tokenHash);
+
+    return { success: true, user: _buildUserPayload(user) };
+  } catch (err) {
+    console.error('[auth:resumeSession]', err);
+    return { success: false };
+  }
+});
+
+// Explicit sign-out — invalidates the session server-side so the same
+// token can't be used to resume later (unlike just clearing it locally).
+ipcMain.handle('auth:logout', (_evt, { session_token }) => {
+  try {
+    if (session_token) db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(_hashToken(session_token));
+    return { success: true };
+  } catch (err) {
+    return { success: true }; // logout should never appear to fail to the user
+  }
+});
+
+// Obviously-guessable PINs are blocked outright — a 4-digit PIN already has
+// far less entropy than a real password, no reason to allow the weakest of
+// the weak on top of that.
+const WEAK_PINS = new Set(['0000','1111','2222','3333','4444','5555','6666','7777','8888','9999','1234','4321','0123','9876']);
+
+// Set or change a quick-unlock PIN — requires the account's real current
+// password as proof, same trust model as auth:changePassword. This is
+// self-service only: nobody else can set a PIN on your behalf.
+ipcMain.handle('auth:setPin', async (_evt, { userId, currentPassword, pin }) => {
+  try {
+    const user = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
+    if (!user) return { success: false, message: 'User not found.' };
+
+    const match = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!match) return { success: false, message: 'Current password is incorrect.' };
+
+    if (!/^\d{4}$/.test(pin || '')) return { success: false, message: 'PIN must be exactly 4 digits.' };
+    if (WEAK_PINS.has(pin)) return { success: false, message: 'That PIN is too easy to guess — please choose another.' };
+
+    const hash = await bcrypt.hash(pin, 10);
+    db.prepare('UPDATE users SET pin_hash = ? WHERE user_id = ?').run(hash, userId);
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+ipcMain.handle('auth:removePin', async (_evt, { userId, currentPassword }) => {
+  try {
+    const user = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
+    if (!user) return { success: false, message: 'User not found.' };
+    const match = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!match) return { success: false, message: 'Current password is incorrect.' };
+    db.prepare("UPDATE users SET pin_hash = '' WHERE user_id = ?").run(userId);
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// Verifies a PIN for quick-switch — does NOT create a new session on its
+// own. The renderer only ever calls this for a user who already has a
+// live, still-valid session token saved locally from a real password
+// login earlier today; this just confirms "yes, it's really you" before
+// switching the active session back to them. Same rate limiting as a real
+// login, since a 4-digit PIN is far easier to brute-force than a password.
+ipcMain.handle('auth:verifyPin', async (_evt, { userId, pin }) => {
+  try {
+    const user = db.prepare('SELECT * FROM users WHERE user_id = ? AND is_active = 1').get(userId);
+    if (!user) return { success: false, message: 'Account not available.' };
+    if (!user.pin_hash) return { success: false, message: 'No PIN set for this account.' };
+
+    const lockoutResponse = _checkLockout(user);
+    if (lockoutResponse) return lockoutResponse;
+
+    const match = await bcrypt.compare(pin, user.pin_hash);
+    if (!match) return _recordFailedAttempt(user, 'Incorrect PIN.');
+
+    _clearLockout(user.user_id);
+    return { success: true, user: _buildUserPayload(user) };
+  } catch (err) {
+    return { success: false, message: err.message };
   }
 });
 
@@ -1252,8 +1534,12 @@ ipcMain.handle('auth:changePassword', async (_evt, { userId, oldPassword, newPas
     const match = await bcrypt.compare(oldPassword, user.password_hash);
     if (!match) return { success: false, message: 'Current password is incorrect.' };
 
+    if (!newPassword || newPassword.length < 6) {
+      return { success: false, message: 'New password must be at least 6 characters.' };
+    }
+
     const hash = await bcrypt.hash(newPassword, 10);
-    db.prepare('UPDATE users SET password_hash = ? WHERE user_id = ?').run(hash, userId);
+    db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE user_id = ?').run(hash, userId);
 
     return { success: true };
   } catch (err) {
@@ -1289,6 +1575,255 @@ ipcMain.handle('users:create', async (_evt, { username, password, full_name, rol
 ipcMain.handle('users:toggle', (_evt, { userId, isActive }) => {
   db.prepare('UPDATE users SET is_active = ? WHERE user_id = ?').run(isActive ? 1 : 0, userId);
   return { success: true };
+});
+
+// ── TEACHER MANAGEMENT (Principal / Manager) ──────────────────
+// Purpose-built on top of the generic users table + the new
+// employee_details / teacher_classes tables. Kept separate from
+// users:create/getAll above because the shape of the operation is
+// genuinely different (auto-generated credentials, multi-table writes,
+// masked sensitive fields) — not a case of duplicating existing logic,
+// just orchestrating it for a specific flow.
+
+function _generateTeacherUsername(fullName) {
+  const parts = String(fullName || '').trim().split(/\s+/).filter(Boolean);
+  const clean = s => s.toLowerCase().replace(/[^a-z]/g, '');
+  const first = clean(parts[0] || 'teacher');
+  const last  = clean(parts.length > 1 ? parts[parts.length - 1] : '');
+  const base  = last ? `${first}.${last}` : first;
+
+  let username = `${base}@bps.in`;
+  let n = 2;
+  while (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) {
+    username = `${base}${n}@bps.in`;
+    n++;
+  }
+  return username;
+}
+
+// Format: XXXXAYYYYA — first letter capital, next 3 lowercase, a symbol,
+// 4 digits, a symbol. Uses crypto.randomInt (not Math.random) since this
+// becomes a real login credential.
+function _generateTeacherPassword() {
+  const UPPER   = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // no ambiguous I/O
+  const LOWER   = 'abcdefghjkmnpqrstuvwxyz';
+  const DIGITS  = '0123456789';
+  const SYMBOLS = '!@#$%&*';
+  const pick = (chars) => chars[crypto.randomInt(chars.length)];
+
+  let pw = pick(UPPER);
+  for (let i = 0; i < 3; i++) pw += pick(LOWER);
+  pw += pick(SYMBOLS);
+  for (let i = 0; i < 4; i++) pw += pick(DIGITS);
+  pw += pick(SYMBOLS);
+  return pw;
+}
+
+function _maskAadhar(aadhar) {
+  const digits = String(aadhar || '').replace(/\D/g, '');
+  if (digits.length < 4) return digits ? 'XXXX' : '';
+  return 'XXXX XXXX ' + digits.slice(-4);
+}
+
+function _maskPAN(pan) {
+  const p = String(pan || '').trim();
+  if (p.length < 4) return p ? 'XXXXXXXXXX' : '';
+  return 'X'.repeat(p.length - 4) + p.slice(-4);
+}
+
+// Server-side mirror of the frontend's validation — the UI already checks
+// this, but a request could bypass it entirely (a stale form, a future bug
+// elsewhere, or just someone poking devtools), so it's enforced here too.
+function _validateTeacherDetails({ full_name, date_of_birth, aadhar_number, pan_number, mobile_number, classes }) {
+  if (!full_name || !full_name.trim()) return 'Teacher name is required.';
+  if (!Array.isArray(classes) || classes.length === 0) return 'At least one class must be assigned.';
+
+  if (date_of_birth) {
+    const dob = new Date(date_of_birth);
+    if (isNaN(dob.getTime())) return 'Date of birth is not a valid date.';
+    if (dob > new Date()) return 'Date of birth cannot be in the future.';
+    const age = (Date.now() - dob.getTime()) / (1000 * 60 * 60 * 24 * 365.25);
+    if (age < 18) return 'Date of birth suggests an age below 18 — please check it.';
+    if (age > 80) return 'Date of birth suggests an age above 80 — please check it.';
+  }
+
+  if (aadhar_number) {
+    const digits = String(aadhar_number).replace(/\s+/g, '');
+    if (!/^\d{12}$/.test(digits)) return 'Aadhar number must be exactly 12 digits.';
+  }
+
+  if (pan_number) {
+    if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(String(pan_number).trim())) {
+      return 'PAN number must be in the format ABCDE1234F (5 letters, 4 digits, 1 letter).';
+    }
+  }
+
+  if (mobile_number) {
+    const digits = String(mobile_number).replace(/\D/g, '');
+    if (!/^[6-9]\d{9}$/.test(digits)) return 'Mobile number must be a valid 10-digit Indian number.';
+  }
+
+  return null;
+}
+
+// Create a teacher: writes users + employee_details + teacher_classes in
+// one transaction — either the whole teacher exists, or none of it does.
+ipcMain.handle('teachers:create', async (_evt, {
+  full_name, father_husband_name, date_of_birth, aadhar_number, pan_number,
+  qualification, mobile_number, address, classes,
+}) => {
+  try {
+    const validationError = _validateTeacherDetails({ full_name, date_of_birth, aadhar_number, pan_number, mobile_number, classes });
+    if (validationError) return { success: false, message: validationError };
+
+    const cleanAadhar = String(aadhar_number || '').replace(/\s+/g, '');
+    const cleanMobile = String(mobile_number || '').replace(/\D/g, '');
+    const cleanPan     = String(pan_number || '').trim().toUpperCase();
+
+    const username = _generateTeacherUsername(full_name);
+    const plainPassword = _generateTeacherPassword();
+    const hash = await bcrypt.hash(plainPassword, 10);
+
+    const createTeacher = db.transaction(() => {
+      const userResult = db.prepare(
+        'INSERT INTO users (username, password_hash, full_name, role, assigned_class, must_change_password) VALUES (?,?,?,?,?,?)'
+      ).run(username, hash, full_name.trim(), 'teacher', classes[0] || '', REQUIRE_PASSWORD_CHANGE_ON_FIRST_LOGIN ? 1 : 0);
+
+      const userId = userResult.lastInsertRowid;
+
+      db.prepare(`
+        INSERT INTO employee_details
+          (user_id, father_husband_name, date_of_birth, aadhar_number, pan_number, qualification, mobile_number, address)
+        VALUES (?,?,?,?,?,?,?,?)
+      `).run(userId, father_husband_name || '', date_of_birth || '', cleanAadhar,
+             cleanPan, qualification || '', cleanMobile, address || '');
+
+      const insertClass = db.prepare('INSERT OR IGNORE INTO teacher_classes (user_id, class) VALUES (?, ?)');
+      classes.forEach(c => insertClass.run(userId, c));
+
+      return userId;
+    });
+
+    const userId = createTeacher();
+    return { success: true, user_id: userId, username, password: plainPassword };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// List all teachers with masked Aadhar/PAN — for the Teacher Management
+// table view. Full unmasked detail only via teachers:getOne.
+ipcMain.handle('teachers:getAll', async () => {
+  try {
+    const rows = db.prepare(`
+      SELECT u.user_id, u.username, u.full_name, u.is_active, u.created_at, u.last_login,
+             e.father_husband_name, e.date_of_birth, e.aadhar_number, e.pan_number,
+             e.qualification, e.mobile_number, e.address
+      FROM   users u
+      LEFT JOIN employee_details e ON e.user_id = u.user_id
+      WHERE  u.role = 'teacher'
+      ORDER  BY u.full_name
+    `).all();
+
+    const classRows = db.prepare('SELECT user_id, class FROM teacher_classes ORDER BY class').all();
+    const classesByUser = {};
+    classRows.forEach(r => {
+      if (!classesByUser[r.user_id]) classesByUser[r.user_id] = [];
+      classesByUser[r.user_id].push(r.class);
+    });
+
+    const data = rows.map(r => ({
+      user_id: r.user_id, username: r.username, full_name: r.full_name,
+      is_active: r.is_active, created_at: r.created_at, last_login: r.last_login,
+      father_husband_name: r.father_husband_name, date_of_birth: r.date_of_birth,
+      aadhar_number: _maskAadhar(r.aadhar_number), pan_number: _maskPAN(r.pan_number),
+      qualification: r.qualification, mobile_number: r.mobile_number, address: r.address,
+      classes: classesByUser[r.user_id] || [],
+    }));
+
+    return { success: true, data };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// Full unmasked detail for one teacher — only called when a specific
+// record is opened, not for the list view.
+ipcMain.handle('teachers:getOne', async (_evt, { userId }) => {
+  try {
+    const user = db.prepare(
+      "SELECT user_id, username, full_name, is_active, created_at, last_login FROM users WHERE user_id = ? AND role = 'teacher'"
+    ).get(userId);
+    if (!user) return { success: false, message: 'Teacher not found.' };
+
+    const details = db.prepare('SELECT * FROM employee_details WHERE user_id = ?').get(userId) || {};
+    const classes = db.prepare('SELECT class FROM teacher_classes WHERE user_id = ? ORDER BY class').all(userId).map(r => r.class);
+
+    return { success: true, data: { ...user, ...details, classes } };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// Update a teacher's details/classes (not credentials — see
+// teachers:resetPassword for that, kept deliberately separate).
+ipcMain.handle('teachers:update', async (_evt, {
+  userId, full_name, father_husband_name, date_of_birth, aadhar_number, pan_number,
+  qualification, mobile_number, address, classes,
+}) => {
+  try {
+    const validationError = _validateTeacherDetails({ full_name, date_of_birth, aadhar_number, pan_number, mobile_number, classes });
+    if (validationError) return { success: false, message: validationError };
+
+    const cleanAadhar = String(aadhar_number || '').replace(/\s+/g, '');
+    const cleanMobile = String(mobile_number || '').replace(/\D/g, '');
+    const cleanPan     = String(pan_number || '').trim().toUpperCase();
+
+    const doUpdate = db.transaction(() => {
+      db.prepare('UPDATE users SET full_name = ?, assigned_class = ? WHERE user_id = ?')
+        .run(full_name || '', classes[0] || '', userId);
+
+      db.prepare(`
+        UPDATE employee_details
+        SET father_husband_name = ?, date_of_birth = ?, aadhar_number = ?, pan_number = ?,
+            qualification = ?, mobile_number = ?, address = ?, updated_at = datetime('now','localtime')
+        WHERE user_id = ?
+      `).run(father_husband_name || '', date_of_birth || '', cleanAadhar, cleanPan,
+             qualification || '', cleanMobile, address || '', userId);
+
+      db.prepare('DELETE FROM teacher_classes WHERE user_id = ?').run(userId);
+      const insertClass = db.prepare('INSERT OR IGNORE INTO teacher_classes (user_id, class) VALUES (?, ?)');
+      classes.forEach(c => insertClass.run(userId, c));
+    });
+    doUpdate();
+
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// Principal/Manager password reset — generates and returns a brand new
+// password ONCE. Deliberately separate from auth:changePassword (self
+// service, requires the old password) since this is a different
+// authorization model: role-based override, no old password needed, and
+// nothing is ever stored in a form that could be "looked up" again later.
+ipcMain.handle('teachers:resetPassword', async (_evt, { userId }) => {
+  try {
+    const user = db.prepare("SELECT user_id FROM users WHERE user_id = ? AND role = 'teacher'").get(userId);
+    if (!user) return { success: false, message: 'Teacher not found.' };
+
+    const plainPassword = _generateTeacherPassword();
+    const hash = await bcrypt.hash(plainPassword, 10);
+    db.prepare(`
+      UPDATE users SET password_hash = ?, must_change_password = ?, failed_attempts = 0, locked_until = ''
+      WHERE user_id = ?
+    `).run(hash, REQUIRE_PASSWORD_CHANGE_ON_FIRST_LOGIN ? 1 : 0, userId);
+
+    return { success: true, password: plainPassword };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
 });
 
 // ── ENROLLMENT (SR Register) ──────────────────────────────────
@@ -1473,7 +2008,10 @@ ipcMain.handle('enrollment:add', (_evt, raw) => {
   }
 })
 
-ipcMain.handle('enrollment:getByClass', (_evt, { class: cls }) => {
+ipcMain.handle('enrollment:getByClass', (_evt, { class: cls, requesting_user_id }) => {
+  if (_classAccessDenied(requesting_user_id, cls)) {
+    return { success: false, message: 'You do not have access to this class.' };
+  }
   // Use LOWER() on both sides so 'Nursery', 'NURSERY', 'nursery' all match
   const rows = db.prepare(`
     SELECT * FROM enrollment
@@ -1745,6 +2283,11 @@ ipcMain.handle('dashboard:stats', (_evt, params) => {
   const role         = params?.role         || 'staff';
   const teacherClass = params?.cls          || '';
   const submittedBy  = params?.submitted_by || '';
+  const requestingUserId = params?.requesting_user_id;
+
+  if (teacherClass && _classAccessDenied(requestingUserId, teacherClass)) {
+    return { success: false, message: 'You do not have access to this class.' };
+  }
 
   try {
     const CLASS_ORDER = ['Nursery','LKG','UKG','Class 1','Class 2','Class 3',
@@ -2790,8 +3333,11 @@ ipcMain.handle('promotion:getHistory', () => {
 
 
 // ── Get students for a class (for marking attendance) ─────────
-ipcMain.handle('attendance:getStudents', (_evt, { class: cls, section, academic_year }) => {
+ipcMain.handle('attendance:getStudents', (_evt, { class: cls, section, academic_year, requesting_user_id }) => {
   try {
+    if (_classAccessDenied(requesting_user_id, cls)) {
+      return { success: false, message: 'You do not have access to this class.' };
+    }
     const students = db.prepare(`
       SELECT e.admission_number, e.student_name, e.father_name, e.gender,
              COALESCE(r.roll_number, ROW_NUMBER() OVER (ORDER BY e.student_name)) as roll_number
@@ -2813,8 +3359,11 @@ ipcMain.handle('attendance:getStudents', (_evt, { class: cls, section, academic_
 });
 
 // ── Get attendance for a class on a specific date ─────────────
-ipcMain.handle('attendance:getByDate', (_evt, { class: cls, section, date }) => {
+ipcMain.handle('attendance:getByDate', (_evt, { class: cls, section, date, requesting_user_id }) => {
   try {
+    if (_classAccessDenied(requesting_user_id, cls)) {
+      return { success: false, message: 'You do not have access to this class.' };
+    }
     const rows = db.prepare(`
       SELECT admission_number, student_name, status, marked_by, marked_at
       FROM attendance_daily
@@ -2828,8 +3377,11 @@ ipcMain.handle('attendance:getByDate', (_evt, { class: cls, section, date }) => 
 });
 
 // ── Mark attendance for a full class on a date ────────────────
-ipcMain.handle('attendance:markDay', (_evt, { class: cls, section, date, academic_year, records, marked_by }) => {
+ipcMain.handle('attendance:markDay', (_evt, { class: cls, section, date, academic_year, records, marked_by, requesting_user_id }) => {
   try {
+    if (_classAccessDenied(requesting_user_id, cls)) {
+      return { success: false, message: 'You do not have access to this class.' };
+    }
     const upsert = db.prepare(`
       INSERT INTO attendance_daily
         (admission_number, student_name, class, section, date, academic_year, status, marked_by)
@@ -2851,8 +3403,11 @@ ipcMain.handle('attendance:markDay', (_evt, { class: cls, section, date, academi
 });
 
 // ── Get monthly summary for a class ──────────────────────────
-ipcMain.handle('attendance:getMonthly', (_evt, { class: cls, section, month, year, academic_year }) => {
+ipcMain.handle('attendance:getMonthly', (_evt, { class: cls, section, month, year, academic_year, requesting_user_id }) => {
   try {
+    if (_classAccessDenied(requesting_user_id, cls)) {
+      return { success: false, message: 'You do not have access to this class.' };
+    }
     // month = "06", year = "2025" (from date DD-MM-YYYY, positions 4-5 and 7-10)
     const rows = db.prepare(`
       SELECT
@@ -2882,8 +3437,11 @@ ipcMain.handle('attendance:getMonthly', (_evt, { class: cls, section, month, yea
 });
 
 // ── Get day-by-day grid for a class/month ────────────────────
-ipcMain.handle('attendance:getDailyGrid', (_evt, { class: cls, section, month, year, academic_year }) => {
+ipcMain.handle('attendance:getDailyGrid', (_evt, { class: cls, section, month, year, academic_year, requesting_user_id }) => {
   try {
+    if (_classAccessDenied(requesting_user_id, cls)) {
+      return { success: false, message: 'You do not have access to this class.' };
+    }
     const rows = db.prepare(`
       SELECT a.admission_number, a.student_name, a.date, a.status,
              COALESCE(r.roll_number, 999) as roll_number
@@ -2907,8 +3465,17 @@ ipcMain.handle('attendance:getDailyGrid', (_evt, { class: cls, section, month, y
 });
 
 // ── Get low attendance students ───────────────────────────────
-ipcMain.handle('attendance:getLowAttendance', (_evt, { academic_year, threshold = 75 }) => {
+ipcMain.handle('attendance:getLowAttendance', (_evt, { academic_year, threshold = 75, requesting_user_id }) => {
   try {
+    if (requesting_user_id) {
+      const requester = db.prepare('SELECT role FROM users WHERE user_id = ?').get(requesting_user_id);
+      // This report has no class filter — it's whole-school by design, so a
+      // teacher can never be safely scoped into it. Block outright rather
+      // than risk exposing every other class's students.
+      if (requester?.role === 'teacher') {
+        return { success: false, message: 'This report is not available to teacher accounts.' };
+      }
+    }
     const rows = db.prepare(`
       SELECT
         admission_number,
@@ -2934,8 +3501,11 @@ ipcMain.handle('attendance:getLowAttendance', (_evt, { academic_year, threshold 
 });
 
 // ── Get marked dates for a class/month (to show which days done) ──
-ipcMain.handle('attendance:getMarkedDates', (_evt, { class: cls, section, month, year }) => {
+ipcMain.handle('attendance:getMarkedDates', (_evt, { class: cls, section, month, year, requesting_user_id }) => {
   try {
+    if (_classAccessDenied(requesting_user_id, cls)) {
+      return { success: false, message: 'You do not have access to this class.' };
+    }
     const rows = db.prepare(`
       SELECT DISTINCT date
       FROM attendance_daily
@@ -2952,8 +3522,11 @@ ipcMain.handle('attendance:getMarkedDates', (_evt, { class: cls, section, month,
 });
 
 // ── Lock attendance for a class/date ─────────────────────────
-ipcMain.handle('attendance:lockDay', (_evt, { class: cls, section, date, locked_by }) => {
+ipcMain.handle('attendance:lockDay', (_evt, { class: cls, section, date, locked_by, requesting_user_id }) => {
   try {
+    if (_classAccessDenied(requesting_user_id, cls)) {
+      return { success: false, message: 'You do not have access to this class.' };
+    }
     db.prepare(`
       INSERT INTO attendance_locks (class, section, date, locked_by)
       VALUES (?, ?, ?, ?)
@@ -2968,8 +3541,11 @@ ipcMain.handle('attendance:lockDay', (_evt, { class: cls, section, date, locked_
 });
 
 // ── Unlock attendance ─────────────────────────────────────────
-ipcMain.handle('attendance:unlockDay', (_evt, { class: cls, section, date }) => {
+ipcMain.handle('attendance:unlockDay', (_evt, { class: cls, section, date, requesting_user_id }) => {
   try {
+    if (_classAccessDenied(requesting_user_id, cls)) {
+      return { success: false, message: 'You do not have access to this class.' };
+    }
     db.prepare(`
       DELETE FROM attendance_locks WHERE class = ? AND section = ? AND date = ?
     `).run(cls, section, date);
@@ -2993,8 +3569,11 @@ ipcMain.handle('attendance:checkLocked', (_evt, { class: cls, section, date }) =
 });
 
 // ── Get locked dates for a class/month ───────────────────────
-ipcMain.handle('attendance:getLockedDates', (_evt, { class: cls, section, month, year }) => {
+ipcMain.handle('attendance:getLockedDates', (_evt, { class: cls, section, month, year, requesting_user_id }) => {
   try {
+    if (_classAccessDenied(requesting_user_id, cls)) {
+      return { success: false, message: 'You do not have access to this class.' };
+    }
     const rows = db.prepare(`
       SELECT date, locked_by, locked_at FROM attendance_locks
       WHERE LOWER(class) = LOWER(?)
@@ -3151,8 +3730,11 @@ ipcMain.handle('attendance:saveStudentMonth', (_evt, { admission_number, student
   } catch(err) { return { success: false, message: err.message }; }
 });
 // ── Get progressive (year-to-date) attendance ────────────────
-ipcMain.handle('attendance:getProgressive', (_evt, { class: cls, section, academic_year, up_to_month, up_to_year }) => {
+ipcMain.handle('attendance:getProgressive', (_evt, { class: cls, section, academic_year, up_to_month, up_to_year, requesting_user_id }) => {
   try {
+    if (_classAccessDenied(requesting_user_id, cls)) {
+      return { success: false, message: 'You do not have access to this class.' };
+    }
     // Compare dates as YYYYMM integers to handle Jan-Mar of second year correctly
     const upTo = parseInt(up_to_year) * 100 + parseInt(up_to_month);
 
@@ -3236,8 +3818,11 @@ ipcMain.handle('calendar:getYearSummary', (_evt, academic_year) => {
 // ══════════════════════════════════════════════════════════════
 
 // ── Get students for a class ──────────────────────────────────
-ipcMain.handle('exam:getStudents', (_evt, { class: cls, section, academic_year }) => {
+ipcMain.handle('exam:getStudents', (_evt, { class: cls, section, academic_year, requesting_user_id }) => {
   try {
+    if (_classAccessDenied(requesting_user_id, cls)) {
+      return { success: false, message: 'You do not have access to this class.' };
+    }
     const rows = db.prepare(`
       SELECT e.admission_number, e.student_name, e.father_name,
              e.mother_name, e.date_of_birth,
@@ -3258,8 +3843,11 @@ ipcMain.handle('exam:getStudents', (_evt, { class: cls, section, academic_year }
 });
 
 // ── Get marks for a class / exam ─────────────────────────────
-ipcMain.handle('exam:getMarks', (_evt, { class: cls, section, academic_year, exam_type }) => {
+ipcMain.handle('exam:getMarks', (_evt, { class: cls, section, academic_year, exam_type, requesting_user_id }) => {
   try {
+    if (_classAccessDenied(requesting_user_id, cls)) {
+      return { success: false, message: 'You do not have access to this class.' };
+    }
     const where = exam_type
       ? 'WHERE class=? AND section=? AND academic_year=? AND exam_type=?'
       : 'WHERE class=? AND section=? AND academic_year=?';
@@ -3274,8 +3862,11 @@ ipcMain.handle('exam:getMarks', (_evt, { class: cls, section, academic_year, exa
 });
 
 // ── Save marks ────────────────────────────────────────────────
-ipcMain.handle('exam:saveMarks', (_evt, { class: cls, section, academic_year, exam_type, marks, entered_by, auto_lock }) => {
+ipcMain.handle('exam:saveMarks', (_evt, { class: cls, section, academic_year, exam_type, marks, entered_by, auto_lock, requesting_user_id }) => {
   try {
+    if (_classAccessDenied(requesting_user_id, cls)) {
+      return { success: false, message: 'You do not have access to this class.' };
+    }
     const del = db.prepare(
       'DELETE FROM exam_marks WHERE admission_number=? AND academic_year=? AND exam_type=? AND subject=?'
     );
@@ -3318,8 +3909,11 @@ ipcMain.handle('exam:lock', (_evt, { class: cls, section, academic_year, exam_ty
   } catch(err) { return { success: false, message: err.message }; }
 });
 
-ipcMain.handle('exam:unlock', (_evt, { class: cls, section, academic_year, exam_type }) => {
+ipcMain.handle('exam:unlock', (_evt, { class: cls, section, academic_year, exam_type, requesting_user_id }) => {
   try {
+    if (_classAccessDenied(requesting_user_id, cls)) {
+      return { success: false, message: 'You do not have access to this class.' };
+    }
     db.prepare('DELETE FROM exam_locks WHERE class=? AND section=? AND academic_year=? AND exam_type=?')
       .run(cls, section, academic_year, exam_type);
     return { success: true };

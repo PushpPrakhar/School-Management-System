@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
-import { AuthProvider, useAuth } from './utils/AuthContext';
+import { AuthProvider, useAuth, RequireAuth } from './utils/AuthContext';
 import Login           from './pages/Login';
+import ForcedPasswordChange from './pages/ForcedPasswordChange';
+import LockScreen      from './pages/LockScreen';
+import PinSetupModal   from './components/PinSetupModal';
 import ExcelImport     from './pages/ExcelImport';
 import Admission       from './pages/Admission';
 import StudentList     from './pages/StudentList';
@@ -19,6 +22,7 @@ import DayEndPosting   from './pages/DayEndPosting';
 import FeeReports      from './pages/FeeReports';
 import CashBook        from './pages/CashBook';
 import Prospectus      from './pages/Prospectus';
+import TeacherManagement from './pages/TeacherManagement';
 
 // ── Sidebar nav ────────────────────────────────────────────────
 const NAV_ITEMS = [
@@ -43,6 +47,7 @@ const NAV_ITEMS = [
   { key: 'tcGeneration',     label: 'TC Generation',      icon: '📄', permission: 'tcGeneration'     },
   { key: 'backup',           label: 'Backup & Restore',   icon: '💾', permission: 'backup'           },
   { key: 'users',            label: 'User Management',    icon: '👥', permission: 'userManagement'   },
+  { key: 'teacherManagement',label: 'Teacher Management',  icon: '🧑‍🏫', permission: 'teacherManagement' },
   { key: 'excelImport',      label: 'Import from Excel',  icon: '📥', permission: 'backup'           },
 ];
 
@@ -57,10 +62,27 @@ function ComingSoon({ page }) {
   );
 }
 
+// Maps each page key to the permission required to view it — mirrors
+// NAV_ITEMS' permission field, plus a couple of keys reachable outside the
+// sidebar (promoteStudents currently has no nav button but is still a real
+// page, so it still needs to be gated).
+const PAGE_PERMISSIONS = {
+  dashboard: 'dashboard', admission: 'admission', studentList: 'studentList',
+  editStudent: 'editStudent', approveAdmission: 'approveAdmission',
+  promoteStudents: 'promoteStudents', rollNumbers: 'rollNumbers',
+  academicCalendar: 'academicCalendar', attendance: 'attendance',
+  examination: 'examination', feeSettings: 'feeSettings', feesLedger: 'feesLedger',
+  feesReceipt: 'feesReceipt', dayEndPosting: 'feeSettings', feeReports: 'feesReceipt',
+  cashBook: 'feeSettings', prospectus: 'feesReceipt', feesNotice: 'feesNotice',
+  admitCard: 'admitCard', tcGeneration: 'tcGeneration', backup: 'backup',
+  users: 'userManagement', teacherManagement: 'teacherManagement', excelImport: 'backup',
+};
+
 // ── App shell ─────────────────────────────────────────────────
 function AppShell() {
-  const { user, logout, can } = useAuth();
+  const { user, logout, lock, can } = useAuth();
   const [activePage, setActivePage] = useState('dashboard');
+  const [showPinSetup, setShowPinSetup] = useState(false);
 
   const visibleNav = NAV_ITEMS.filter(item => can(item.permission));
 
@@ -88,6 +110,7 @@ function AppShell() {
       case 'tcGeneration':     return <ComingSoon page="TC Generation — Coming Soon" />;
       case 'backup':           return <ComingSoon page="Backup & Restore — Coming Soon" />;
       case 'users':            return <UserManagement />;
+      case 'teacherManagement':return <TeacherManagement />;
       case 'excelImport':      return <ExcelImport />;
       default:                 return <ComingSoon page={activePage} />;
     }
@@ -116,13 +139,21 @@ function AppShell() {
         <div className="p-4 border-t border-blue-700">
           <p className="text-sm font-medium truncate">{user?.full_name}</p>
           <p className="text-blue-300 text-xs capitalize">{user?.role?.replace('_',' ')} · {user?.username}</p>
-          <button onClick={logout} className="mt-2 text-xs text-blue-300 hover:text-white underline">Sign out</button>
+          <div className="flex gap-3 mt-2 flex-wrap">
+            <button onClick={lock} className="text-xs text-blue-300 hover:text-white underline">🔒 Lock</button>
+            <button onClick={() => setShowPinSetup(true)} className="text-xs text-blue-300 hover:text-white underline">🔢 Set PIN</button>
+            <button onClick={logout} className="text-xs text-blue-300 hover:text-white underline">Sign out</button>
+          </div>
         </div>
       </aside>
 
+      {showPinSetup && <PinSetupModal onClose={() => setShowPinSetup(false)} />}
+
       {/* ── Main content ── */}
       <main className="flex-1 overflow-y-auto">
-        <div className="p-6 h-full">{renderPage()}</div>
+        <div className="p-6 h-full">
+          <RequireAuth permission={PAGE_PERMISSIONS[activePage]}>{renderPage()}</RequireAuth>
+        </div>
       </main>
     </div>
   );
@@ -269,10 +300,30 @@ function UserManagement() {
 }
 
 // ── Root ──────────────────────────────────────────────────────
+function SplashScreen() {
+  return (
+    <div className="min-h-screen bg-blue-50 flex items-center justify-center">
+      <div className="text-center">
+        <div className="w-14 h-14 bg-blue-700 rounded-full flex items-center justify-center mx-auto mb-3 animate-pulse">
+          <span className="text-white text-lg font-bold">BPS</span>
+        </div>
+        <p className="text-gray-400 text-sm">Loading…</p>
+      </div>
+    </div>
+  );
+}
+
 function AppContent() {
-  const { user } = useAuth();
+  const { user, initializing, locked } = useAuth();
+  if (initializing) return <SplashScreen />;
   if (!user) return <Login />;
-  return <AppShell />;
+  if (user.must_change_password) return <ForcedPasswordChange />;
+  return (
+    <>
+      <AppShell />
+      {locked && <LockScreen />}
+    </>
+  );
 }
 
 export default function App() {
