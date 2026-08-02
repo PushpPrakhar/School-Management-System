@@ -30,6 +30,7 @@
   "build": {
     "appId": "com.school.management",
     "productName": "School Management System",
+    "publish": null,
     "win": {
       "target": "nsis",
       "icon": "src/assets/logo/icon.ico"
