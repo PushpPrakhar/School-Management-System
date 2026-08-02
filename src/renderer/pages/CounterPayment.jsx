@@ -157,6 +157,7 @@ function IndividualTab({ academicYear }) {
   const [centers,     setCenters]     = useState([]);
   const [centerId,    setCenterId]    = useState(1);
   const [counterId,   setCounterId]   = useState(1);
+  const [unpostedDates, setUnpostedDates] = useState([]);
 
   useEffect(() => {
     window.api.centersGetAll().then(r => {
@@ -169,6 +170,15 @@ function IndividualTab({ academicYear }) {
       if (r.success) setReceiptNo(r.receipt_number);
     });
   }, [academicYear]);
+
+  useEffect(() => {
+    window.api.postingCheckUnposted(centerId, counterId).then(r => {
+      if (r.success) setUnpostedDates(r.unposted_dates || []);
+    });
+  }, [centerId, counterId]);
+
+  const blockedByUnposted = unpostedDates.length > 0;
+  const unpostedDatesDisplay = unpostedDates.map(d => { const [y,m,dd] = d.split('-'); return `${dd}-${m}-${y}`; }).join(', ');
 
   const search = async () => {
     if (!query.trim()) return;
@@ -300,6 +310,13 @@ function IndividualTab({ academicYear }) {
 
   return (
     <div>
+      {blockedByUnposted && (
+        <div className="bg-red-50 border border-red-300 rounded-2xl px-5 py-4 mb-4">
+          <p className="text-sm font-semibold text-red-700">⚠️ This counter has unposted receipts from {unpostedDatesDisplay}.</p>
+          <p className="text-xs text-red-600 mt-1">New payments can't be collected on this counter until that day's Day-End Posting is completed. Ask your Principal/Manager to post it, or select a different counter below.</p>
+        </div>
+      )}
+
       {/* Search */}
       <div className="bg-white border border-gray-200 rounded-2xl p-4 mb-4 flex gap-3">
         <input value={query} onChange={e => setQuery(e.target.value)}
@@ -453,7 +470,7 @@ function IndividualTab({ academicYear }) {
 
           <div className="flex justify-end gap-3">
             <button onClick={resetForm} className="px-6 py-2.5 border border-gray-300 text-gray-600 hover:bg-gray-50 rounded-xl text-sm font-medium">Cancel</button>
-            <button onClick={savePayment} disabled={saving || paid <= 0}
+            <button onClick={savePayment} disabled={saving || paid <= 0 || blockedByUnposted}
               className="px-8 py-2.5 bg-green-600 hover:bg-green-700 disabled:bg-green-300 text-white rounded-xl text-sm font-bold">
               {saving ? '⏳ Processing...' : '✅ Submit & Generate Receipt'}
             </button>
@@ -488,6 +505,18 @@ function GroupTab({ academicYear }) {
   const [error,       setError]       = useState('');
   const [receipt,     setReceipt]     = useState(null);
   const [settings,    setSettings]    = useState(null);
+  const [unpostedDates, setUnpostedDates] = useState([]);
+
+  useEffect(() => {
+    // Group Payment always posts as center 1 / counter 1 (no counter
+    // selector of its own) — check matches exactly what savePayment sends.
+    window.api.postingCheckUnposted(1, 1).then(r => {
+      if (r.success) setUnpostedDates(r.unposted_dates || []);
+    });
+  }, []);
+
+  const blockedByUnposted = unpostedDates.length > 0;
+  const unpostedDatesDisplay = unpostedDates.map(d => { const [y,m,dd] = d.split('-'); return `${dd}-${m}-${y}`; }).join(', ');
 
   useEffect(() => {
     window.api.counterGetNextReceipt(academicYear).then(r => {
@@ -665,6 +694,13 @@ function GroupTab({ academicYear }) {
 
   return (
     <div>
+      {blockedByUnposted && (
+        <div className="bg-red-50 border border-red-300 rounded-2xl px-5 py-4 mb-4">
+          <p className="text-sm font-semibold text-red-700">⚠️ This counter has unposted receipts from {unpostedDatesDisplay}.</p>
+          <p className="text-xs text-red-600 mt-1">New payments can't be collected until that day's Day-End Posting is completed. Ask your Principal/Manager to post it.</p>
+        </div>
+      )}
+
       {/* Search */}
       <div className="bg-white border border-gray-200 rounded-2xl p-4 mb-4 flex gap-3">
         <input value={query} onChange={e => setQuery(e.target.value)}
@@ -805,7 +841,7 @@ function GroupTab({ academicYear }) {
 
           <div className="flex justify-end gap-3">
             <button onClick={resetForm} className="px-6 py-2.5 border border-gray-300 text-gray-600 hover:bg-gray-50 rounded-xl text-sm">Cancel</button>
-            <button onClick={savePayment} disabled={saving || paid <= 0}
+            <button onClick={savePayment} disabled={saving || paid <= 0 || blockedByUnposted}
               className="px-8 py-2.5 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-300 text-white rounded-xl text-sm font-bold">
               {saving ? '⏳ Processing...' : '✅ Submit Group Payment'}
             </button>

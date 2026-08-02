@@ -34,7 +34,7 @@ export const PERMISSIONS = {
     'academicCalendar', 'attendance', 'editAttendance',
     'feesLedger', 'feesReceipt', 'feesNotice',
     'admitCard', 'examination', 'tcGeneration',
-    'backup', 'userManagement', 'excelImport', 'feeSettings',
+    'backup', 'excelImport', 'feeSettings', 'staffManagement', 'homeworkManagement',
   ],
   admin: [
     'dashboard', 'admission', 'studentList', 'editStudent',
@@ -42,7 +42,7 @@ export const PERMISSIONS = {
     'academicCalendar', 'attendance', 'editAttendance',
     'feesLedger', 'feesReceipt', 'feesNotice',
     'admitCard', 'examination', 'tcGeneration',
-    'backup', 'excelImport', 'feeSettings', 'teacherManagement',
+    'backup', 'excelImport', 'feeSettings', 'teacherManagement', 'staffManagement', 'homeworkManagement',
   ],
   coordinator: [
     'dashboard', 'studentList',
@@ -54,12 +54,16 @@ export const PERMISSIONS = {
     'feesLedger', 'feesReceipt', 'feesNotice',
     'attendance', 'teacherManagement',
   ],
+  // NOTE: role='staff' no longer reads from this list — see can() below,
+  // which checks each staff account's own per-person permissions instead
+  // (set via Staff Management). Left here only as documentation of the
+  // legacy fixed bucket, in case anything still references it directly.
   staff: [
     'dashboard', 'admission', 'studentList',
     'feesLedger', 'feesReceipt', 'feesNotice',
   ],
   teacher: [
-    'dashboard', 'studentList', 'attendance', 'examination',
+    'dashboard', 'studentList', 'attendance', 'examination', 'homework',
   ],
 };
 
@@ -234,6 +238,8 @@ export function AuthProvider({ children }) {
 
   const can = useCallback((permission) => {
     if (!user) return false;
+    if (permission === 'dashboard') return true; // universal — every logged-in account can see the dashboard
+    if (user.role === 'staff') return (user.permissions || []).includes(permission);
     return PERMISSIONS[user.role]?.includes(permission) ?? false;
   }, [user]);
 
@@ -245,11 +251,27 @@ export function AuthProvider({ children }) {
     return false;
   }, [user]);
 
+  // Section-aware sibling of canAccessClass, for Attendance/Examination's
+  // section pickers. Mirrors the backend's _classSectionAccessDenied rule
+  // exactly: an empty sections array for a class means every section.
+  const canAccessSection = useCallback((className, section) => {
+    if (!user) return false;
+    if (['super_admin','admin','coordinator','manager'].includes(user.role)) return true;
+    if (user.role === 'staff') return true;
+    if (user.role === 'teacher') {
+      const sections = user.classSections?.[className];
+      if (sections === undefined) return false; // no access to this class at all
+      if (sections.length === 0) return true;    // full access to every section
+      return !section || sections.includes(section);
+    }
+    return false;
+  }, [user]);
+
   return (
     <AuthContext.Provider value={{
       user, loading, error, initializing, locked, deviceSessions,
       login, logout, lock, unlock, switchUser, setPin, removePin,
-      can, canAccessClass, completePasswordChange,
+      can, canAccessClass, canAccessSection, completePasswordChange,
     }}>
       {children}
     </AuthContext.Provider>

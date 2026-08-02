@@ -106,8 +106,7 @@ const ADMISSION_YEARS = Array.from({ length: 5 }, (_, i) => {
 // ── Blank form state ──────────────────────────────────────────
 const BLANK_GENERAL = {
   student_name: '', gender: '', date_of_birth: '',
-  date_of_admission: new Date().toISOString().slice(0,10),
-  indian_nationality: 'Yes',
+  date_of_admission: fromInputDate(new Date().toISOString().slice(0,10)),
   blood_group: '', mother_tongue: 'Hindi',
   aadhar_number: '999999999999', aadhar_doc: '',
   birth_cert: 'No', birth_cert_doc: '',
@@ -125,7 +124,7 @@ const BLANK_GENERAL = {
 };
 
 const BLANK_ENROLLMENT = {
-  date_of_admission: new Date().toISOString().slice(0,10),
+  date_of_admission: fromInputDate(new Date().toISOString().slice(0,10)),
   class_of_admission: '', section: 'A', academic_year: CURRENT_YEAR,
   pen_number: '11111111111', apaar_id: '',
   rte_section_12c: 'No', rte_amount_claimed: '',

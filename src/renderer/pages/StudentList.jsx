@@ -118,11 +118,15 @@ function StudentModal({ student, onClose }) {
 
 // ── Main component ────────────────────────────────────────────
 export default function StudentList() {
-  const { user } = useAuth();
+  const { user, canAccessSection } = useAuth();
   const isTeacher = user?.role === 'teacher';
+  const canExportExcel = user?.role === 'admin' || user?.role === 'super_admin';
+  const canViewAllClasses = user?.role === 'admin' || user?.role === 'super_admin';
   const allowedClasses = isTeacher ? (user.classes || []) : CLASSES;
+  const SECTIONS = ['A', 'B', 'C', 'D'];
 
   const [selectedClass, setSelectedClass]     = useState('');
+  const [selectedSection, setSelectedSection] = useState('');
   const [academicYear, setAcademicYear]       = useState(CURRENT_YEAR);
   const [students, setStudents]               = useState([]);
   const [loading, setLoading]                 = useState(false);
@@ -131,10 +135,25 @@ export default function StudentList() {
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [exportMsg, setExportMsg]             = useState('');
 
+  const allowedSections = isTeacher && selectedClass && selectedClass !== 'ALL'
+    ? SECTIONS.filter(s => canAccessSection(selectedClass, s))
+    : SECTIONS;
+
   // Single-class teacher: skip the extra click.
   useEffect(() => {
     if (isTeacher && allowedClasses.length === 1 && !selectedClass) setSelectedClass(allowedClasses[0]);
   }, [isTeacher, allowedClasses, selectedClass]);
+
+  // Section-scoped teacher with only one allowed section for this class —
+  // same auto-select convenience already used in Attendance/Examination.
+  useEffect(() => {
+    if (isTeacher && selectedClass && selectedClass !== 'ALL' && allowedSections.length === 1 && selectedSection !== allowedSections[0]) {
+      setSelectedSection(allowedSections[0]);
+    }
+  }, [isTeacher, selectedClass, allowedSections, selectedSection]);
+
+  // Sections don't carry over between classes — reset when class changes.
+  const changeClass = (cls) => { setSelectedClass(cls); setSelectedSection(''); };
 
   // Filtered list
   const filtered = students.filter(s => {
@@ -151,7 +170,7 @@ export default function StudentList() {
     if (!selectedClass) return;
     setLoading(true);
     setSearched(true);
-    const result = await window.api.getByClass(selectedClass, '', user?.user_id); // academic_year not used — list shows current enrollment
+    const result = await window.api.getByClass(selectedClass, selectedSection, '', user?.user_id); // academic_year not used — list shows current enrollment
     setLoading(false);
     if (result.success) setStudents(result.data);
     else { setStudents([]); }
@@ -160,9 +179,13 @@ export default function StudentList() {
   // Reload when filters change (if already searched)
   useEffect(() => {
     if (searched) load();
-  }, [selectedClass, academicYear]);
+  }, [selectedClass, selectedSection, academicYear]);
 
   // ── PDF Export ──────────────────────────────────────────────
+  const classLabel = selectedClass === 'ALL'
+    ? 'All Classes'
+    : selectedSection ? `${selectedClass} - ${selectedSection}` : selectedClass;
+
   const exportPDF = async () => {
     try {
       setExportMsg('Generating PDF…');
@@ -174,7 +197,7 @@ export default function StudentList() {
       // Title
       doc.setFontSize(14);
       doc.setFont('helvetica', 'bold');
-      doc.text(`Student List — ${selectedClass} (${academicYear})`, 14, 15);
+      doc.text(`Student List — ${classLabel} (${academicYear})`, 14, 15);
       doc.setFontSize(9);
       doc.setFont('helvetica', 'normal');
       doc.text(`Total Students: ${filtered.length}   |   Generated: ${fmtDate(new Date().toISOString())}`, 14, 22);
@@ -202,20 +225,33 @@ export default function StudentList() {
         columnStyles: { 0: { cellWidth: 8 }, 1: { cellWidth: 22 } },
       });
 
-      doc.save(`StudentList_${selectedClass.replace(' ','')}_${academicYear}.pdf`);
+      const fileClassPart = selectedClass === 'ALL' ? 'All_Classes' : selectedClass.replace(' ','') + (selectedSection ? '_' + selectedSection : '');
+      doc.save(`StudentList_${fileClassPart}_${academicYear}.pdf`);
       setExportMsg('');
     } catch (err) {
       setExportMsg('PDF export failed: ' + err.message);
     }
   };
 
+  // ── Excel Export (Principal/Director only) ────────────────────
+  const exportExcel = async () => {
+    setExportMsg('Saving Excel…');
+    const res = await window.api.enrollmentExportClassListExcel(filtered, classLabel, academicYear);
+    if (res.cancelled) { setExportMsg(''); return; }
+    if (!res.success) { setExportMsg('Excel export failed: ' + res.message); return; }
+    setExportMsg(`✓ Saved to ${res.filePath}`);
+    setTimeout(() => setExportMsg(''), 5000);
+  };
+
   // ── Print ────────────────────────────────────────────────────
   const handlePrint = () => {
+    const showClassCol = selectedClass === 'ALL';
     const rows = filtered.map((s, i) => `
       <tr>
         <td>${i + 1}</td>
         <td>${s.admission_number}</td>
         <td>${s.student_name}</td>
+        ${showClassCol ? `<td>${s.current_class}${s.section ? ' - ' + s.section : ''}</td>` : ''}
         <td>${s.father_name}</td>
         <td>${s.gender === 'M' ? 'Male' : s.gender === 'F' ? 'Female' : s.gender}</td>
         <td>${fmtDate(s.date_of_birth)}</td>
@@ -235,11 +271,13 @@ export default function StudentList() {
         tr:nth-child(even) td { background: #eff6ff; }
       </style></head>
       <body>
-        <h2>Student List — ${selectedClass} (${academicYear})</h2>
+        <h2>Student List — ${classLabel} (${academicYear})</h2>
         <p>Total Students: ${filtered.length} &nbsp;|&nbsp; Date: ${fmtDate(new Date().toISOString())}</p>
         <table>
           <thead><tr>
-            <th>#</th><th>Adm. No.</th><th>Student Name</th><th>Father's Name</th>
+            <th>#</th><th>Adm. No.</th><th>Student Name</th>
+            ${showClassCol ? '<th>Class</th>' : ''}
+            <th>Father's Name</th>
             <th>Gender</th><th>Date of Birth</th><th>Phone</th><th>Address</th>
           </tr></thead>
           <tbody>${rows}</tbody>
@@ -269,11 +307,25 @@ export default function StudentList() {
           <label className="block text-xs font-medium text-gray-600 mb-1">Class</label>
           <select
             value={selectedClass}
-            onChange={e => setSelectedClass(e.target.value)}
+            onChange={e => changeClass(e.target.value)}
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
             <option value="">Select a class</option>
+            {canViewAllClasses && <option value="ALL">All Classes</option>}
             {allowedClasses.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+
+        <div className="flex-1 min-w-32">
+          <label className="block text-xs font-medium text-gray-600 mb-1">Section</label>
+          <select
+            value={selectedSection}
+            onChange={e => setSelectedSection(e.target.value)}
+            disabled={!selectedClass || selectedClass === 'ALL'}
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
+          >
+            <option value="">All Sections</option>
+            {allowedSections.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
 
@@ -331,6 +383,15 @@ export default function StudentList() {
                   >
                     📄 Export PDF
                   </button>
+                  {canExportExcel && (
+                    <button
+                      onClick={exportExcel}
+                      className="flex items-center gap-1.5 border border-green-200 text-green-700
+                                 hover:bg-green-50 px-3 py-1.5 rounded-lg text-sm"
+                    >
+                      📊 Download Excel
+                    </button>
+                  )}
                   <button
                     onClick={handlePrint}
                     className="flex items-center gap-1.5 border border-gray-300 text-gray-700
@@ -359,7 +420,7 @@ export default function StudentList() {
               <div className="text-4xl mb-3">🎒</div>
               <p className="font-medium text-gray-500">
                 {students.length === 0
-                  ? `No students found in ${selectedClass} for ${academicYear}`
+                  ? `No students found in ${classLabel} for ${academicYear}`
                   : 'No students match your search'}
               </p>
             </div>
@@ -368,7 +429,9 @@ export default function StudentList() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-200">
-                    {['#', 'Adm. No.', 'Student Name', "Father's Name", 'Gender', 'Date of Birth', 'Phone', 'Category', ''].map(h => (
+                    {['#', 'Adm. No.', 'Student Name',
+                      ...(selectedClass === 'ALL' ? ['Class'] : ['Section']),
+                      "Father's Name", 'Gender', 'Date of Birth', 'Phone', 'Category', ''].map(h => (
                       <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">
                         {h}
                       </th>
@@ -385,6 +448,11 @@ export default function StudentList() {
                       <td className="px-4 py-3 text-gray-400 text-xs">{i + 1}</td>
                       <td className="px-4 py-3 font-mono text-xs text-blue-700">{s.admission_number}</td>
                       <td className="px-4 py-3 font-medium text-gray-800">{s.student_name}</td>
+                      {selectedClass === 'ALL' ? (
+                        <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{s.current_class}{s.section ? ' - ' + s.section : ''}</td>
+                      ) : (
+                        <td className="px-4 py-3 text-gray-600">{s.section || '—'}</td>
+                      )}
                       <td className="px-4 py-3 text-gray-600">{s.father_name}</td>
                       <td className="px-4 py-3 text-gray-600">
                         {s.gender === 'M' ? '👦 Male' : s.gender === 'F' ? '👧 Female' : s.gender}
@@ -410,7 +478,7 @@ export default function StudentList() {
 
               {/* Footer count */}
               <div className="px-4 py-3 bg-gray-50 border-t border-gray-200 text-xs text-gray-500">
-                Showing {filtered.length} of {students.length} students in {selectedClass} · {academicYear}
+                Showing {filtered.length} of {students.length} students in {classLabel} · {academicYear}
               </div>
             </div>
           )}

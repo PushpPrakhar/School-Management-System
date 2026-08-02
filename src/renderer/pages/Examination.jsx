@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../utils/AuthContext';
+import ReportCardPrintModal from '../components/ReportCardPrintModal';
 
 // ── Constants ─────────────────────────────────────────────────
 const SESSION_YEAR = (() => { const n = new Date(), y = n.getFullYear(); return n.getMonth()>=3?y:y-1; })();
@@ -108,13 +109,20 @@ const calcFinal = (admNo, subjects, marksMap) => {
 
 // ── Selector Bar ──────────────────────────────────────────────
 function SelectorBar({ cls, setCls, section, setSection, academicYear, setAcademicYear, extra }) {
-  const { user } = useAuth();
+  const { user, canAccessSection } = useAuth();
   const isTeacher = user?.role === 'teacher';
   const allowedClasses = isTeacher ? (user.classes || []) : CLASSES;
+  const allowedSections = isTeacher && cls ? SECTIONS.filter(s => canAccessSection(cls, s)) : SECTIONS;
 
   useEffect(() => {
     if (isTeacher && allowedClasses.length === 1 && !cls) setCls(allowedClasses[0]);
   }, [isTeacher, allowedClasses, cls]);
+
+  // Same idea for section: if a teacher's only allowed to one specific
+  // section of the selected class, don't make them pick it manually.
+  useEffect(() => {
+    if (isTeacher && cls && allowedSections.length === 1 && section !== allowedSections[0]) setSection(allowedSections[0]);
+  }, [isTeacher, cls, allowedSections, section]);
 
   return (
     <div className="bg-white border border-gray-200 rounded-2xl p-4 mb-5 flex flex-wrap gap-3 items-end">
@@ -130,7 +138,7 @@ function SelectorBar({ cls, setCls, section, setSection, academicYear, setAcadem
         <label className="block text-xs font-medium text-gray-500 mb-1">Section</label>
         <select value={section} onChange={e => setSection(e.target.value)}
           className="border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 w-24">
-          {SECTIONS.map(s => <option key={s}>{s}</option>)}
+          {allowedSections.map(s => <option key={s}>{s}</option>)}
         </select>
       </div>
       <div>
@@ -671,6 +679,7 @@ function ResultView({ type }) {
   const [students,     setStudents]    = useState([]);
   const [marksMap,     setMarksMap]    = useState({});
   const [loaded,       setLoaded]      = useState(false);
+  const [showPrint,    setShowPrint]   = useState(false);
   const [loading,      setLoading]     = useState(false);
   const [error,        setError]       = useState('');
   const [selectedIdx,  setSelectedIdx] = useState(0);
@@ -758,9 +767,15 @@ function ResultView({ type }) {
                 className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-30">
                 ← Previous
               </button>
-              <p className="text-sm text-gray-500">
-                Student {selectedIdx+1} of {students.length}
-              </p>
+              <div className="flex items-center gap-3">
+                <p className="text-sm text-gray-500">
+                  Student {selectedIdx+1} of {students.length}
+                </p>
+                <button onClick={() => setShowPrint(true)}
+                  className="px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white rounded-lg text-sm font-medium">
+                  🖨️ Print
+                </button>
+              </div>
               <button onClick={() => setSelectedIdx(i => Math.min(students.length-1, i+1))} disabled={selectedIdx === students.length-1}
                 className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-30">
                 Next →
@@ -780,6 +795,20 @@ function ResultView({ type }) {
             )}
           </div>
         </div>
+      )}
+
+      {showPrint && student && (
+        <ReportCardPrintModal studentName={student.student_name} onClose={() => setShowPrint(false)}>
+          <ReportCard
+            student={student}
+            marksMap={marksMap}
+            subjects={subjects}
+            cls={cls}
+            section={section}
+            academicYear={academicYear}
+            type={type}
+          />
+        </ReportCardPrintModal>
       )}
 
       {loaded && students.length === 0 && (
@@ -802,6 +831,306 @@ function FinalTab() {
   return <ResultView type="final" />;
 }
 
+// ── Unit Test Report Card (single exam type, no HY/Final combining) ──
+function UnitTestReportCard({ student, marksMap, subjects, cls, section, academicYear, examType }) {
+  const sm = marksMap[student.admission_number] || {};
+  const maxMarks = EXAM_TYPES[examType]?.max || 10;
+  const examLabel = EXAM_TYPES[examType]?.label || examType;
+
+  const getM = (sub) => {
+    const e = sm[sub]?.[examType];
+    if (!e) return { v: null, ab: false };
+    return { v: e.marks, ab: e.absent };
+  };
+  const disp = (m) => m.ab ? 'AB' : (m.v !== null && m.v !== undefined ? m.v : '—');
+  const num  = (m) => m.ab ? 0 : (m.v ?? 0);
+
+  const rows = subjects.map(sub => {
+    const m = getM(sub);
+    const pct = maxMarks ? (num(m) / maxMarks * 100) : 0;
+    return { sub, m, pct, pass: pct >= 33 };
+  });
+
+  const total    = rows.reduce((a, r) => a + num(r.m), 0);
+  const maxTotal = subjects.length * maxMarks;
+  const pct      = (maxTotal ? (total / maxTotal * 100) : 0).toFixed(2);
+  const grade    = getGrade(parseFloat(pct));
+  const allPass  = rows.every(r => r.pass);
+
+  const th = "border border-gray-400 px-2 py-1 text-center text-xs font-semibold bg-gray-100";
+  const td = "border border-gray-400 px-2 py-1 text-center text-xs";
+  const tf = "border border-gray-400 px-2 py-1 text-center text-xs font-bold bg-gray-50";
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-200 p-6 max-w-4xl mx-auto print:shadow-none">
+      {/* School Header */}
+      <div className="text-center border-b-2 border-gray-800 pb-3 mb-4">
+        <h1 className="text-xl font-bold tracking-wide">BRILLIANT PUBLIC SCHOOL</h1>
+        <p className="text-xs text-gray-600">(A Govt. Recognised English Medium School)</p>
+        <p className="text-xs text-gray-500">Village Sherpur-Nayser, Post-Jawal, District-Bulandshahr, UP-203131</p>
+        <h2 className="text-base font-bold mt-2 uppercase">{examLabel} Report Card</h2>
+        <p className="text-xs text-gray-600">Academic Session : {academicYear}</p>
+      </div>
+
+      {/* Student Info */}
+      <div className="grid grid-cols-2 gap-x-8 gap-y-1 mb-4 text-sm">
+        <div className="flex gap-2"><span className="font-semibold w-36">Admission No.</span><span>: {student.admission_number}</span></div>
+        <div className="flex gap-2"><span className="font-semibold w-36">Roll No.</span><span>: {student.roll_number === 999 ? '—' : student.roll_number}</span></div>
+        <div className="flex gap-2"><span className="font-semibold w-36">Student Name</span><span>: {student.student_name}</span></div>
+        <div className="flex gap-2"><span className="font-semibold w-36">Class / Section</span><span>: {cls} / {section}</span></div>
+        <div className="flex gap-2"><span className="font-semibold w-36">Date of Birth</span><span>: {student.date_of_birth || '—'}</span></div>
+        <div className="flex gap-2"><span className="font-semibold w-36">Mother's Name</span><span>: {student.mother_name || '—'}</span></div>
+        <div className="flex gap-2"><span className="font-semibold w-36">Father's Name</span><span>: {student.father_name || '—'}</span></div>
+      </div>
+
+      {/* Marks Table */}
+      <div className="overflow-x-auto mb-4">
+        <table className="w-full border-collapse text-xs">
+          <thead>
+            <tr>
+              <th className={`${th} text-left`}>Subject / विषय</th>
+              <th className={th}>Max Marks</th>
+              <th className={th}>Marks Obtained</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r.sub} className={!r.pass ? 'bg-red-50' : ''}>
+                <td className={`${td} text-left font-medium`}>{r.sub}</td>
+                <td className={td}>{maxMarks}</td>
+                <td className={`${td} font-semibold ${!r.pass ? 'text-red-600' : 'text-gray-800'}`}>{disp(r.m)}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td className={`${tf} text-left`}>कुल / Total</td>
+              <td className={tf}>{maxTotal}</td>
+              <td className={`${tf} text-blue-700`}>{total}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      {/* Performance Summary */}
+      <div className="mb-4">
+        <table className="w-full border-collapse text-xs">
+          <thead>
+            <tr>
+              <th className={th}>Marks Obtained / Max Marks</th>
+              <th className={th}>Percentage of Marks</th>
+              <th className={th}>Grade</th>
+              <th className={th}>Result</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td className={td}>{total} / {maxTotal}</td>
+              <td className={td}>{pct}%</td>
+              <td className={td}><span className={`px-2 py-0.5 rounded font-bold ${GRADE_STYLE[grade]}`}>{grade}</span></td>
+              <td className={`${td} font-bold ${allPass ? 'text-green-700' : 'text-red-600'}`}>{allPass ? 'PASS' : 'FAIL'}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      {/* Date + Signatures */}
+      <div className="flex justify-between items-end text-xs mt-4">
+        <div>
+          <p>Date : <span className="border-b border-gray-400 inline-block w-28">&nbsp;</span></p>
+        </div>
+        <div className="text-center">
+          <p className="border-b border-gray-400 w-36 mb-1">&nbsp;</p>
+          <p>Signature</p>
+          <p className="text-gray-500">Class Teacher</p>
+        </div>
+        <div className="text-center">
+          <p className="border-b border-gray-400 w-36 mb-1">&nbsp;</p>
+          <p>Signature</p>
+          <p className="text-gray-500">Head Teacher</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Unit Test Result Tab ────────────────────────────────────────
+const UT_TYPES = ['UT1', 'UT2', 'UT3', 'UT4'];
+
+function UnitTestResultTab() {
+  const { user } = useAuth();
+  const [cls,          setCls]         = useState('');
+  const [section,      setSection]     = useState('A');
+  const [academicYear, setAcademicYear]= useState(CURRENT_YEAR);
+  const [examType,     setExamType]    = useState('UT1');
+  const [students,     setStudents]    = useState([]);
+  const [marksMap,     setMarksMap]    = useState({});
+  const [loaded,       setLoaded]      = useState(false);
+  const [loading,      setLoading]     = useState(false);
+  const [error,        setError]       = useState('');
+  const [selectedIdx,  setSelectedIdx] = useState(0);
+  const [showPrint,    setShowPrint]   = useState(false);
+
+  const subjects = SUBJECTS[cls] || [];
+  const maxMarks = EXAM_TYPES[examType]?.max || 10;
+
+  const load = async () => {
+    if (!cls) return;
+    setLoading(true); setLoaded(false); setError('');
+    const [stuRes, markRes] = await Promise.all([
+      window.api.examGetStudents(cls, section, academicYear, user?.user_id),
+      window.api.examGetMarks(cls, section, academicYear, examType, user?.user_id),
+    ]);
+    if (!stuRes.success) { setError(stuRes.message); setLoading(false); return; }
+    if (!markRes.success){ setError(markRes.message); setLoading(false); return; }
+    setStudents(stuRes.data);
+    setMarksMap(buildMarksMap(markRes.data));
+    setSelectedIdx(0);
+    setLoading(false);
+    setLoaded(true);
+  };
+
+  // Quick per-student pass/fail preview for the sidebar, same idea as
+  // calcHY/calcFinal but scoped to just this one exam type.
+  const quickResult = (admNo) => {
+    const sm = marksMap[admNo] || {};
+    let total = 0, allPass = true;
+    subjects.forEach(sub => {
+      const e = sm[sub]?.[examType];
+      const numeric = e?.absent ? 0 : (e?.marks ?? 0);
+      total += numeric;
+      const pct = maxMarks ? (numeric / maxMarks * 100) : 0;
+      if (pct < 33) allPass = false;
+    });
+    const maxTotal = subjects.length * maxMarks;
+    const pct = maxTotal ? (total / maxTotal * 100) : 0;
+    return { pct: pct.toFixed(1), allPass };
+  };
+
+  const student = students[selectedIdx];
+
+  return (
+    <div>
+      <SelectorBar
+        cls={cls}          setCls={v => { setCls(v); setLoaded(false); }}
+        section={section}  setSection={v => { setSection(v); setLoaded(false); }}
+        academicYear={academicYear} setAcademicYear={v => { setAcademicYear(v); setLoaded(false); }}
+        extra={
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Unit Test</label>
+            <select value={examType} onChange={e => { setExamType(e.target.value); setLoaded(false); }}
+              className="border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 w-40">
+              {UT_TYPES.map(k => <option key={k} value={k}>{EXAM_TYPES[k].label} ({EXAM_TYPES[k].max}M)</option>)}
+            </select>
+          </div>
+        }
+      />
+
+      {!loaded && (
+        <div className="text-center py-4">
+          <button onClick={load} disabled={!cls || loading}
+            className="bg-blue-700 hover:bg-blue-800 disabled:bg-blue-300 text-white font-medium px-8 py-2.5 rounded-xl text-sm">
+            {loading ? '⏳ Loading…' : '📊 Generate Result'}
+          </button>
+          {!cls && <p className="text-xs text-gray-400 mt-2">Select a class first</p>}
+        </div>
+      )}
+
+      {error && <p className="text-red-500 text-sm bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-4">{error}</p>}
+
+      {loaded && students.length > 0 && (
+        <div className="flex gap-4">
+          {/* Student list sidebar */}
+          <div className="w-52 shrink-0">
+            <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden">
+              <div className="bg-blue-700 px-3 py-2">
+                <p className="text-white text-xs font-semibold">{students.length} Students</p>
+              </div>
+              <div className="max-h-[calc(100vh-280px)] overflow-y-auto">
+                {students.map((s, i) => {
+                  const r = quickResult(s.admission_number);
+                  return (
+                    <button key={s.admission_number} onClick={() => setSelectedIdx(i)}
+                      className={`w-full text-left px-3 py-2.5 border-b border-gray-100 hover:bg-blue-50 transition-colors
+                        ${selectedIdx === i ? 'bg-blue-50 border-l-4 border-l-blue-700' : ''}`}>
+                      <p className="text-xs font-semibold text-gray-800 truncate">{s.student_name}</p>
+                      <p className="text-xs text-gray-400">{s.roll_number === 999 ? i+1 : s.roll_number} · {r.pct}%
+                        <span className={`ml-1 font-bold ${r.allPass ? 'text-green-600' : 'text-red-500'}`}>
+                          {r.allPass ? '✓' : '✗'}
+                        </span>
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <button onClick={() => setLoaded(false)}
+              className="mt-2 text-xs text-gray-400 hover:text-gray-600 underline w-full text-center">
+              ← Change Class
+            </button>
+          </div>
+
+          {/* Report card */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between mb-3">
+              <button onClick={() => setSelectedIdx(i => Math.max(0, i-1))} disabled={selectedIdx === 0}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-30">
+                ← Previous
+              </button>
+              <div className="flex items-center gap-3">
+                <p className="text-sm text-gray-500">
+                  Student {selectedIdx+1} of {students.length}
+                </p>
+                <button onClick={() => setShowPrint(true)}
+                  className="px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white rounded-lg text-sm font-medium">
+                  🖨️ Print
+                </button>
+              </div>
+              <button onClick={() => setSelectedIdx(i => Math.min(students.length-1, i+1))} disabled={selectedIdx === students.length-1}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-30">
+                Next →
+              </button>
+            </div>
+
+            {student && (
+              <UnitTestReportCard
+                student={student}
+                marksMap={marksMap}
+                subjects={subjects}
+                cls={cls}
+                section={section}
+                academicYear={academicYear}
+                examType={examType}
+              />
+            )}
+          </div>
+        </div>
+      )}
+
+      {showPrint && student && (
+        <ReportCardPrintModal studentName={student.student_name} onClose={() => setShowPrint(false)}>
+          <UnitTestReportCard
+            student={student}
+            marksMap={marksMap}
+            subjects={subjects}
+            cls={cls}
+            section={section}
+            academicYear={academicYear}
+            examType={examType}
+          />
+        </ReportCardPrintModal>
+      )}
+
+      {loaded && students.length === 0 && (
+        <div className="text-center py-12 text-gray-400">
+          <p className="text-4xl mb-3">📋</p>
+          <p>No students found in {cls} Section {section}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ══════════════════════════════════════════════════════════════
 // MAIN
 // ══════════════════════════════════════════════════════════════
@@ -810,6 +1139,7 @@ export default function Examination() {
 
   const TABS = [
     { key: 'enter',      label: '✏️ Enter Marks'       },
+    { key: 'unittest',   label: '📝 Unit Test Result'   },
     { key: 'halfyearly', label: '📊 Half Yearly Result' },
     { key: 'final',      label: '🏆 Final Result'       },
   ];
@@ -833,6 +1163,7 @@ export default function Examination() {
       </div>
 
       {tab === 'enter'      && <EnterMarksTab />}
+      {tab === 'unittest'   && <UnitTestResultTab />}
       {tab === 'halfyearly' && <HalfYearlyTab />}
       {tab === 'final'      && <FinalTab />}
     </div>

@@ -28,14 +28,21 @@ const toInput   = v => { if (!v) return ''; const p = v.split('-'); return p.len
 
 // ── Selector bar ──────────────────────────────────────────────
 function SelectorBar({ cls, setCls, section, setSection, academicYear, setAcademicYear, extra }) {
-  const { user } = useAuth();
+  const { user, canAccessSection } = useAuth();
   const isTeacher = user?.role === 'teacher';
   const allowedClasses = isTeacher ? (user.classes || []) : CLASSES;
+  const allowedSections = isTeacher && cls ? SECTIONS.filter(s => canAccessSection(cls, s)) : SECTIONS;
 
   // Single-class teacher: skip the extra click, auto-select their one class.
   useEffect(() => {
     if (isTeacher && allowedClasses.length === 1 && !cls) setCls(allowedClasses[0]);
   }, [isTeacher, allowedClasses, cls]);
+
+  // Same idea for section: if a teacher's only allowed to one specific
+  // section of the selected class, don't make them pick it manually.
+  useEffect(() => {
+    if (isTeacher && cls && allowedSections.length === 1 && section !== allowedSections[0]) setSection(allowedSections[0]);
+  }, [isTeacher, cls, allowedSections, section]);
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-4 mb-5 flex flex-wrap gap-3 items-end">
@@ -51,7 +58,7 @@ function SelectorBar({ cls, setCls, section, setSection, academicYear, setAcadem
         <label className="block text-xs font-medium text-gray-500 mb-1">Section</label>
         <select value={section} onChange={e => setSection(e.target.value)}
           className="border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 w-24">
-          {SECTIONS.map(s => <option key={s}>{s}</option>)}
+          {allowedSections.map(s => <option key={s}>{s}</option>)}
         </select>
       </div>
       <div>

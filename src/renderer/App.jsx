@@ -23,6 +23,9 @@ import FeeReports      from './pages/FeeReports';
 import CashBook        from './pages/CashBook';
 import Prospectus      from './pages/Prospectus';
 import TeacherManagement from './pages/TeacherManagement';
+import StaffManagement from './pages/StaffManagement';
+import Homework from './pages/Homework';
+import HomeworkManagement from './pages/HomeworkManagement';
 
 // ── Sidebar nav ────────────────────────────────────────────────
 const NAV_ITEMS = [
@@ -32,6 +35,7 @@ const NAV_ITEMS = [
   { key: 'editStudent',      label: 'Edit Student',       icon: '✏️',  permission: 'editStudent'      },
   { key: 'approveAdmission', label: 'Approve Admissions', icon: '✅', permission: 'approveAdmission' },
   { key: 'rollNumbers',      label: 'Roll Numbers',       icon: '🔢', permission: 'rollNumbers'      },
+  { key: 'promoteStudents',  label: 'Promote Students',   icon: '🎓', permission: 'promoteStudents'  },
   { key: 'academicCalendar', label: 'Academic Calendar',  icon: '📅', permission: 'academicCalendar' },
   { key: 'attendance',       label: 'Attendance',         icon: '📅', permission: 'attendance'       },
   { key: 'examination',      label: 'Examination',        icon: '📊', permission: 'examination'      },
@@ -46,8 +50,10 @@ const NAV_ITEMS = [
   { key: 'admitCard',        label: 'Admit Cards',        icon: '🪪', permission: 'admitCard'        },
   { key: 'tcGeneration',     label: 'TC Generation',      icon: '📄', permission: 'tcGeneration'     },
   { key: 'backup',           label: 'Backup & Restore',   icon: '💾', permission: 'backup'           },
-  { key: 'users',            label: 'User Management',    icon: '👥', permission: 'userManagement'   },
   { key: 'teacherManagement',label: 'Teacher Management',  icon: '🧑‍🏫', permission: 'teacherManagement' },
+  { key: 'staffManagement',  label: 'Staff Management',    icon: '🧑‍💼', permission: 'staffManagement'   },
+  { key: 'homework',          label: 'Homework',            icon: '📓', permission: 'homework'           },
+  { key: 'homeworkManagement',label: 'Homework Management', icon: '📚', permission: 'homeworkManagement' },
   { key: 'excelImport',      label: 'Import from Excel',  icon: '📥', permission: 'backup'           },
 ];
 
@@ -64,8 +70,7 @@ function ComingSoon({ page }) {
 
 // Maps each page key to the permission required to view it — mirrors
 // NAV_ITEMS' permission field, plus a couple of keys reachable outside the
-// sidebar (promoteStudents currently has no nav button but is still a real
-// page, so it still needs to be gated).
+// sidebar that still need to be gated.
 const PAGE_PERMISSIONS = {
   dashboard: 'dashboard', admission: 'admission', studentList: 'studentList',
   editStudent: 'editStudent', approveAdmission: 'approveAdmission',
@@ -75,7 +80,8 @@ const PAGE_PERMISSIONS = {
   feesReceipt: 'feesReceipt', dayEndPosting: 'feeSettings', feeReports: 'feesReceipt',
   cashBook: 'feeSettings', prospectus: 'feesReceipt', feesNotice: 'feesNotice',
   admitCard: 'admitCard', tcGeneration: 'tcGeneration', backup: 'backup',
-  users: 'userManagement', teacherManagement: 'teacherManagement', excelImport: 'backup',
+  teacherManagement: 'teacherManagement', staffManagement: 'staffManagement',
+  homework: 'homework', homeworkManagement: 'homeworkManagement', excelImport: 'backup',
 };
 
 // ── App shell ─────────────────────────────────────────────────
@@ -109,8 +115,10 @@ function AppShell() {
       case 'admitCard':        return <ComingSoon page="Admit Card — Coming Soon" />;
       case 'tcGeneration':     return <ComingSoon page="TC Generation — Coming Soon" />;
       case 'backup':           return <ComingSoon page="Backup & Restore — Coming Soon" />;
-      case 'users':            return <UserManagement />;
       case 'teacherManagement':return <TeacherManagement />;
+      case 'staffManagement':  return <StaffManagement />;
+      case 'homework':          return <Homework />;
+      case 'homeworkManagement':return <HomeworkManagement />;
       case 'excelImport':      return <ExcelImport />;
       default:                 return <ComingSoon page={activePage} />;
     }
@@ -155,146 +163,6 @@ function AppShell() {
           <RequireAuth permission={PAGE_PERMISSIONS[activePage]}>{renderPage()}</RequireAuth>
         </div>
       </main>
-    </div>
-  );
-}
-
-// ── User Management ───────────────────────────────────────────
-function UserManagement() {
-  const { user: currentUser } = useAuth();
-  const [users,    setUsers]    = React.useState([]);
-  const [loading,  setLoading]  = React.useState(true);
-  const [showForm, setShowForm] = React.useState(false);
-  const [form,     setForm]     = React.useState({ username: '', password: '', full_name: '', role: 'staff', assigned_class: '' });
-  const [saving,   setSaving]   = React.useState(false);
-  const [msg,      setMsg]      = React.useState('');
-
-  const load = async () => {
-    setLoading(true);
-    const res = await window.api.getUsers();
-    if (res.success) setUsers(res.data);
-    setLoading(false);
-  };
-  React.useEffect(() => { load(); }, []);
-
-  const handleCreate = async (e) => {
-    e.preventDefault(); setSaving(true); setMsg('');
-    const res = await window.api.createUser(form);
-    if (res.success) {
-      setMsg('User created successfully.');
-      setShowForm(false);
-      setForm({ username: '', password: '', full_name: '', role: 'staff', assigned_class: '' });
-      load();
-    } else { setMsg(res.message); }
-    setSaving(false);
-  };
-
-  const handleToggle = async (userId, isActive) => {
-    await window.api.toggleUser(userId, !isActive); load();
-  };
-
-  const ROLE_COLOURS = {
-    super_admin: 'bg-red-100 text-red-800',
-    admin: 'bg-purple-100 text-purple-800',
-    coordinator: 'bg-orange-100 text-orange-800',
-    manager: 'bg-blue-100 text-blue-800',
-    staff: 'bg-gray-100 text-gray-700',
-    teacher: 'bg-green-100 text-green-800',
-  };
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-bold text-gray-800">User Management</h2>
-        <button onClick={() => setShowForm(!showForm)}
-          className="bg-blue-700 hover:bg-blue-800 text-white text-sm px-4 py-2 rounded-lg">
-          {showForm ? 'Cancel' : '+ Add User'}
-        </button>
-      </div>
-
-      {msg && (
-        <div className={`mb-4 p-3 rounded-lg text-sm ${msg.includes('success') ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
-          {msg}
-        </div>
-      )}
-
-      {showForm && (
-        <form onSubmit={handleCreate} className="bg-white border border-gray-200 rounded-xl p-5 mb-6 grid grid-cols-2 gap-4">
-          {[['Full Name','full_name','text'],['Username','username','text'],['Password','password','password']].map(([label, field, type]) => (
-            <div key={field}>
-              <label className="block text-xs font-medium text-gray-600 mb-1">{label} *</label>
-              <input required type={type} value={form[field]} onChange={e => setForm({...form, [field]: e.target.value})}
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-            </div>
-          ))}
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Role *</label>
-            <select value={form.role} onChange={e => setForm({...form, role: e.target.value})}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-              <option value="super_admin">Director (Super Admin)</option>
-              <option value="admin">Principal (Admin)</option>
-              <option value="coordinator">Coordinator</option>
-              <option value="manager">Deputy Manager</option>
-              <option value="staff">Staff</option>
-              <option value="teacher">Teacher</option>
-            </select>
-          </div>
-          {form.role === 'teacher' && (
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Assigned Class</label>
-              <input value={form.assigned_class} onChange={e => setForm({...form, assigned_class: e.target.value})}
-                placeholder="e.g. Class 5"
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-            </div>
-          )}
-          <div className="col-span-2 flex justify-end">
-            <button type="submit" disabled={saving}
-              className="bg-green-600 hover:bg-green-700 text-white text-sm px-6 py-2 rounded-lg disabled:opacity-50">
-              {saving ? 'Saving…' : 'Create User'}
-            </button>
-          </div>
-        </form>
-      )}
-
-      {loading ? (
-        <p className="text-gray-400 text-sm">Loading…</p>
-      ) : (
-        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b border-gray-200">
-              <tr>
-                {['Name','Username','Role','Assigned Class','Last Login','Status'].map(h => (
-                  <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {users.map(u => (
-                <tr key={u.user_id} className="border-b border-gray-100 hover:bg-gray-50">
-                  <td className="px-4 py-3 font-medium text-gray-800">{u.full_name}</td>
-                  <td className="px-4 py-3 text-gray-600">{u.username}</td>
-                  <td className="px-4 py-3">
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${ROLE_COLOURS[u.role] || 'bg-gray-100 text-gray-600'}`}>
-                      {u.role}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-gray-500">{u.assigned_class || '—'}</td>
-                  <td className="px-4 py-3 text-gray-400 text-xs">{u.last_login || 'Never'}</td>
-                  <td className="px-4 py-3">
-                    {u.username !== currentUser.username && (
-                      <button onClick={() => handleToggle(u.user_id, u.is_active)}
-                        className={`text-xs px-3 py-1 rounded-full border
-                          ${u.is_active ? 'border-red-200 text-red-600 hover:bg-red-50' : 'border-green-200 text-green-600 hover:bg-green-50'}`}>
-                        {u.is_active ? 'Disable' : 'Enable'}
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
     </div>
   );
 }

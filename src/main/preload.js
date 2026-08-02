@@ -14,7 +14,7 @@ contextBridge.exposeInMainWorld('api', {
   // Users
   getUsers:           ()                  => invoke('users:getAll'),
   createUser:         (data)              => invoke('users:create', data),
-  toggleUser:         (id, active)        => invoke('users:toggle', { userId: id, isActive: active }),
+  toggleUser:         (id, active, requestingUserId) => invoke('users:toggle', { userId: id, isActive: active, requesting_user_id: requestingUserId }),
 
   // Teacher Management
   teachersGetAll:      ()                  => invoke('teachers:getAll'),
@@ -22,12 +22,34 @@ contextBridge.exposeInMainWorld('api', {
   teachersCreate:      (data)              => invoke('teachers:create', data),
   teachersUpdate:      (data)              => invoke('teachers:update', data),
   teachersResetPassword: (userId)          => invoke('teachers:resetPassword', { userId }),
-  teachersToggle:      (id, active)        => invoke('users:toggle', { userId: id, isActive: active }),
+
+  // Staff Management (Staff / Coordinator / Manager / Admin / Director)
+  teamCreate:          (data)              => invoke('team:create', data),
+  teamGetAll:          (requestingUserId)  => invoke('team:getAll', { requesting_user_id: requestingUserId }),
+  teamGetOne:          (requestingUserId, userId) => invoke('team:getOne', { requesting_user_id: requestingUserId, userId }),
+  teamUpdate:          (data)              => invoke('team:update', data),
+  teamResetPassword:   (requestingUserId, userId) => invoke('team:resetPassword', { requesting_user_id: requestingUserId, userId }),
+
+  // Homework
+  subjectsGetAll:      (cls)               => invoke('subjects:getAll', { class: cls }),
+  subjectsEnsureDefaults: (cls)            => invoke('subjects:ensureDefaults', { class: cls }),
+  subjectsAssignTeacher: (subjectId, teacherId) => invoke('subjects:assignTeacher', { subject_id: subjectId, teacher_id: teacherId }),
+  subjectsCreate:      (cls, name)         => invoke('subjects:create', { class: cls, subject_name: name }),
+  subjectsDelete:      (subjectId)         => invoke('subjects:delete', { subject_id: subjectId }),
+  chaptersGetAll:      (subjectId)         => invoke('chapters:getAll', { subject_id: subjectId }),
+  chaptersSaveAll:     (subjectId, names)  => invoke('chapters:saveAll', { subject_id: subjectId, chapter_names: names }),
+  chaptersCreate:      (subjectId, name)   => invoke('chapters:create', { subject_id: subjectId, chapter_name: name }),
+  chaptersDelete:      (chapterId)         => invoke('chapters:delete', { chapter_id: chapterId }),
+  attendanceGetAbsentByDate: (cls, date, requestingUserId) => invoke('attendance:getAbsentByDate', { class: cls, date, requesting_user_id: requestingUserId }),
+  homeworkGetForDate:  (requestingUserId, cls, date) => invoke('homework:getForDate', { requesting_user_id: requestingUserId, class: cls, date }),
+  homeworkSave:        (requestingUserId, cls, date, entries) => invoke('homework:save', { requesting_user_id: requestingUserId, class: cls, date, entries }),
+  homeworkGetAll:      (filters)           => invoke('homework:getAll', filters),
+  teachersToggle:      (id, active, requestingUserId) => invoke('users:toggle', { userId: id, isActive: active, requesting_user_id: requestingUserId }),
 
   // Enrollment
   addStudent:         (data)              => invoke('enrollment:add', data),
   editStudent:        (data)              => invoke('enrollment:edit', data),
-  getByClass:         (cls, year, requestingUserId) => invoke('enrollment:getByClass', { class: cls, academic_year: year, requesting_user_id: requestingUserId }),
+  getByClass:         (cls, section, year, requestingUserId) => invoke('enrollment:getByClass', { class: cls, section, academic_year: year, requesting_user_id: requestingUserId }),
   getStudent:         (admNo)             => invoke('enrollment:getById', admNo),
   searchStudents:     (query)             => invoke('enrollment:search', query),
 
@@ -76,6 +98,10 @@ contextBridge.exposeInMainWorld('api', {
   promotionPreview:   (from, to)          => invoke('promotion:preview', { from_year: from, to_year: to }),
   promotionExecute:   (to, excl, by)      => invoke('promotion:execute', { to_year: to, excluded: excl, promoted_by: by }),
   promotionHistory:   ()                  => invoke('promotion:getHistory'),
+
+  sectionsGetBreakdown:   (cls, year)               => invoke('enrollment:getSectionBreakdown', { class: cls, academic_year: year }),
+  sectionsUpdateStudent:  (admNo, newSection, by)    => invoke('enrollment:updateStudentSection', { admission_number: admNo, new_section: newSection, updated_by: by }),
+  sectionsAutoBalance:    (cls, sections, year, by)  => invoke('enrollment:autoBalanceSections', { class: cls, sections, academic_year: year, updated_by: by }),
 
   // Daily Attendance
   attendanceGetStudents:    (cls, sec, yr, uid)            => invoke('attendance:getStudents',      { class: cls, section: sec, academic_year: yr, requesting_user_id: uid }),
@@ -139,6 +165,8 @@ contextBridge.exposeInMainWorld('api', {
   feeLedgerUpdateOpeningBal:  (lid, bal)              => invoke('feeLedger:updateOpeningBalance', { ledger_id: lid, opening_balance: bal }),
   feeLedgerSearch:            (query, yr)             => invoke('feeLedger:search', { query, academic_year: yr }),
   feeLedgerGetMonthlyReport:  (yr, mon, y, cls)       => invoke('feeLedger:getMonthlyReport', { academic_year: yr, month: mon, year: y, class: cls }),
+  feeLedgerExportMonthlyReportExcel: (rows, totals, monthLabel, cls) => invoke('feeLedger:exportMonthlyReportExcel', { rows, totals, monthLabel, cls }),
+  enrollmentExportClassListExcel: (students, selectedClass, academicYear) => invoke('enrollment:exportClassListExcel', { students, selectedClass, academicYear }),
 
   // Counter Payment (Phase 3)
   counterGetNextReceipt:    (yr)                    => invoke('counter:getNextReceipt', yr),
@@ -151,6 +179,7 @@ contextBridge.exposeInMainWorld('api', {
   counterGetTodayReceipts:  (yr, cid, ctid, date)  => invoke('counter:getTodayReceipts', { academic_year: yr, center_id: cid, counter_id: ctid, date }),
 
   // Day-End Posting (Phase 4)
+  postingCheckUnposted:      (cid, ctid)                         => invoke('posting:checkUnposted',    { center_id: cid, counter_id: ctid }),
   postingGetStaged:          (cid, ctid, date, yr)               => invoke('posting:getStaged',          { center_id: cid, counter_id: ctid, date, academic_year: yr }),
   postingCreateAndPost:      (cid, ctid, date, yr, by, selectedKeys)  => invoke('posting:createAndPost',      { center_id: cid, counter_id: ctid, date, academic_year: yr, posted_by: by, selected_keys: selectedKeys }),
   postingGetHistory:         (cid, yr)                           => invoke('posting:getHistory',         { center_id: cid, academic_year: yr }),

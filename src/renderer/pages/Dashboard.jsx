@@ -12,6 +12,43 @@ const CLASSES = ['Nursery','LKG','UKG','Class 1','Class 2','Class 3',
   'Class 4','Class 5','Class 6','Class 7','Class 8',
   'Class 9','Class 10','Class 11','Class 12'];
 
+const fmtINR = (n) => `₹${(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+
+// Master catalogue of every possible dashboard shortcut. Each dashboard
+// below only requests the *keys* relevant to that role's job — can() then
+// filters even that down to what THIS specific logged-in person is
+// actually permitted to open, so nobody sees a button that leads to
+// Access Denied (this used to happen for Coordinator/Manager, and for any
+// Staff account whose permissions didn't match the old hardcoded set).
+const ALL_QUICK_ACTIONS = [
+  { key: 'admission',         label: 'New Admission',      icon: '➕', permission: 'admission',         target: 'admission' },
+  { key: 'approveAdmission',  label: 'Approve Admissions', icon: '✅', permission: 'approveAdmission',  target: 'approveAdmission' },
+  { key: 'studentList',       label: 'Student List',       icon: '📋', permission: 'studentList',       target: 'studentList' },
+  { key: 'editStudent',       label: 'Edit Student',       icon: '✏️', permission: 'editStudent',       target: 'editStudent' },
+  { key: 'feesReceipt',       label: 'Collect Fees',       icon: '💰', permission: 'feesReceipt',       target: 'feesReceipt' },
+  { key: 'feesNotice',        label: 'Fee Notice',         icon: '📬', permission: 'feesNotice',        target: 'feesNotice' },
+  { key: 'feesLedger',        label: 'Fees Ledger',        icon: '📒', permission: 'feesLedger',        target: 'feesLedger' },
+  { key: 'tcGeneration',      label: 'TC Generation',      icon: '📄', permission: 'tcGeneration',      target: 'tcGeneration' },
+  { key: 'excelImport',       label: 'Import Excel',       icon: '📥', permission: 'backup',            target: 'excelImport' },
+  { key: 'backup',            label: 'Backup',             icon: '💾', permission: 'backup',            target: 'backup' },
+  { key: 'attendance',        label: 'Attendance',         icon: '📅', permission: 'attendance',        target: 'attendance' },
+  { key: 'examination',       label: 'Examination',        icon: '📊', permission: 'examination',       target: 'examination' },
+  { key: 'admitCard',         label: 'Admit Cards',        icon: '🪪', permission: 'admitCard',         target: 'admitCard' },
+  { key: 'rollNumbers',       label: 'Roll Numbers',       icon: '🔢', permission: 'rollNumbers',       target: 'rollNumbers' },
+  { key: 'teacherManagement', label: 'Teacher Management', icon: '🧑‍🏫', permission: 'teacherManagement', target: 'teacherManagement' },
+  { key: 'staffManagement',   label: 'Staff Management',   icon: '🧑‍💼', permission: 'staffManagement',   target: 'staffManagement' },
+];
+
+function QuickActionsGrid({ actionKeys, can, onNavigate }) {
+  const visible = ALL_QUICK_ACTIONS.filter(a => actionKeys.includes(a.key) && can(a.permission));
+  if (visible.length === 0) return null;
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      {visible.map(a => <QuickAction key={a.key} label={a.label} icon={a.icon} onClick={() => onNavigate(a.target)} />)}
+    </div>
+  );
+}
+
 // ── Shared UI helpers ─────────────────────────────────────────
 function StatCard({ label, value, sub, color, icon }) {
   const colors = {
@@ -154,7 +191,7 @@ function PendingList({ rows, onNavigate }) {
 // ══════════════════════════════════════════════════════════════
 // DIRECTOR DASHBOARD
 // ══════════════════════════════════════════════════════════════
-function DirectorDashboard({ data, onNavigate }) {
+function DirectorDashboard({ data, can, onNavigate }) {
   const catColors = { GEN:'blue', GENERAL:'blue', OBC:'amber', SC:'green', ST:'red' };
   return (
     <div className="space-y-6">
@@ -162,9 +199,11 @@ function DirectorDashboard({ data, onNavigate }) {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard label="Total Students"  value={data.totalActive} icon="🎓" color="blue"
           sub={`${data.totalBoys}M · ${data.totalGirls}F`} />
-        <PlaceholderCard label="Fees Collected (Month)" icon="💰" />
-        <PlaceholderCard label="Fees Pending"           icon="⚠️" />
-        <StatCard label="Active Staff"    value={data.totalUsers}  icon="👥" color="gray" />
+        <StatCard label="Fees Collected (Month)" value={fmtINR(data.feesCollectedThisMonth)} icon="💰" color="green" />
+        <StatCard label="Fees Pending" value={fmtINR(data.feesPendingTotal)} icon="⚠️"
+          color={data.defaultersCount > 0 ? 'amber' : 'green'} sub={`${data.defaultersCount} students with dues`} />
+        <StatCard label="Active Staff" value={data.totalUsers} icon="👥" color="gray"
+          sub={`${data.teacherCount} Teachers · ${data.staffCount} Staff`} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -210,14 +249,9 @@ function DirectorDashboard({ data, onNavigate }) {
 
       {/* Quick links */}
       <SectionCard title="Quick Actions">
-        <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
-          <QuickAction label="Student List"       icon="📋" onClick={() => onNavigate('studentList')} />
-          <QuickAction label="Approve Admissions" icon="✅" onClick={() => onNavigate('approveAdmission')} />
-          <QuickAction label="New Admission"      icon="➕" onClick={() => onNavigate('admission')} />
-          <QuickAction label="Edit Student"       icon="✏️"  onClick={() => onNavigate('editStudent')} />
-          <QuickAction label="Import Excel"       icon="📥" onClick={() => onNavigate('excelImport')} />
-          <QuickAction label="Backup"             icon="💾" onClick={() => onNavigate('backup')} />
-        </div>
+        <QuickActionsGrid
+          actionKeys={['studentList','approveAdmission','admission','editStudent','excelImport','backup','teacherManagement','staffManagement']}
+          can={can} onNavigate={onNavigate} />
       </SectionCard>
     </div>
   );
@@ -226,14 +260,15 @@ function DirectorDashboard({ data, onNavigate }) {
 // ══════════════════════════════════════════════════════════════
 // PRINCIPAL DASHBOARD
 // ══════════════════════════════════════════════════════════════
-function PrincipalDashboard({ data, onNavigate }) {
+function PrincipalDashboard({ data, can, onNavigate }) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard label="Active Students"    value={data.totalActive}  icon="🎓" color="blue" />
         <StatCard label="Pending Approvals"  value={data.totalPending} icon="⏳"
           color={data.totalPending > 0 ? 'amber' : 'green'} />
-        <PlaceholderCard label="Low Attendance" icon="📉" />
+        <StatCard label="Low Attendance" value={data.lowAttendanceCount} icon="📉"
+          color={data.lowAttendanceCount > 0 ? 'amber' : 'green'} sub="below 75% this year" />
         <StatCard label="TCs Issued"         value={data.tcIssued}     icon="📄" color="gray" />
       </div>
 
@@ -251,24 +286,21 @@ function PrincipalDashboard({ data, onNavigate }) {
         </SectionCard>
       </div>
 
-      {/* Fees placeholder */}
-      <SectionCard title="Fees Overview">
+      {/* Fees overview — real numbers */}
+      <SectionCard title="Fees Overview" action="View Reports" onAction={() => onNavigate('feeReports')}>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <PlaceholderCard label="Collected This Month" icon="💰" />
-          <PlaceholderCard label="Total Pending"        icon="⚠️" />
-          <PlaceholderCard label="Defaulters"           icon="👤" />
+          <StatCard label="Collected This Month" value={fmtINR(data.feesCollectedThisMonth)} icon="💰" color="green" />
+          <StatCard label="Total Pending"        value={fmtINR(data.feesPendingTotal)}       icon="⚠️"
+            color={data.feesPendingTotal > 0 ? 'amber' : 'green'} />
+          <StatCard label="Defaulters"           value={data.defaultersCount}                 icon="👤" color="gray" />
         </div>
       </SectionCard>
 
       {/* Quick actions */}
       <SectionCard title="Quick Actions">
-        <div className="grid grid-cols-3 md:grid-cols-5 gap-3">
-          <QuickAction label="Approve Admissions" icon="✅" onClick={() => onNavigate('approveAdmission')} />
-          <QuickAction label="New Admission"      icon="➕" onClick={() => onNavigate('admission')} />
-          <QuickAction label="Student List"       icon="📋" onClick={() => onNavigate('studentList')} />
-          <QuickAction label="Edit Student"       icon="✏️"  onClick={() => onNavigate('editStudent')} />
-          <QuickAction label="TC Generation"      icon="📄" onClick={() => onNavigate('tcGeneration')} />
-        </div>
+        <QuickActionsGrid
+          actionKeys={['approveAdmission','admission','studentList','editStudent','tcGeneration','teacherManagement','staffManagement']}
+          can={can} onNavigate={onNavigate} />
       </SectionCard>
     </div>
   );
@@ -277,70 +309,101 @@ function PrincipalDashboard({ data, onNavigate }) {
 // ══════════════════════════════════════════════════════════════
 // STAFF / OFFICE EXECUTIVE DASHBOARD
 // ══════════════════════════════════════════════════════════════
-function StaffDashboard({ data, user, onNavigate }) {
+function TeamDashboard({ data, user, can, onNavigate }) {
+  const showAdmissions = can('admission');
+  const showFees       = can('feesReceipt');
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard label="Total Students"     value={data.totalActive}  icon="🎓" color="blue" />
-        <PlaceholderCard label="Fees Collected Today" icon="💰" />
-        <PlaceholderCard label="Fees Pending"         icon="⚠️" />
-        <StatCard label="My Pending Submissions"
-          value={data.myPending?.filter(r => r.student_status === 'PENDING')?.length || 0}
-          icon="⏳" color={data.myPending?.some(r => r.student_status === 'PENDING') ? 'amber' : 'green'} />
+        <StatCard label="Total Students" value={data.totalActive} icon="🎓" color="blue" />
+        {showFees ? (
+          <>
+            <StatCard label="Fees Collected Today" value={fmtINR(data.feesCollectedToday)} icon="💰" color="green" />
+            <StatCard label="Fees Pending" value={fmtINR(data.feesPendingTotal)} icon="⚠️"
+              color={data.feesPendingTotal > 0 ? 'amber' : 'green'} />
+          </>
+        ) : (
+          <StatCard label="Low Attendance" value={data.lowAttendanceCount} icon="📉"
+            color={data.lowAttendanceCount > 0 ? 'amber' : 'green'} sub="below 75% this year" />
+        )}
+        {showAdmissions ? (
+          <StatCard label="My Pending Submissions"
+            value={data.myPending?.filter(r => r.student_status === 'PENDING')?.length || 0}
+            icon="⏳" color={data.myPending?.some(r => r.student_status === 'PENDING') ? 'amber' : 'green'} />
+        ) : (
+          <StatCard label="Active Students" value={data.totalActive} icon="🎓" color="blue" sub={`${data.totalBoys}M · ${data.totalGirls}F`} />
+        )}
       </div>
 
-      {/* My submissions */}
-      <SectionCard title="My Recent Admissions">
-        {data.myPending?.length ? (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-xs text-gray-400 border-b border-gray-100">
-                <th className="text-left py-2 font-medium">Student</th>
-                <th className="text-left py-2 font-medium">Class</th>
-                <th className="text-left py-2 font-medium">Status</th>
-                <th className="text-left py-2 font-medium">Submitted</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.myPending.map(r => (
-                <tr key={r.admission_number} className="border-b border-gray-50">
-                  <td className="py-2 font-medium text-gray-800">{r.student_name}</td>
-                  <td className="py-2 text-gray-500">{r.class_of_admission}</td>
-                  <td className="py-2">
-                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full
-                      ${r.student_status === 'PENDING' ? 'bg-amber-100 text-amber-700' :
-                        r.student_status === 'ACTIVE'  ? 'bg-green-100 text-green-700' :
-                                                         'bg-red-100 text-red-600'}`}>
-                      {r.student_status === 'ACTIVE' ? 'Approved' : r.student_status}
-                    </span>
-                  </td>
-                  <td className="py-2 text-gray-400 text-xs">{r.created_at?.slice(0,10)}</td>
+      {/* My submissions — only for those who actually handle admissions */}
+      {showAdmissions && (
+        <SectionCard title="My Recent Admissions">
+          {data.myPending?.length ? (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-gray-400 border-b border-gray-100">
+                  <th className="text-left py-2 font-medium">Student</th>
+                  <th className="text-left py-2 font-medium">Class</th>
+                  <th className="text-left py-2 font-medium">Status</th>
+                  <th className="text-left py-2 font-medium">Submitted</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <p className="text-sm text-gray-400 text-center py-4">
-            No admissions submitted yet.
-          </p>
-        )}
-      </SectionCard>
+              </thead>
+              <tbody>
+                {data.myPending.map(r => (
+                  <tr key={r.admission_number} className="border-b border-gray-50">
+                    <td className="py-2 font-medium text-gray-800">{r.student_name}</td>
+                    <td className="py-2 text-gray-500">{r.class_of_admission}</td>
+                    <td className="py-2">
+                      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full
+                        ${r.student_status === 'PENDING' ? 'bg-amber-100 text-amber-700' :
+                          r.student_status === 'ACTIVE'  ? 'bg-green-100 text-green-700' :
+                                                           'bg-red-100 text-red-600'}`}>
+                        {r.student_status === 'ACTIVE' ? 'Approved' : r.student_status}
+                      </span>
+                    </td>
+                    <td className="py-2 text-gray-400 text-xs">{r.created_at?.slice(0,10)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="text-sm text-gray-400 text-center py-4">No admissions submitted yet.</p>
+          )}
+        </SectionCard>
+      )}
 
-      {/* Fees placeholder */}
-      <SectionCard title="Fee Collection">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <PlaceholderCard label="Today's Collection" icon="💰" />
-          <PlaceholderCard label="Last 5 Receipts"    icon="🧾" />
-        </div>
-      </SectionCard>
+      {/* Fee collection — only for those who actually collect fees */}
+      {showFees && (
+        <SectionCard title="Fee Collection">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <p className="text-xs font-medium text-gray-500 mb-2">Last 5 Receipts</p>
+              {data.recentReceipts?.length ? (
+                <div className="space-y-2">
+                  {data.recentReceipts.map(r => (
+                    <div key={r.receipt_number} className="flex justify-between text-sm border-b border-gray-50 pb-1.5">
+                      <span className="text-gray-700">{r.student_name || r.receipt_number}</span>
+                      <span className="font-medium text-green-700">{fmtINR(r.amount)}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : <p className="text-sm text-gray-400 text-center py-4">No receipts yet today.</p>}
+            </div>
+            <div className="flex items-center justify-center bg-green-50 border border-green-100 rounded-xl p-4">
+              <div className="text-center">
+                <p className="text-xs text-green-600 font-medium uppercase tracking-wide">Today's Collection</p>
+                <p className="text-3xl font-bold text-green-700 mt-1">{fmtINR(data.feesCollectedToday)}</p>
+              </div>
+            </div>
+          </div>
+        </SectionCard>
+      )}
 
       <SectionCard title="Quick Actions">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <QuickAction label="New Admission" icon="➕" onClick={() => onNavigate('admission')} />
-          <QuickAction label="Student List"  icon="📋" onClick={() => onNavigate('studentList')} />
-          <QuickAction label="Collect Fees"  icon="💰" onClick={() => onNavigate('feesReceipt')} />
-          <QuickAction label="Fee Notice"    icon="📬" onClick={() => onNavigate('feesNotice')} />
-        </div>
+        <QuickActionsGrid
+          actionKeys={['admission','studentList','feesReceipt','feesNotice','attendance','examination','admitCard','rollNumbers','teacherManagement']}
+          can={can} onNavigate={onNavigate} />
       </SectionCard>
     </div>
   );
@@ -439,7 +502,7 @@ function TeacherDashboard({ onNavigate }) {
 // MAIN DASHBOARD — routes by role
 // ══════════════════════════════════════════════════════════════
 export default function Dashboard({ onNavigate }) {
-  const { user } = useAuth();
+  const { user, can } = useAuth();
   const [data,    setData]    = useState(null);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState('');
@@ -462,6 +525,7 @@ export default function Dashboard({ onNavigate }) {
     window.api.dashboardStats({
       role,
       submitted_by: user?.username || '',
+      academic_year: CURRENT_YEAR,
     }).then(res => {
       setLoading(false);
       if (res.success) setData(res.data);
@@ -505,16 +569,13 @@ export default function Dashboard({ onNavigate }) {
 
       {/* Role-based view */}
       {(role === 'super_admin') && data && (
-        <DirectorDashboard data={data} onNavigate={onNavigate} />
+        <DirectorDashboard data={data} can={can} onNavigate={onNavigate} />
       )}
       {(role === 'admin') && data && (
-        <PrincipalDashboard data={data} onNavigate={onNavigate} />
+        <PrincipalDashboard data={data} can={can} onNavigate={onNavigate} />
       )}
-      {(role === 'coordinator' || role === 'manager') && data && (
-        <PrincipalDashboard data={data} onNavigate={onNavigate} />
-      )}
-      {role === 'staff' && data && (
-        <StaffDashboard data={data} user={user} onNavigate={onNavigate} />
+      {(role === 'coordinator' || role === 'manager' || role === 'staff') && data && (
+        <TeamDashboard data={data} user={user} can={can} onNavigate={onNavigate} />
       )}
       {role === 'teacher' && (
         <TeacherDashboard onNavigate={onNavigate} />

@@ -793,6 +793,37 @@ function initDatabase() {
   `);
   try { db.exec("CREATE INDEX IF NOT EXISTS idx_teacher_classes_user ON teacher_classes (user_id)"); } catch(_) {}
 
+  // Add section-level assignment: a teacher can now be scoped to specific
+  // sections of a class (e.g. 'Class 1' + 'A'), not just the whole class.
+  // section = '' means 'all sections' — this is what every existing row
+  // becomes, so no teacher's current access shrinks from this migration.
+  // SQLite can't ALTER a UNIQUE constraint in place, so this rebuilds the
+  // table; guarded by column existence so it only ever runs once.
+  (function migrateTeacherClassesSections() {
+    try {
+      const cols = db.prepare("PRAGMA table_info(teacher_classes)").all();
+      if (cols.some(c => c.name === 'section')) return; // already migrated
+      db.transaction(() => {
+        db.exec(`
+          CREATE TABLE teacher_classes_new (
+            id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id  INTEGER NOT NULL REFERENCES users(user_id),
+            class    TEXT    NOT NULL,
+            section  TEXT    NOT NULL DEFAULT '',
+            UNIQUE (user_id, class, section)
+          )
+        `);
+        db.exec(`INSERT INTO teacher_classes_new (user_id, class, section) SELECT user_id, class, '' FROM teacher_classes`);
+        db.exec(`DROP TABLE teacher_classes`);
+        db.exec(`ALTER TABLE teacher_classes_new RENAME TO teacher_classes`);
+        db.exec(`CREATE INDEX IF NOT EXISTS idx_teacher_classes_user ON teacher_classes (user_id)`);
+      })();
+      console.log('[DB] teacher_classes migrated to support section-level assignment');
+    } catch (e) {
+      console.log('[DB] teacher_classes section migration skipped:', e.message);
+    }
+  })();
+
   // Migrate any existing teacher's single assigned_class into the new
   // join table, so nobody who was already working loses their class access
   // when class-scoping switches over to teacher_classes.
@@ -822,6 +853,67 @@ function initDatabase() {
   try { db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id)"); } catch(_) {}
   // Sweep out anything already expired so the table doesn't grow forever.
   try { db.prepare("DELETE FROM sessions WHERE expires_at < datetime('now','localtime')").run(); } catch(_) {}
+
+  // ── Staff Permissions: per-person permission scoping, only used for
+  // role='staff' accounts. Coordinator/Manager/Admin/Director keep their
+  // existing fixed, role-wide permission buckets (defined in the
+  // renderer's PERMISSIONS map) — only Staff needed per-person granularity,
+  // since two staff members can legitimately have different jobs (one
+  // handles fee collection, another handles admissions).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS staff_permissions (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id    INTEGER NOT NULL REFERENCES users(user_id),
+      permission TEXT    NOT NULL,
+      UNIQUE (user_id, permission)
+    )
+  `);
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_staff_permissions_user ON staff_permissions (user_id)"); } catch(_) {}
+
+  // ── Homework: subjects (per class) and chapters (per subject) are
+  // Principal-managed; homework_entries are written by teachers against
+  // those. Deliberately NOT storing whether a date was a working day here
+  // — that's derived live from the existing academic_calendar table
+  // (already the single source of truth for holidays/vacations/Sundays),
+  // never duplicated.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS subjects (
+      subject_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+      class        TEXT    NOT NULL,
+      subject_name TEXT    NOT NULL,
+      UNIQUE (class, subject_name)
+    )
+  `);
+  // Subject teacher — who actually teaches this subject, distinct from
+  // teacher_classes (which governs who can log homework for the class at
+  // all). One class's homework might all be entered by its class teacher,
+  // but Review Homework should credit the actual subject specialist.
+  try { db.exec("ALTER TABLE subjects ADD COLUMN teacher_id INTEGER REFERENCES users(user_id)"); } catch(_) {}
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chapters (
+      chapter_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+      subject_id   INTEGER NOT NULL REFERENCES subjects(subject_id),
+      chapter_name TEXT    NOT NULL,
+      UNIQUE (subject_id, chapter_name)
+    )
+  `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS homework_entries (
+      entry_id     INTEGER  PRIMARY KEY AUTOINCREMENT,
+      teacher_id   INTEGER  NOT NULL REFERENCES users(user_id),
+      class        TEXT     NOT NULL,
+      date         TEXT     NOT NULL,
+      subject_id   INTEGER  NOT NULL REFERENCES subjects(subject_id),
+      chapter_id   INTEGER  NOT NULL REFERENCES chapters(chapter_id),
+      remarks      TEXT     NOT NULL DEFAULT '',
+      created_at   DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
+    )
+  `);
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_homework_teacher_date ON homework_entries (teacher_id, date)"); } catch(_) {}
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_homework_class_date ON homework_entries (class, date)"); } catch(_) {}
+  // classwork added alongside the original 'remarks' column (which now
+  // represents the homework text specifically) — no rename needed.
+  try { db.exec("ALTER TABLE homework_entries ADD COLUMN classwork TEXT NOT NULL DEFAULT ''"); } catch(_) {}
 
   // ── Ensure all temp_admissions columns exist (safe to run repeatedly)
   const tempCols = [
@@ -1302,6 +1394,42 @@ function _classAccessDenied(requestingUserId, className) {
   return !allowed;
 }
 
+// Section-aware sibling — used by Attendance and Examination handlers,
+// which already treat section as a first-class concept. A teacher_classes
+// row with section='' means 'every section of this class' (this is what
+// every pre-existing assignment became after the migration, and what a
+// class checked with no specific sections ticked still means going
+// forward). Only blocks a section-specific request when the teacher's
+// assignment is narrower than that.
+function _classSectionAccessDenied(requestingUserId, className, section) {
+  if (!requestingUserId || !className) return false;
+  const requester = db.prepare('SELECT role FROM users WHERE user_id = ?').get(requestingUserId);
+  if (!requester || requester.role !== 'teacher') return false;
+  const rows = db.prepare('SELECT section FROM teacher_classes WHERE user_id = ? AND class = ?').all(requestingUserId, className);
+  if (rows.length === 0) return true; // no access to this class at all
+  if (rows.some(r => r.section === '')) return false; // full access to every section
+  if (!section) return false; // class-wide request, and they have SOME access to this class
+  return !rows.some(r => r.section === section);
+}
+
+// ── Day-End Posting enforcement ─────────────────────────────────
+// A receipt only "needs posting" once it's actually claimed money
+// (receipt_number set) — unclaimed dues sitting pending indefinitely is
+// normal and unrelated to this. Scoped per center+counter, matching how
+// Day-End Posting itself is already scoped, so one counter forgetting to
+// post doesn't block a different counter that closed out properly.
+function _getUnpostedPastDays(center_id, counter_id) {
+  if (!center_id || !counter_id) return [];
+  return db.prepare(`
+    SELECT DISTINCT DATE(collected_at) as d
+    FROM   fee_transactions_stage
+    WHERE  status = 'PENDING' AND receipt_number != ''
+    AND    center_id = ? AND counter_id = ?
+    AND    DATE(collected_at) < DATE('now','localtime')
+    ORDER  BY d
+  `).all(center_id, counter_id).map(r => r.d);
+}
+
 // ── AUTH ─────────────────────────────────────────────────────
 const LOGIN_ATTEMPT_LIMIT = 5;
 const LOGIN_LOCKOUT_SECONDS = 60;
@@ -1326,8 +1454,23 @@ function _hashToken(rawToken) {
 // resumed after a restart always reflects the same (possibly changed since
 // last login) role/classes/must_change_password as a fresh login would.
 function _buildUserPayload(user) {
-  const classes = db.prepare('SELECT class FROM teacher_classes WHERE user_id = ? ORDER BY class')
-    .all(user.user_id).map(r => r.class);
+  const classRows = db.prepare('SELECT class, section FROM teacher_classes WHERE user_id = ? ORDER BY class, section')
+    .all(user.user_id);
+  const classes = [...new Set(classRows.map(r => r.class))].sort();
+  // Per-class section scoping: [] means every section, otherwise the
+  // specific letters this teacher is assigned to for that class. Any '' row
+  // for a class means full access, regardless of what other rows exist.
+  const classSections = {};
+  classes.forEach(cls => {
+    const rowsForClass = classRows.filter(r => r.class === cls);
+    const hasAllSections = rowsForClass.some(r => r.section === '');
+    classSections[cls] = hasAllSections ? [] : rowsForClass.map(r => r.section);
+  });
+  // Only Staff accounts use per-person permissions — every other role
+  // still uses its fixed, role-wide bucket (defined in the renderer).
+  const permissions = user.role === 'staff'
+    ? db.prepare('SELECT permission FROM staff_permissions WHERE user_id = ? ORDER BY permission').all(user.user_id).map(r => r.permission)
+    : [];
   return {
     user_id: user.user_id,
     username: user.username,
@@ -1335,6 +1478,8 @@ function _buildUserPayload(user) {
     role: user.role,
     assigned_class: user.assigned_class,
     classes,
+    classSections,
+    permissions,
     must_change_password: !!user.must_change_password,
   };
 }
@@ -1572,9 +1717,44 @@ ipcMain.handle('users:create', async (_evt, { username, password, full_name, rol
   }
 });
 
-ipcMain.handle('users:toggle', (_evt, { userId, isActive }) => {
-  db.prepare('UPDATE users SET is_active = ? WHERE user_id = ?').run(isActive ? 1 : 0, userId);
-  return { success: true };
+ipcMain.handle('users:toggle', (_evt, { userId, isActive, requesting_user_id }) => {
+  try {
+    const target = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
+    if (!target) return { success: false, message: 'Account not found.' };
+
+    // Safeguards apply only when DISABLING — turning an account back on
+    // is always safe and never needs blocking.
+    if (!isActive) {
+      if (requesting_user_id && Number(requesting_user_id) === Number(userId)) {
+        return { success: false, message: 'You cannot disable the account you are currently logged in as.' };
+      }
+      if (['super_admin', 'admin'].includes(target.role)) {
+        const others = db.prepare(
+          "SELECT COUNT(*) as c FROM users WHERE role IN ('super_admin','admin') AND is_active = 1 AND user_id != ?"
+        ).get(userId).c;
+        if (others === 0) {
+          return { success: false, message: 'Cannot disable the last remaining Director/Principal-tier account — create another one first.' };
+        }
+      }
+    }
+
+    // Hierarchy check only applies to the Staff Management tier. Teacher
+    // toggling keeps its existing behavior (governed by the separate
+    // 'teacherManagement' permission, checked at the page level) —
+    // deliberately not folded into this newer scheme to avoid changing
+    // already-working behavior.
+    if (requesting_user_id && ['staff','coordinator','manager','admin','super_admin'].includes(target.role)) {
+      const requesterRole = _requesterRole(requesting_user_id);
+      if (!_rolesManageableBy(requesterRole).includes(target.role)) {
+        return { success: false, message: 'You do not have permission to change this account\'s status.' };
+      }
+    }
+
+    db.prepare('UPDATE users SET is_active = ? WHERE user_id = ?').run(isActive ? 1 : 0, userId);
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
 });
 
 // ── TEACHER MANAGEMENT (Principal / Manager) ──────────────────
@@ -1634,9 +1814,38 @@ function _maskPAN(pan) {
 // Server-side mirror of the frontend's validation — the UI already checks
 // this, but a request could bypass it entirely (a stale form, a future bug
 // elsewhere, or just someone poking devtools), so it's enforced here too.
-function _validateTeacherDetails({ full_name, date_of_birth, aadhar_number, pan_number, mobile_number, classes }) {
-  if (!full_name || !full_name.trim()) return 'Teacher name is required.';
-  if (!Array.isArray(classes) || classes.length === 0) return 'At least one class must be assigned.';
+// Shared by every account type (Teacher, Staff, Coordinator, Manager,
+// Admin) — the personal-details rules (DOB/Aadhar/PAN/mobile) don't vary
+// by role, only what's required ON TOP of them does.
+// Permissions a Staff account can be individually granted. Deliberately
+// excludes anything with serious, hard-to-undo consequences (backup/
+// restore, whole-school fee settings, legal documents like TC, bulk
+// operations like Excel import or year-end promotion, editing PAST
+// attendance) — those stay Principal/Director-tier regardless of how
+// flexible per-staff permissions become.
+const STAFF_ASSIGNABLE_PERMISSIONS = [
+  'admission', 'studentList', 'feesLedger', 'feesReceipt', 'feesNotice',
+  'admitCard', 'examination', 'rollNumbers', 'academicCalendar',
+  'approveAdmission', 'attendance',
+];
+
+// Who can create/manage which role — Director creates admin-tier-and-above
+// (Director, Principal/Administrator), Principal creates everyone below
+// that (Staff, Coordinator, Manager). Teacher accounts stay on their own
+// dedicated Teacher Management flow, not part of this. Checked against the
+// ACTUAL requester role looked up from the database, never trusted from
+// whatever the renderer claims about itself.
+function _rolesManageableBy(actingRole) {
+  // Director: everything in Staff Management except Teacher accounts,
+  // which stay exclusively on the separate Teacher Management flow
+  // (Principal + Manager), untouched by this change.
+  if (actingRole === 'super_admin') return ['super_admin', 'admin', 'staff', 'coordinator', 'manager'];
+  if (actingRole === 'admin')       return ['staff', 'coordinator', 'manager'];
+  return [];
+}
+
+function _validatePersonalDetails({ full_name, date_of_birth, aadhar_number, pan_number, mobile_number }) {
+  if (!full_name || !full_name.trim()) return 'Name is required.';
 
   if (date_of_birth) {
     const dob = new Date(date_of_birth);
@@ -1666,14 +1875,46 @@ function _validateTeacherDetails({ full_name, date_of_birth, aadhar_number, pan_
   return null;
 }
 
+function _validateTeacherDetails({ full_name, date_of_birth, aadhar_number, pan_number, mobile_number, classes }) {
+  const personalError = _validatePersonalDetails({ full_name, date_of_birth, aadhar_number, pan_number, mobile_number });
+  if (personalError) return personalError;
+  if (!Array.isArray(classes) || classes.length === 0) return 'At least one class must be assigned.';
+  return null;
+}
+
+function _validateStaffDetails({ full_name, date_of_birth, aadhar_number, pan_number, mobile_number, role, permissions }) {
+  const personalError = _validatePersonalDetails({ full_name, date_of_birth, aadhar_number, pan_number, mobile_number });
+  if (personalError) return personalError;
+  if (role === 'staff') {
+    if (!Array.isArray(permissions) || permissions.length === 0) {
+      return 'At least one permission must be assigned for a Staff account.';
+    }
+    const invalid = permissions.filter(p => !STAFF_ASSIGNABLE_PERMISSIONS.includes(p));
+    if (invalid.length > 0) return `Not a staff-assignable permission: ${invalid.join(', ')}.`;
+  }
+  return null;
+}
+
 // Create a teacher: writes users + employee_details + teacher_classes in
 // one transaction — either the whole teacher exists, or none of it does.
+// Converts raw teacher_classes rows (class, section) into the shape the
+// frontend edits: one entry per class, sections=[] meaning 'all sections'.
+function _classRowsToAssignments(rows) {
+  const byClass = {};
+  rows.forEach(r => { (byClass[r.class] = byClass[r.class] || []).push(r.section); });
+  return Object.keys(byClass).sort().map(cls => ({
+    class: cls,
+    sections: byClass[cls].includes('') ? [] : byClass[cls].filter(Boolean).sort(),
+  }));
+}
+
 ipcMain.handle('teachers:create', async (_evt, {
   full_name, father_husband_name, date_of_birth, aadhar_number, pan_number,
-  qualification, mobile_number, address, classes,
+  qualification, mobile_number, address, classAssignments,
 }) => {
   try {
-    const validationError = _validateTeacherDetails({ full_name, date_of_birth, aadhar_number, pan_number, mobile_number, classes });
+    const classNames = (classAssignments || []).map(a => a.class);
+    const validationError = _validateTeacherDetails({ full_name, date_of_birth, aadhar_number, pan_number, mobile_number, classes: classNames });
     if (validationError) return { success: false, message: validationError };
 
     const cleanAadhar = String(aadhar_number || '').replace(/\s+/g, '');
@@ -1687,7 +1928,7 @@ ipcMain.handle('teachers:create', async (_evt, {
     const createTeacher = db.transaction(() => {
       const userResult = db.prepare(
         'INSERT INTO users (username, password_hash, full_name, role, assigned_class, must_change_password) VALUES (?,?,?,?,?,?)'
-      ).run(username, hash, full_name.trim(), 'teacher', classes[0] || '', REQUIRE_PASSWORD_CHANGE_ON_FIRST_LOGIN ? 1 : 0);
+      ).run(username, hash, full_name.trim(), 'teacher', classNames[0] || '', REQUIRE_PASSWORD_CHANGE_ON_FIRST_LOGIN ? 1 : 0);
 
       const userId = userResult.lastInsertRowid;
 
@@ -1698,8 +1939,11 @@ ipcMain.handle('teachers:create', async (_evt, {
       `).run(userId, father_husband_name || '', date_of_birth || '', cleanAadhar,
              cleanPan, qualification || '', cleanMobile, address || '');
 
-      const insertClass = db.prepare('INSERT OR IGNORE INTO teacher_classes (user_id, class) VALUES (?, ?)');
-      classes.forEach(c => insertClass.run(userId, c));
+      const insertClass = db.prepare('INSERT OR IGNORE INTO teacher_classes (user_id, class, section) VALUES (?, ?, ?)');
+      (classAssignments || []).forEach(a => {
+        if (!a.sections || a.sections.length === 0) insertClass.run(userId, a.class, '');
+        else a.sections.forEach(sec => insertClass.run(userId, a.class, sec));
+      });
 
       return userId;
     });
@@ -1725,21 +1969,22 @@ ipcMain.handle('teachers:getAll', async () => {
       ORDER  BY u.full_name
     `).all();
 
-    const classRows = db.prepare('SELECT user_id, class FROM teacher_classes ORDER BY class').all();
-    const classesByUser = {};
-    classRows.forEach(r => {
-      if (!classesByUser[r.user_id]) classesByUser[r.user_id] = [];
-      classesByUser[r.user_id].push(r.class);
-    });
+    const classRows = db.prepare('SELECT user_id, class, section FROM teacher_classes ORDER BY class, section').all();
+    const rowsByUser = {};
+    classRows.forEach(r => { (rowsByUser[r.user_id] = rowsByUser[r.user_id] || []).push(r); });
 
-    const data = rows.map(r => ({
-      user_id: r.user_id, username: r.username, full_name: r.full_name,
-      is_active: r.is_active, created_at: r.created_at, last_login: r.last_login,
-      father_husband_name: r.father_husband_name, date_of_birth: r.date_of_birth,
-      aadhar_number: _maskAadhar(r.aadhar_number), pan_number: _maskPAN(r.pan_number),
-      qualification: r.qualification, mobile_number: r.mobile_number, address: r.address,
-      classes: classesByUser[r.user_id] || [],
-    }));
+    const data = rows.map(r => {
+      const assignments = _classRowsToAssignments(rowsByUser[r.user_id] || []);
+      return {
+        user_id: r.user_id, username: r.username, full_name: r.full_name,
+        is_active: r.is_active, created_at: r.created_at, last_login: r.last_login,
+        father_husband_name: r.father_husband_name, date_of_birth: r.date_of_birth,
+        aadhar_number: _maskAadhar(r.aadhar_number), pan_number: _maskPAN(r.pan_number),
+        qualification: r.qualification, mobile_number: r.mobile_number, address: r.address,
+        classes: assignments.map(a => a.class), // flat names, for simple badge display
+        classAssignments: assignments,           // rich shape, for editing
+      };
+    });
 
     return { success: true, data };
   } catch (err) {
@@ -1757,9 +2002,10 @@ ipcMain.handle('teachers:getOne', async (_evt, { userId }) => {
     if (!user) return { success: false, message: 'Teacher not found.' };
 
     const details = db.prepare('SELECT * FROM employee_details WHERE user_id = ?').get(userId) || {};
-    const classes = db.prepare('SELECT class FROM teacher_classes WHERE user_id = ? ORDER BY class').all(userId).map(r => r.class);
+    const classRows = db.prepare('SELECT class, section FROM teacher_classes WHERE user_id = ? ORDER BY class, section').all(userId);
+    const classAssignments = _classRowsToAssignments(classRows);
 
-    return { success: true, data: { ...user, ...details, classes } };
+    return { success: true, data: { ...user, ...details, classes: classAssignments.map(a => a.class), classAssignments } };
   } catch (err) {
     return { success: false, message: err.message };
   }
@@ -1769,10 +2015,11 @@ ipcMain.handle('teachers:getOne', async (_evt, { userId }) => {
 // teachers:resetPassword for that, kept deliberately separate).
 ipcMain.handle('teachers:update', async (_evt, {
   userId, full_name, father_husband_name, date_of_birth, aadhar_number, pan_number,
-  qualification, mobile_number, address, classes,
+  qualification, mobile_number, address, classAssignments,
 }) => {
   try {
-    const validationError = _validateTeacherDetails({ full_name, date_of_birth, aadhar_number, pan_number, mobile_number, classes });
+    const classNames = (classAssignments || []).map(a => a.class);
+    const validationError = _validateTeacherDetails({ full_name, date_of_birth, aadhar_number, pan_number, mobile_number, classes: classNames });
     if (validationError) return { success: false, message: validationError };
 
     const cleanAadhar = String(aadhar_number || '').replace(/\s+/g, '');
@@ -1781,7 +2028,7 @@ ipcMain.handle('teachers:update', async (_evt, {
 
     const doUpdate = db.transaction(() => {
       db.prepare('UPDATE users SET full_name = ?, assigned_class = ? WHERE user_id = ?')
-        .run(full_name || '', classes[0] || '', userId);
+        .run(full_name || '', classNames[0] || '', userId);
 
       db.prepare(`
         UPDATE employee_details
@@ -1792,8 +2039,11 @@ ipcMain.handle('teachers:update', async (_evt, {
              qualification || '', cleanMobile, address || '', userId);
 
       db.prepare('DELETE FROM teacher_classes WHERE user_id = ?').run(userId);
-      const insertClass = db.prepare('INSERT OR IGNORE INTO teacher_classes (user_id, class) VALUES (?, ?)');
-      classes.forEach(c => insertClass.run(userId, c));
+      const insertClass = db.prepare('INSERT OR IGNORE INTO teacher_classes (user_id, class, section) VALUES (?, ?, ?)');
+      (classAssignments || []).forEach(a => {
+        if (!a.sections || a.sections.length === 0) insertClass.run(userId, a.class, '');
+        else a.sections.forEach(sec => insertClass.run(userId, a.class, sec));
+      });
     });
     doUpdate();
 
@@ -1824,6 +2074,452 @@ ipcMain.handle('teachers:resetPassword', async (_evt, { userId }) => {
   } catch (err) {
     return { success: false, message: err.message };
   }
+});
+
+// ── STAFF MANAGEMENT (Principal / Director) ────────────────────
+// Covers Staff, Coordinator, Manager (Principal-creatable) and
+// Admin/Director (Director-creatable). Teacher stays on its own dedicated
+// flow above. Reuses the same username/password generation, masking, and
+// validation primitives already built for Teacher Management — the shape
+// of "create an account with generated credentials" doesn't change by
+// role, only the hierarchy check and the permission-list handling do.
+
+function _requesterRole(requestingUserId) {
+  if (!requestingUserId) return null;
+  const row = db.prepare('SELECT role FROM users WHERE user_id = ? AND is_active = 1').get(requestingUserId);
+  return row ? row.role : null;
+}
+
+ipcMain.handle('team:create', async (_evt, {
+  requesting_user_id, full_name, father_husband_name, date_of_birth, aadhar_number, pan_number,
+  qualification, mobile_number, address, role, permissions,
+}) => {
+  try {
+    const requesterRole = _requesterRole(requesting_user_id);
+    const allowedRoles = _rolesManageableBy(requesterRole);
+    if (!allowedRoles.includes(role)) {
+      return { success: false, message: 'You do not have permission to create this type of account.' };
+    }
+
+    const validationError = _validateStaffDetails({ full_name, date_of_birth, aadhar_number, pan_number, mobile_number, role, permissions });
+    if (validationError) return { success: false, message: validationError };
+
+    const cleanAadhar = String(aadhar_number || '').replace(/\s+/g, '');
+    const cleanMobile = String(mobile_number || '').replace(/\D/g, '');
+    const cleanPan     = String(pan_number || '').trim().toUpperCase();
+
+    const username = _generateTeacherUsername(full_name);
+    const plainPassword = _generateTeacherPassword();
+    const hash = await bcrypt.hash(plainPassword, 10);
+
+    const createAccount = db.transaction(() => {
+      const userResult = db.prepare(
+        'INSERT INTO users (username, password_hash, full_name, role, must_change_password) VALUES (?,?,?,?,?)'
+      ).run(username, hash, full_name.trim(), role, REQUIRE_PASSWORD_CHANGE_ON_FIRST_LOGIN ? 1 : 0);
+
+      const userId = userResult.lastInsertRowid;
+
+      db.prepare(`
+        INSERT INTO employee_details
+          (user_id, father_husband_name, date_of_birth, aadhar_number, pan_number, qualification, mobile_number, address)
+        VALUES (?,?,?,?,?,?,?,?)
+      `).run(userId, father_husband_name || '', date_of_birth || '', cleanAadhar,
+             cleanPan, qualification || '', cleanMobile, address || '');
+
+      if (role === 'staff' && Array.isArray(permissions)) {
+        const insertPerm = db.prepare('INSERT OR IGNORE INTO staff_permissions (user_id, permission) VALUES (?, ?)');
+        permissions.forEach(p => insertPerm.run(userId, p));
+      }
+
+      return userId;
+    });
+
+    const userId = createAccount();
+    return { success: true, user_id: userId, username, password: plainPassword };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// List every account the requester is allowed to manage. Director sees
+// the full picture (their own tier and everything below, minus teachers —
+// those stay on the dedicated Teacher Management page); Principal sees
+// only what they're actually allowed to create/manage.
+ipcMain.handle('team:getAll', async (_evt, { requesting_user_id }) => {
+  try {
+    const requesterRole = _requesterRole(requesting_user_id);
+    const visibleRoles = _rolesManageableBy(requesterRole);
+    if (visibleRoles.length === 0) return { success: false, message: 'You do not have permission to view this.' };
+
+    const placeholders = visibleRoles.map(() => '?').join(',');
+    const rows = db.prepare(`
+      SELECT u.user_id, u.username, u.full_name, u.role, u.is_active, u.created_at, u.last_login,
+             e.father_husband_name, e.date_of_birth, e.aadhar_number, e.pan_number,
+             e.qualification, e.mobile_number, e.address
+      FROM   users u
+      LEFT JOIN employee_details e ON e.user_id = u.user_id
+      WHERE  u.role IN (${placeholders})
+      ORDER  BY u.role, u.full_name
+    `).all(...visibleRoles);
+
+    const permRows = db.prepare('SELECT user_id, permission FROM staff_permissions ORDER BY permission').all();
+    const permsByUser = {};
+    permRows.forEach(r => { (permsByUser[r.user_id] ||= []).push(r.permission); });
+
+    const data = rows.map(r => ({
+      user_id: r.user_id, username: r.username, full_name: r.full_name, role: r.role,
+      is_active: r.is_active, created_at: r.created_at, last_login: r.last_login,
+      father_husband_name: r.father_husband_name, date_of_birth: r.date_of_birth,
+      aadhar_number: _maskAadhar(r.aadhar_number), pan_number: _maskPAN(r.pan_number),
+      qualification: r.qualification, mobile_number: r.mobile_number, address: r.address,
+      permissions: permsByUser[r.user_id] || [],
+    }));
+
+    return { success: true, data, staffAssignablePermissions: STAFF_ASSIGNABLE_PERMISSIONS };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+ipcMain.handle('team:getOne', async (_evt, { requesting_user_id, userId }) => {
+  try {
+    const requesterRole = _requesterRole(requesting_user_id);
+    const target = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
+    if (!target) return { success: false, message: 'Account not found.' };
+    if (!_rolesManageableBy(requesterRole).includes(target.role)) {
+      return { success: false, message: 'You do not have permission to view this account.' };
+    }
+
+    const details = db.prepare('SELECT * FROM employee_details WHERE user_id = ?').get(userId) || {};
+    const permissions = target.role === 'staff'
+      ? db.prepare('SELECT permission FROM staff_permissions WHERE user_id = ? ORDER BY permission').all(userId).map(r => r.permission)
+      : [];
+
+    return { success: true, data: { ...target, ...details, permissions } };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+ipcMain.handle('team:update', async (_evt, {
+  requesting_user_id, userId, full_name, father_husband_name, date_of_birth, aadhar_number, pan_number,
+  qualification, mobile_number, address, permissions,
+}) => {
+  try {
+    const requesterRole = _requesterRole(requesting_user_id);
+    const target = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
+    if (!target) return { success: false, message: 'Account not found.' };
+    if (!_rolesManageableBy(requesterRole).includes(target.role)) {
+      return { success: false, message: 'You do not have permission to edit this account.' };
+    }
+
+    const validationError = _validateStaffDetails({ full_name, date_of_birth, aadhar_number, pan_number, mobile_number, role: target.role, permissions });
+    if (validationError) return { success: false, message: validationError };
+
+    const cleanAadhar = String(aadhar_number || '').replace(/\s+/g, '');
+    const cleanMobile = String(mobile_number || '').replace(/\D/g, '');
+    const cleanPan     = String(pan_number || '').trim().toUpperCase();
+
+    const doUpdate = db.transaction(() => {
+      db.prepare('UPDATE users SET full_name = ? WHERE user_id = ?').run(full_name || '', userId);
+
+      db.prepare(`
+        UPDATE employee_details
+        SET father_husband_name = ?, date_of_birth = ?, aadhar_number = ?, pan_number = ?,
+            qualification = ?, mobile_number = ?, address = ?, updated_at = datetime('now','localtime')
+        WHERE user_id = ?
+      `).run(father_husband_name || '', date_of_birth || '', cleanAadhar, cleanPan,
+             qualification || '', cleanMobile, address || '', userId);
+
+      if (target.role === 'staff') {
+        db.prepare('DELETE FROM staff_permissions WHERE user_id = ?').run(userId);
+        const insertPerm = db.prepare('INSERT OR IGNORE INTO staff_permissions (user_id, permission) VALUES (?, ?)');
+        (permissions || []).forEach(p => insertPerm.run(userId, p));
+      }
+    });
+    doUpdate();
+
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+ipcMain.handle('team:resetPassword', async (_evt, { requesting_user_id, userId }) => {
+  try {
+    const requesterRole = _requesterRole(requesting_user_id);
+    const target = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
+    if (!target) return { success: false, message: 'Account not found.' };
+    if (!_rolesManageableBy(requesterRole).includes(target.role)) {
+      return { success: false, message: 'You do not have permission to reset this account\'s password.' };
+    }
+
+    const plainPassword = _generateTeacherPassword();
+    const hash = await bcrypt.hash(plainPassword, 10);
+    db.prepare(`
+      UPDATE users SET password_hash = ?, must_change_password = ?, failed_attempts = 0, locked_until = ''
+      WHERE user_id = ?
+    `).run(hash, REQUIRE_PASSWORD_CHANGE_ON_FIRST_LOGIN ? 1 : 0, userId);
+
+    return { success: true, password: plainPassword };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── HOMEWORK ─────────────────────────────────────────────────
+// Subjects/Chapters are Principal-managed reference data; teachers write
+// homework entries against them, scoped to their own classes (reusing the
+// existing _classAccessDenied check built for Attendance/Examination).
+
+// Standard curriculum per class — seeded automatically so Principal
+// doesn't have to type out the same subject list for every class by hand.
+// Classes 9-12 have no default list (not specified) — Principal adds
+// those manually, same as adding anything extra beyond the defaults below.
+const DEFAULT_SUBJECTS_BY_CLASS = {
+  'Nursery': ['Hindi', 'English', 'Math', 'Drawing'],
+  'LKG':     ['Hindi', 'English', 'Math', 'Drawing'],
+  'UKG':     ['Hindi', 'English', 'Math', 'EVS', 'Computer', 'Drawing'],
+  'Class 1': ['Hindi', 'English', 'Math', 'EVS', 'General Knowledge', 'Computer', 'Drawing'],
+  'Class 2': ['Hindi', 'English', 'Math', 'EVS', 'General Knowledge', 'Computer', 'Drawing'],
+  'Class 3': ['Hindi', 'English', 'Math', 'EVS', 'General Knowledge', 'Computer', 'Drawing'],
+  'Class 4': ['Hindi', 'English', 'Math', 'EVS', 'General Knowledge', 'Computer', 'Drawing'],
+  'Class 5': ['Hindi', 'English', 'Math', 'EVS', 'General Knowledge', 'Computer', 'Drawing'],
+  'Class 6': ['Hindi', 'English', 'Math', 'Science', 'SST', 'General Knowledge', 'Computer', 'Drawing'],
+  'Class 7': ['Hindi', 'English', 'Math', 'Science', 'SST', 'General Knowledge', 'Computer', 'Drawing'],
+  'Class 8': ['Hindi', 'English', 'Math', 'Science', 'SST', 'General Knowledge', 'Computer', 'Drawing'],
+};
+
+// Idempotent — INSERT OR IGNORE means calling this every time a class is
+// opened is safe; it only ever fills in whatever's still missing, never
+// duplicates or resets anything Principal has already customized.
+ipcMain.handle('subjects:ensureDefaults', (_evt, { class: cls }) => {
+  try {
+    const defaults = DEFAULT_SUBJECTS_BY_CLASS[cls];
+    if (!defaults || defaults.length === 0) return { success: true, seeded: false };
+    const insert = db.prepare('INSERT OR IGNORE INTO subjects (class, subject_name) VALUES (?, ?)');
+    db.transaction(() => defaults.forEach(name => insert.run(cls, name)))();
+    return { success: true, seeded: true };
+  } catch (err) { return { success: false, message: err.message }; }
+});
+
+ipcMain.handle('subjects:getAll', (_evt, { class: cls }) => {
+  try {
+    const rows = cls
+      ? db.prepare(`
+          SELECT s.*, u.full_name as teacher_name
+          FROM   subjects s
+          LEFT JOIN users u ON u.user_id = s.teacher_id
+          WHERE  s.class = ? ORDER BY s.subject_name
+        `).all(cls)
+      : db.prepare(`
+          SELECT s.*, u.full_name as teacher_name
+          FROM   subjects s
+          LEFT JOIN users u ON u.user_id = s.teacher_id
+          ORDER  BY s.class, s.subject_name
+        `).all();
+    return { success: true, data: rows };
+  } catch (err) { return { success: false, message: err.message }; }
+});
+
+// Assign (or unassign, if teacher_id is null/empty) which teacher actually
+// teaches this subject — separate from teacher_classes, which only
+// governs who can log homework for the class at all.
+ipcMain.handle('subjects:assignTeacher', (_evt, { subject_id, teacher_id }) => {
+  try {
+    if (!subject_id) return { success: false, message: 'Subject is required.' };
+    db.prepare('UPDATE subjects SET teacher_id = ? WHERE subject_id = ?').run(teacher_id || null, subject_id);
+    return { success: true };
+  } catch (err) { return { success: false, message: err.message }; }
+});
+
+ipcMain.handle('subjects:create', (_evt, { class: cls, subject_name }) => {
+  try {
+    if (!cls || !subject_name?.trim()) return { success: false, message: 'Class and subject name are required.' };
+    db.prepare('INSERT INTO subjects (class, subject_name) VALUES (?, ?)').run(cls, subject_name.trim());
+    return { success: true };
+  } catch (err) {
+    if (String(err.message).includes('UNIQUE')) return { success: false, message: 'This subject already exists for this class.' };
+    return { success: false, message: err.message };
+  }
+});
+
+ipcMain.handle('subjects:delete', (_evt, { subject_id }) => {
+  try {
+    const inUse = db.prepare('SELECT COUNT(*) as c FROM homework_entries WHERE subject_id = ?').get(subject_id).c;
+    if (inUse > 0) return { success: false, message: `Cannot delete — ${inUse} homework entr${inUse === 1 ? 'y' : 'ies'} already reference this subject.` };
+    db.transaction(() => {
+      db.prepare('DELETE FROM chapters WHERE subject_id = ?').run(subject_id);
+      db.prepare('DELETE FROM subjects WHERE subject_id = ?').run(subject_id);
+    })();
+    return { success: true };
+  } catch (err) { return { success: false, message: err.message }; }
+});
+
+ipcMain.handle('chapters:getAll', (_evt, { subject_id }) => {
+  try {
+    const rows = db.prepare('SELECT * FROM chapters WHERE subject_id = ? ORDER BY chapter_id').all(subject_id);
+    return { success: true, data: rows };
+  } catch (err) { return { success: false, message: err.message }; }
+});
+
+ipcMain.handle('chapters:create', (_evt, { subject_id, chapter_name }) => {
+  try {
+    if (!subject_id || !chapter_name?.trim()) return { success: false, message: 'Subject and chapter name are required.' };
+    db.prepare('INSERT INTO chapters (subject_id, chapter_name) VALUES (?, ?)').run(subject_id, chapter_name.trim());
+    return { success: true };
+  } catch (err) {
+    if (String(err.message).includes('UNIQUE')) return { success: false, message: 'This chapter already exists for this subject.' };
+    return { success: false, message: err.message };
+  }
+});
+
+ipcMain.handle('chapters:delete', (_evt, { chapter_id }) => {
+  try {
+    const inUse = db.prepare('SELECT COUNT(*) as c FROM homework_entries WHERE chapter_id = ?').get(chapter_id).c;
+    if (inUse > 0) return { success: false, message: `Cannot delete — ${inUse} homework entr${inUse === 1 ? 'y' : 'ies'} already reference this chapter.` };
+    db.prepare('DELETE FROM chapters WHERE chapter_id = ?').run(chapter_id);
+    return { success: true };
+  } catch (err) { return { success: false, message: err.message }; }
+});
+
+// Save a subject's whole Table of Contents in one go. Diffs against what's
+// already there — new chapter names get added, chapters no longer in the
+// list get removed UNLESS a teacher has already logged homework against
+// them, in which case they're kept (never silently orphaning a saved
+// homework entry) and reported back so Principal knows why.
+ipcMain.handle('chapters:saveAll', (_evt, { subject_id, chapter_names }) => {
+  try {
+    if (!subject_id) return { success: false, message: 'Subject is required.' };
+    const names = (chapter_names || []).map(n => String(n).trim()).filter(Boolean);
+    if (names.length === 0) return { success: false, message: 'Add at least one chapter before saving.' };
+    const counts = {};
+    names.forEach(n => { counts[n] = (counts[n] || 0) + 1; });
+    const dupeNames = Object.keys(counts).filter(n => counts[n] > 1);
+    if (dupeNames.length > 0) {
+      return { success: false, message: `Duplicate chapter name${dupeNames.length > 1 ? 's' : ''}: "${dupeNames.join('", "')}" — appears more than once in the list. Please make each chapter name unique.` };
+    }
+
+    const existing = db.prepare('SELECT chapter_id, chapter_name FROM chapters WHERE subject_id = ?').all(subject_id);
+    const existingNames = new Set(existing.map(c => c.chapter_name));
+    const uniqueNames = new Set(names);
+    const toAdd    = names.filter(n => !existingNames.has(n));
+    const toRemove = existing.filter(c => !uniqueNames.has(c.chapter_name));
+    const blockedRemovals = [];
+
+    db.transaction(() => {
+      const insert = db.prepare('INSERT INTO chapters (subject_id, chapter_name) VALUES (?, ?)');
+      toAdd.forEach(n => insert.run(subject_id, n));
+
+      toRemove.forEach(c => {
+        const inUse = db.prepare('SELECT COUNT(*) as cnt FROM homework_entries WHERE chapter_id = ?').get(c.chapter_id).cnt;
+        if (inUse > 0) { blockedRemovals.push(c.chapter_name); return; }
+        db.prepare('DELETE FROM chapters WHERE chapter_id = ?').run(c.chapter_id);
+      });
+    })();
+
+    return {
+      success: true,
+      warning: blockedRemovals.length > 0
+        ? `Kept "${blockedRemovals.join('", "')}" — already used in saved homework, so it can't be removed.`
+        : null,
+    };
+  } catch (err) { return { success: false, message: err.message }; }
+});
+
+// Absent students for a class+date — used on the teacher's Daily
+// Homework Report. Deliberately not scoped by section (unlike
+// attendance:getByDate) since Homework itself has no section concept —
+// this aggregates across every section of the class for that date.
+ipcMain.handle('attendance:getAbsentByDate', (_evt, { class: cls, date, requesting_user_id }) => {
+  try {
+    if (_classAccessDenied(requesting_user_id, cls)) {
+      return { success: false, message: 'You do not have access to this class.' };
+    }
+    const rows = db.prepare(`
+      SELECT admission_number, student_name, section
+      FROM   attendance_daily
+      WHERE  LOWER(class) = LOWER(?) AND date = ? AND status = 'Absent'
+      ORDER  BY student_name
+    `).all(cls, date);
+    return { success: true, data: rows };
+  } catch (err) { return { success: false, message: err.message }; }
+});
+
+// A teacher's homework list for one class+date (to load/edit before saving).
+ipcMain.handle('homework:getForDate', (_evt, { requesting_user_id, class: cls, date }) => {
+  try {
+    if (_classAccessDenied(requesting_user_id, cls)) {
+      return { success: false, message: 'You do not have access to this class.' };
+    }
+    const rows = db.prepare(`
+      SELECT h.entry_id, h.subject_id, s.subject_name, h.chapter_id, c.chapter_name, h.classwork, h.remarks
+      FROM   homework_entries h
+      JOIN   subjects s ON s.subject_id = h.subject_id
+      JOIN   chapters c ON c.chapter_id = h.chapter_id
+      WHERE  h.teacher_id = ? AND h.class = ? AND h.date = ?
+      ORDER  BY h.entry_id
+    `).all(requesting_user_id, cls, date);
+    return { success: true, data: rows };
+  } catch (err) { return { success: false, message: err.message }; }
+});
+
+// Saves the WHOLE list for that teacher+class+date in one go — replaces
+// whatever was there before (delete + reinsert in one transaction), same
+// idea as Attendance's "mark the whole day, then Save" pattern. Avoids
+// duplicate accumulation across repeated edits to the same day.
+ipcMain.handle('homework:save', (_evt, { requesting_user_id, class: cls, date, entries }) => {
+  try {
+    if (_classAccessDenied(requesting_user_id, cls)) {
+      return { success: false, message: 'You do not have access to this class.' };
+    }
+    if (!date) return { success: false, message: 'Date is required.' };
+    if (!Array.isArray(entries) || entries.length === 0) {
+      return { success: false, message: 'Add at least one homework entry before saving.' };
+    }
+    for (const e of entries) {
+      if (!e.subject_id || !e.chapter_id) return { success: false, message: 'Every entry needs a subject and a chapter selected.' };
+    }
+
+    const doSave = db.transaction(() => {
+      db.prepare('DELETE FROM homework_entries WHERE teacher_id = ? AND class = ? AND date = ?').run(requesting_user_id, cls, date);
+      const insert = db.prepare('INSERT INTO homework_entries (teacher_id, class, date, subject_id, chapter_id, classwork, remarks) VALUES (?,?,?,?,?,?,?)');
+      entries.forEach(e => insert.run(requesting_user_id, cls, date, e.subject_id, e.chapter_id, e.classwork || '', e.remarks || ''));
+    });
+    doSave();
+
+    return { success: true };
+  } catch (err) { return { success: false, message: err.message }; }
+});
+
+// Principal/Director oversight — every teacher's homework, filterable by
+// date range, class, teacher, and subject.
+ipcMain.handle('homework:getAll', (_evt, { from_date, to_date, class: cls, teacher_id, subject_id }) => {
+  try {
+    const conditions = [];
+    const params = [];
+    if (from_date) { conditions.push("date(substr(h.date,7,4)||'-'||substr(h.date,4,2)||'-'||substr(h.date,1,2)) >= date(substr(?,7,4)||'-'||substr(?,4,2)||'-'||substr(?,1,2))"); params.push(from_date, from_date, from_date); }
+    if (to_date)   { conditions.push("date(substr(h.date,7,4)||'-'||substr(h.date,4,2)||'-'||substr(h.date,1,2)) <= date(substr(?,7,4)||'-'||substr(?,4,2)||'-'||substr(?,1,2))"); params.push(to_date, to_date, to_date); }
+    if (cls)         { conditions.push('h.class = ?'); params.push(cls); }
+    if (teacher_id)  { conditions.push('h.teacher_id = ?'); params.push(teacher_id); }
+    if (subject_id)  { conditions.push('h.subject_id = ?'); params.push(subject_id); }
+
+    const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+    const rows = db.prepare(`
+      SELECT h.entry_id, h.class, h.date, h.classwork, h.remarks,
+             COALESCE(st.full_name, u.full_name) as teacher_name,
+             u.full_name as entered_by_name,
+             s.subject_name, c.chapter_name
+      FROM   homework_entries h
+      JOIN   users u    ON u.user_id = h.teacher_id
+      JOIN   subjects s ON s.subject_id = h.subject_id
+      JOIN   chapters c ON c.chapter_id = h.chapter_id
+      LEFT JOIN users st ON st.user_id = s.teacher_id
+      ${where}
+      ORDER  BY date(substr(h.date,7,4)||'-'||substr(h.date,4,2)||'-'||substr(h.date,1,2)) DESC, h.class, teacher_name
+    `).all(...params);
+    return { success: true, data: rows };
+  } catch (err) { return { success: false, message: err.message }; }
 });
 
 // ── ENROLLMENT (SR Register) ──────────────────────────────────
@@ -2008,17 +2704,68 @@ ipcMain.handle('enrollment:add', (_evt, raw) => {
   }
 })
 
-ipcMain.handle('enrollment:getByClass', (_evt, { class: cls, requesting_user_id }) => {
-  if (_classAccessDenied(requesting_user_id, cls)) {
+// Returns a teacher's allowed sections for a class: null means
+// unrestricted (non-teacher, or teacher has full-class access), [] means
+// no access to this class at all, otherwise the specific letters allowed.
+function _allowedSectionsForTeacher(userId, className) {
+  const requester = userId ? db.prepare('SELECT role FROM users WHERE user_id = ?').get(userId) : null;
+  if (!requester || requester.role !== 'teacher') return null;
+  const rows = db.prepare('SELECT section FROM teacher_classes WHERE user_id = ? AND class = ?').all(userId, className);
+  if (rows.length === 0) return [];
+  if (rows.some(r => r.section === '')) return null;
+  return rows.map(r => r.section);
+}
+
+ipcMain.handle('enrollment:getByClass', (_evt, { class: cls, section, requesting_user_id }) => {
+  if (cls === 'ALL') {
+    // Only non-teacher roles may request every class at once — teachers
+    // stay restricted to their own classes regardless of what the UI offers.
+    const requester = requesting_user_id ? db.prepare('SELECT role FROM users WHERE user_id = ?').get(requesting_user_id) : null;
+    if (requester && requester.role === 'teacher') {
+      return { success: false, message: 'You do not have access to view all classes.' };
+    }
+    const rows = db.prepare(`
+      SELECT * FROM enrollment
+      WHERE student_status = 'ACTIVE'
+      ORDER BY CASE current_class
+        WHEN 'Nursery' THEN 0 WHEN 'LKG' THEN 1 WHEN 'UKG' THEN 2
+        WHEN 'Class 1' THEN 3 WHEN 'Class 2' THEN 4 WHEN 'Class 3' THEN 5
+        WHEN 'Class 4' THEN 6 WHEN 'Class 5' THEN 7 WHEN 'Class 6' THEN 8
+        WHEN 'Class 7' THEN 9 WHEN 'Class 8' THEN 10 WHEN 'Class 9' THEN 11
+        WHEN 'Class 10' THEN 12 WHEN 'Class 11' THEN 13 WHEN 'Class 12' THEN 14
+        ELSE 99 END, student_name
+    `).all();
+    return { success: true, data: rows };
+  }
+
+  const allowedSections = _allowedSectionsForTeacher(requesting_user_id, cls);
+  if (Array.isArray(allowedSections) && allowedSections.length === 0) {
     return { success: false, message: 'You do not have access to this class.' };
   }
+  if (section && Array.isArray(allowedSections) && !allowedSections.includes(section)) {
+    return { success: false, message: 'You do not have access to this section.' };
+  }
+
+  const params = [cls];
+  let sectionClause = '';
+  if (section) {
+    sectionClause = 'AND section = ?';
+    params.push(section);
+  } else if (Array.isArray(allowedSections)) {
+    // Section-scoped teacher, no specific section chosen — show only the
+    // sections they're actually assigned to, not the whole class.
+    sectionClause = `AND section IN (${allowedSections.map(() => '?').join(',')})`;
+    params.push(...allowedSections);
+  }
+
   // Use LOWER() on both sides so 'Nursery', 'NURSERY', 'nursery' all match
   const rows = db.prepare(`
     SELECT * FROM enrollment
     WHERE LOWER(current_class) = LOWER(?)
     AND   student_status = 'ACTIVE'
+    ${sectionClause}
     ORDER BY student_name
-  `).all(cls);
+  `).all(...params);
   return { success: true, data: rows };
 });
 
@@ -2368,6 +3115,87 @@ ipcMain.handle('dashboard:stats', (_evt, params) => {
         `).get(teacherClass)
       : null;
 
+    // ── Real fee/attendance/staffing numbers — replaces the old static
+    // placeholder cards. Same query shapes already proven in Counter
+    // Payment (daily collection), Fee Reports (defaulters), and Attendance
+    // (low attendance) — reused here rather than reinvented, and skipped
+    // entirely for teacher/coordinator dashboards that don't show them.
+    const academicYear = params?.academic_year || '';
+    let feesCollectedToday = 0, feesCollectedThisMonth = 0, feesPendingTotal = 0,
+        defaultersCount = 0, lowAttendanceCount = 0, recentReceipts = [],
+        teacherCount = 0, staffCount = 0;
+
+    if (academicYear && ['super_admin', 'admin', 'staff', 'coordinator', 'manager'].includes(role)) {
+      const feeRowsToday = db.prepare(`
+        SELECT COALESCE(SUM(credit),0) as total FROM fee_transactions_stage
+        WHERE transaction_type = 'RECEIVED' AND status != 'CANCELLED'
+        AND   DATE(collected_at) = DATE('now','localtime') AND academic_year = ?
+      `).get(academicYear);
+      const otherToday = db.prepare(`
+        SELECT COALESCE(SUM(amount_paid),0) as total FROM counter_other_transactions
+        WHERE DATE(collected_at) = DATE('now','localtime') AND academic_year = ?
+      `).get(academicYear);
+      feesCollectedToday = (feeRowsToday?.total || 0) + (otherToday?.total || 0);
+
+      const feeRowsMonth = db.prepare(`
+        SELECT COALESCE(SUM(credit),0) as total FROM fee_transactions_stage
+        WHERE transaction_type = 'RECEIVED' AND status != 'CANCELLED'
+        AND   strftime('%Y-%m', collected_at) = strftime('%Y-%m','now','localtime') AND academic_year = ?
+      `).get(academicYear);
+      const otherMonth = db.prepare(`
+        SELECT COALESCE(SUM(amount_paid),0) as total FROM counter_other_transactions
+        WHERE strftime('%Y-%m', collected_at) = strftime('%Y-%m','now','localtime') AND academic_year = ?
+      `).get(academicYear);
+      feesCollectedThisMonth = (feeRowsMonth?.total || 0) + (otherMonth?.total || 0);
+
+      // Total pending + defaulter count — same balance formula as the
+      // Defaulter List report, aggregated instead of returned per-row.
+      const balanceRows = db.prepare(`
+        SELECT l.opening_balance,
+               COALESCE(pt.debit,0)   - COALESCE(pt.credit,0)   - COALESCE(pt.conc,0)   as posted_bal,
+               COALESCE(st.debit,0)   - COALESCE(st.credit,0)   - COALESCE(st.conc,0)   as staged_bal
+        FROM   fee_ledger l
+        LEFT JOIN (
+          SELECT ledger_id, SUM(debit) as debit, SUM(credit) as credit, SUM(concession) as conc
+          FROM   fee_transactions WHERE academic_year = ? GROUP BY ledger_id
+        ) pt ON pt.ledger_id = l.ledger_id
+        LEFT JOIN (
+          SELECT ledger_id, SUM(debit) as debit, SUM(credit) as credit, SUM(concession) as conc
+          FROM   fee_transactions_stage WHERE academic_year = ? AND status = 'PENDING' GROUP BY ledger_id
+        ) st ON st.ledger_id = l.ledger_id
+        WHERE l.academic_year = ?
+      `).all(academicYear, academicYear, academicYear);
+      balanceRows.forEach(r => {
+        const balance = (r.opening_balance || 0) + (r.posted_bal || 0) + (r.staged_bal || 0);
+        if (balance > 0.005) { feesPendingTotal += balance; defaultersCount += 1; }
+      });
+
+      lowAttendanceCount = db.prepare(`
+        SELECT COUNT(*) as c FROM (
+          SELECT admission_number,
+            (SUM(CASE WHEN status IN ('Present','Late') THEN 1 ELSE 0 END) * 100.0) / COUNT(*) as pct
+          FROM attendance_daily WHERE academic_year = ?
+          GROUP BY admission_number HAVING pct < 75
+        )
+      `).get(academicYear)?.c || 0;
+
+      if (role === 'staff') {
+        recentReceipts = db.prepare(`
+          SELECT s.receipt_number, l.student_name, SUM(s.credit) as amount, MAX(s.collected_at) as collected_at
+          FROM   fee_transactions_stage s
+          LEFT JOIN fee_ledger l ON l.ledger_id = s.ledger_id
+          WHERE  s.transaction_type = 'RECEIVED' AND s.status != 'CANCELLED' AND s.academic_year = ?
+          GROUP  BY s.receipt_number, s.ledger_id
+          ORDER  BY collected_at DESC LIMIT 5
+        `).all(academicYear);
+      }
+
+      if (['super_admin', 'admin'].includes(role)) {
+        teacherCount = db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'teacher' AND is_active = 1").get().c;
+        staffCount   = db.prepare("SELECT COUNT(*) as c FROM users WHERE role IN ('staff','coordinator','manager') AND is_active = 1").get().c;
+      }
+    }
+
     return {
       success: true,
       data: {
@@ -2375,6 +3203,9 @@ ipcMain.handle('dashboard:stats', (_evt, params) => {
         totalBoys, totalGirls, totalUsers,
         classWise, categoryRows, recentPending,
         myPending, teacherClassStats,
+        feesCollectedToday, feesCollectedThisMonth, feesPendingTotal,
+        defaultersCount, lowAttendanceCount, recentReceipts,
+        teacherCount, staffCount,
       }
     };
   } catch (err) {
@@ -3259,6 +4090,69 @@ function getNextClass(current) {
   return CLASS_SEQUENCE[idx + 1];
 }
 
+// ── Final exam pass/fail, for the Promotion preview ─────────────
+// Deliberately mirrors Examination.jsx's calcFinal exactly (same 6 exam
+// types summed out of 200 then scaled to 100, same 33%-per-subject pass
+// threshold, same grading scale) — this is a server-side copy, not a
+// shared import, since Electron's main and renderer processes are
+// separate JS contexts. If the formula in Examination.jsx ever changes,
+// this needs updating to match.
+const PROMOTION_SUBJECTS = {
+  Nursery: ['Hindi','English','Mathematics','Drawing'],
+  LKG:     ['Hindi','English','Mathematics','Drawing'],
+  UKG:     ['Hindi','English','EVS','Mathematics','Computer','Drawing'],
+};
+['Class 1','Class 2','Class 3','Class 4','Class 5'].forEach(c => {
+  PROMOTION_SUBJECTS[c] = ['Hindi','English','Mathematics','Science/EVS','General Knowledge','Computer','Drawing'];
+});
+['Class 6','Class 7','Class 8'].forEach(c => {
+  PROMOTION_SUBJECTS[c] = ['Hindi','English','Mathematics','Science','SST','General Knowledge','Computer','Drawing'];
+});
+const PROMOTION_FINAL_TYPES = ['UT1','UT2','HALF_YEARLY','UT3','UT4','FINAL'];
+
+function _promotionGrade(pct) {
+  if (pct >= 85) return 'A';
+  if (pct >= 70) return 'B';
+  if (pct >= 55) return 'C';
+  if (pct >= 40) return 'D';
+  if (pct >= 33) return 'E';
+  return 'F';
+}
+
+// Returns null (not false) when there's simply no exam data for this
+// student/class — a class with no marks entered yet, or a class outside
+// Nursery-8 (the exam module doesn't cover Class 9-12 at all currently) —
+// so the UI can show "No exam data" rather than a misleading FAIL badge,
+// and so promotion doesn't auto-exclude someone just because data is
+// missing, only because they actually failed.
+function _finalExamResult(admissionNumber, currentClass, marksMap) {
+  const subjects = PROMOTION_SUBJECTS[currentClass];
+  if (!subjects || subjects.length === 0) return null;
+
+  const sm = marksMap[admissionNumber] || {};
+  let total = 0, allPass = true, anyMarksEntered = false;
+
+  subjects.forEach(sub => {
+    const s = sm[sub] || {};
+    const get = (t) => {
+      const e = s[t];
+      if (!e) return null;
+      anyMarksEntered = true;
+      return e.absent ? 0 : (e.marks ?? 0);
+    };
+    const raw = PROMOTION_FINAL_TYPES.reduce((a, t) => a + (get(t) ?? 0), 0); // out of 200
+    const scaled = raw / 2; // out of 100
+    if (scaled < 33) allPass = false;
+    total += scaled;
+  });
+
+  if (!anyMarksEntered) return null;
+
+  const maxTotal = subjects.length * 100;
+  const pct = maxTotal ? (total / maxTotal * 100) : 0;
+  return { pct: pct.toFixed(1), grade: _promotionGrade(pct), allPass };
+}
+
 ipcMain.handle('promotion:preview', (_evt, { from_year, to_year }) => {
   try {
     const students = db.prepare(`
@@ -3266,8 +4160,30 @@ ipcMain.handle('promotion:preview', (_evt, { from_year, to_year }) => {
       FROM enrollment WHERE student_status = 'ACTIVE'
       ORDER BY current_class, student_name
     `).all();
+
+    // Pull every Final-relevant exam mark for the outgoing year once,
+    // rather than querying per student — same data source Examination.jsx
+    // itself reads from.
+    const markRows = db.prepare(`
+      SELECT admission_number, subject, exam_type, marks_obtained, is_absent
+      FROM   exam_marks
+      WHERE  academic_year = ?
+      AND    exam_type IN ('UT1','UT2','HALF_YEARLY','UT3','UT4','FINAL')
+    `).all(from_year);
+    const marksMap = {};
+    markRows.forEach(r => {
+      if (!marksMap[r.admission_number]) marksMap[r.admission_number] = {};
+      if (!marksMap[r.admission_number][r.subject]) marksMap[r.admission_number][r.subject] = {};
+      marksMap[r.admission_number][r.subject][r.exam_type] = { marks: r.marks_obtained, absent: !!r.is_absent };
+    });
+
+    const studentsWithResult = students.map(s => ({
+      ...s,
+      exam_result: _finalExamResult(s.admission_number, s.current_class, marksMap),
+    }));
+
     const classMap = {};
-    students.forEach(s => {
+    studentsWithResult.forEach(s => {
       const key = s.current_class || 'Unknown';
       if (!classMap[key]) classMap[key] = [];
       classMap[key].push(s);
@@ -3327,6 +4243,116 @@ ipcMain.handle('promotion:getHistory', () => {
 });
 
 // ══════════════════════════════════════════════════════════════
+// CLASS SECTIONS — reassign/redistribute students within a class.
+// No new table: 'section' is already just a column on enrollment,
+// constrained to the same fixed A-D list already used everywhere else
+// (Attendance, Examination, Roll Numbers). Both handlers below check
+// whether roll numbers are already frozen for the affected section —
+// same underlying check rollNumbers:checkFrozen already uses — so the
+// UI can warn rather than silently leave a stale roll number behind.
+// ══════════════════════════════════════════════════════════════
+
+function _rollNumbersFrozen(cls, section, academicYear) {
+  if (!section || !academicYear) return false;
+  const count = db.prepare(`
+    SELECT COUNT(*) as c FROM roll_numbers
+    WHERE LOWER(class) = LOWER(?) AND section = ? AND academic_year = ?
+  `).get(cls, section, academicYear).c;
+  return count > 0;
+}
+
+// Deals students out to sections in rotation (1st->A, 2nd->B, 3rd->A, ...)
+// rather than splitting into contiguous alphabetical blocks. The list is
+// still sorted alphabetically first, so this keeps the counts just as
+// even as a block split would — but every section ends up with a spread
+// across the whole alphabet instead of one section owning only early
+// names and another only late ones.
+function _splitEvenly(list, n) {
+  const result = Array.from({ length: n }, () => []);
+  list.forEach((item, i) => result[i % n].push(item));
+  return result;
+}
+
+ipcMain.handle('enrollment:getSectionBreakdown', (_evt, { class: cls, academic_year }) => {
+  try {
+    if (!cls) return { success: false, message: 'Class is required.' };
+    const students = db.prepare(`
+      SELECT admission_number, student_name, section
+      FROM   enrollment
+      WHERE  LOWER(current_class) = LOWER(?) AND student_status = 'ACTIVE'
+      ORDER  BY section, student_name
+    `).all(cls);
+
+    const bySection = {};
+    students.forEach(s => {
+      const sec = s.section || '(unassigned)';
+      (bySection[sec] = bySection[sec] || []).push(s);
+    });
+
+    const frozenBySection = {};
+    Object.keys(bySection).forEach(sec => {
+      if (sec === '(unassigned)') { frozenBySection[sec] = false; return; }
+      frozenBySection[sec] = _rollNumbersFrozen(cls, sec, academic_year);
+    });
+
+    return { success: true, total: students.length, bySection, frozenBySection };
+  } catch (err) { return { success: false, message: err.message }; }
+});
+
+ipcMain.handle('enrollment:updateStudentSection', (_evt, { admission_number, new_section, updated_by }) => {
+  try {
+    if (!admission_number || !new_section) return { success: false, message: 'Student and section are required.' };
+    const student = db.prepare('SELECT student_name, current_class, section FROM enrollment WHERE admission_number = ?').get(admission_number);
+    if (!student) return { success: false, message: 'Student not found.' };
+    if (student.section === new_section) return { success: true, unchanged: true };
+
+    db.prepare("UPDATE enrollment SET section = ?, updated_at = datetime('now','localtime') WHERE admission_number = ?")
+      .run(new_section, admission_number);
+
+    try {
+      db.prepare("INSERT INTO edit_history (admission_number, student_name, edited_by, changes) VALUES (?, ?, ?, ?)")
+        .run(admission_number, student.student_name, updated_by || 'admin',
+          JSON.stringify([{ field: 'Section', old: student.section || '(none)', new: new_section }]));
+    } catch (_) {}
+
+    return { success: true };
+  } catch (err) { return { success: false, message: err.message }; }
+});
+
+ipcMain.handle('enrollment:autoBalanceSections', (_evt, { class: cls, sections, academic_year, updated_by }) => {
+  try {
+    if (!cls) return { success: false, message: 'Class is required.' };
+    if (!Array.isArray(sections) || sections.length < 2) {
+      return { success: false, message: 'Select at least two sections to balance across.' };
+    }
+    const students = db.prepare(`
+      SELECT admission_number, student_name FROM enrollment
+      WHERE  LOWER(current_class) = LOWER(?) AND student_status = 'ACTIVE'
+      ORDER  BY student_name
+    `).all(cls);
+    if (students.length === 0) return { success: false, message: 'No active students found in this class.' };
+
+    const chunks = _splitEvenly(students, sections.length);
+    const update = db.prepare("UPDATE enrollment SET section = ?, updated_at = datetime('now','localtime') WHERE admission_number = ?");
+    const doAll = db.transaction(() => {
+      chunks.forEach((chunk, i) => chunk.forEach(s => update.run(sections[i], s.admission_number)));
+    });
+    doAll();
+
+    const breakdown = chunks.map((c, i) => ({ section: sections[i], count: c.length }));
+    try {
+      db.prepare("INSERT INTO edit_history (admission_number, student_name, edited_by, changes) VALUES ('SYSTEM', 'SECTION BALANCE', ?, ?)")
+        .run(updated_by || 'admin', JSON.stringify([{
+          field: 'Auto-Balance Sections', old: cls,
+          new: `${cls} split alphabetically across ${sections.join(', ')} — ${breakdown.map(b => `${b.section}: ${b.count}`).join(', ')}`,
+        }]));
+    } catch (_) {}
+
+    return { success: true, breakdown };
+  } catch (err) { return { success: false, message: err.message }; }
+});
+
+// ══════════════════════════════════════════════════════════════
 // DAILY ATTENDANCE HANDLERS
 // ══════════════════════════════════════════════════════════════
 
@@ -3335,7 +4361,7 @@ ipcMain.handle('promotion:getHistory', () => {
 // ── Get students for a class (for marking attendance) ─────────
 ipcMain.handle('attendance:getStudents', (_evt, { class: cls, section, academic_year, requesting_user_id }) => {
   try {
-    if (_classAccessDenied(requesting_user_id, cls)) {
+    if (_classSectionAccessDenied(requesting_user_id, cls, section)) {
       return { success: false, message: 'You do not have access to this class.' };
     }
     const students = db.prepare(`
@@ -3361,7 +4387,7 @@ ipcMain.handle('attendance:getStudents', (_evt, { class: cls, section, academic_
 // ── Get attendance for a class on a specific date ─────────────
 ipcMain.handle('attendance:getByDate', (_evt, { class: cls, section, date, requesting_user_id }) => {
   try {
-    if (_classAccessDenied(requesting_user_id, cls)) {
+    if (_classSectionAccessDenied(requesting_user_id, cls, section)) {
       return { success: false, message: 'You do not have access to this class.' };
     }
     const rows = db.prepare(`
@@ -3379,7 +4405,7 @@ ipcMain.handle('attendance:getByDate', (_evt, { class: cls, section, date, reque
 // ── Mark attendance for a full class on a date ────────────────
 ipcMain.handle('attendance:markDay', (_evt, { class: cls, section, date, academic_year, records, marked_by, requesting_user_id }) => {
   try {
-    if (_classAccessDenied(requesting_user_id, cls)) {
+    if (_classSectionAccessDenied(requesting_user_id, cls, section)) {
       return { success: false, message: 'You do not have access to this class.' };
     }
     const upsert = db.prepare(`
@@ -3405,7 +4431,7 @@ ipcMain.handle('attendance:markDay', (_evt, { class: cls, section, date, academi
 // ── Get monthly summary for a class ──────────────────────────
 ipcMain.handle('attendance:getMonthly', (_evt, { class: cls, section, month, year, academic_year, requesting_user_id }) => {
   try {
-    if (_classAccessDenied(requesting_user_id, cls)) {
+    if (_classSectionAccessDenied(requesting_user_id, cls, section)) {
       return { success: false, message: 'You do not have access to this class.' };
     }
     // month = "06", year = "2025" (from date DD-MM-YYYY, positions 4-5 and 7-10)
@@ -3439,7 +4465,7 @@ ipcMain.handle('attendance:getMonthly', (_evt, { class: cls, section, month, yea
 // ── Get day-by-day grid for a class/month ────────────────────
 ipcMain.handle('attendance:getDailyGrid', (_evt, { class: cls, section, month, year, academic_year, requesting_user_id }) => {
   try {
-    if (_classAccessDenied(requesting_user_id, cls)) {
+    if (_classSectionAccessDenied(requesting_user_id, cls, section)) {
       return { success: false, message: 'You do not have access to this class.' };
     }
     const rows = db.prepare(`
@@ -3503,7 +4529,7 @@ ipcMain.handle('attendance:getLowAttendance', (_evt, { academic_year, threshold 
 // ── Get marked dates for a class/month (to show which days done) ──
 ipcMain.handle('attendance:getMarkedDates', (_evt, { class: cls, section, month, year, requesting_user_id }) => {
   try {
-    if (_classAccessDenied(requesting_user_id, cls)) {
+    if (_classSectionAccessDenied(requesting_user_id, cls, section)) {
       return { success: false, message: 'You do not have access to this class.' };
     }
     const rows = db.prepare(`
@@ -3524,7 +4550,7 @@ ipcMain.handle('attendance:getMarkedDates', (_evt, { class: cls, section, month,
 // ── Lock attendance for a class/date ─────────────────────────
 ipcMain.handle('attendance:lockDay', (_evt, { class: cls, section, date, locked_by, requesting_user_id }) => {
   try {
-    if (_classAccessDenied(requesting_user_id, cls)) {
+    if (_classSectionAccessDenied(requesting_user_id, cls, section)) {
       return { success: false, message: 'You do not have access to this class.' };
     }
     db.prepare(`
@@ -3543,7 +4569,7 @@ ipcMain.handle('attendance:lockDay', (_evt, { class: cls, section, date, locked_
 // ── Unlock attendance ─────────────────────────────────────────
 ipcMain.handle('attendance:unlockDay', (_evt, { class: cls, section, date, requesting_user_id }) => {
   try {
-    if (_classAccessDenied(requesting_user_id, cls)) {
+    if (_classSectionAccessDenied(requesting_user_id, cls, section)) {
       return { success: false, message: 'You do not have access to this class.' };
     }
     db.prepare(`
@@ -3571,7 +4597,7 @@ ipcMain.handle('attendance:checkLocked', (_evt, { class: cls, section, date }) =
 // ── Get locked dates for a class/month ───────────────────────
 ipcMain.handle('attendance:getLockedDates', (_evt, { class: cls, section, month, year, requesting_user_id }) => {
   try {
-    if (_classAccessDenied(requesting_user_id, cls)) {
+    if (_classSectionAccessDenied(requesting_user_id, cls, section)) {
       return { success: false, message: 'You do not have access to this class.' };
     }
     const rows = db.prepare(`
@@ -3732,7 +4758,7 @@ ipcMain.handle('attendance:saveStudentMonth', (_evt, { admission_number, student
 // ── Get progressive (year-to-date) attendance ────────────────
 ipcMain.handle('attendance:getProgressive', (_evt, { class: cls, section, academic_year, up_to_month, up_to_year, requesting_user_id }) => {
   try {
-    if (_classAccessDenied(requesting_user_id, cls)) {
+    if (_classSectionAccessDenied(requesting_user_id, cls, section)) {
       return { success: false, message: 'You do not have access to this class.' };
     }
     // Compare dates as YYYYMM integers to handle Jan-Mar of second year correctly
@@ -3820,7 +4846,7 @@ ipcMain.handle('calendar:getYearSummary', (_evt, academic_year) => {
 // ── Get students for a class ──────────────────────────────────
 ipcMain.handle('exam:getStudents', (_evt, { class: cls, section, academic_year, requesting_user_id }) => {
   try {
-    if (_classAccessDenied(requesting_user_id, cls)) {
+    if (_classSectionAccessDenied(requesting_user_id, cls, section)) {
       return { success: false, message: 'You do not have access to this class.' };
     }
     const rows = db.prepare(`
@@ -3845,7 +4871,7 @@ ipcMain.handle('exam:getStudents', (_evt, { class: cls, section, academic_year, 
 // ── Get marks for a class / exam ─────────────────────────────
 ipcMain.handle('exam:getMarks', (_evt, { class: cls, section, academic_year, exam_type, requesting_user_id }) => {
   try {
-    if (_classAccessDenied(requesting_user_id, cls)) {
+    if (_classSectionAccessDenied(requesting_user_id, cls, section)) {
       return { success: false, message: 'You do not have access to this class.' };
     }
     const where = exam_type
@@ -3864,7 +4890,7 @@ ipcMain.handle('exam:getMarks', (_evt, { class: cls, section, academic_year, exa
 // ── Save marks ────────────────────────────────────────────────
 ipcMain.handle('exam:saveMarks', (_evt, { class: cls, section, academic_year, exam_type, marks, entered_by, auto_lock, requesting_user_id }) => {
   try {
-    if (_classAccessDenied(requesting_user_id, cls)) {
+    if (_classSectionAccessDenied(requesting_user_id, cls, section)) {
       return { success: false, message: 'You do not have access to this class.' };
     }
     const del = db.prepare(
@@ -3911,7 +4937,7 @@ ipcMain.handle('exam:lock', (_evt, { class: cls, section, academic_year, exam_ty
 
 ipcMain.handle('exam:unlock', (_evt, { class: cls, section, academic_year, exam_type, requesting_user_id }) => {
   try {
-    if (_classAccessDenied(requesting_user_id, cls)) {
+    if (_classSectionAccessDenied(requesting_user_id, cls, section)) {
       return { success: false, message: 'You do not have access to this class.' };
     }
     db.prepare('DELETE FROM exam_locks WHERE class=? AND section=? AND academic_year=? AND exam_type=?')
@@ -4508,9 +5534,12 @@ ipcMain.handle('feeLedger:getMonthlyReport', (_evt, { academic_year, month, year
 
     const ledgerRows = db.prepare(`
       SELECT l.ledger_id, l.sl_number, l.student_name, l.current_class, l.section,
-             l.opening_balance, e.father_name
+             l.opening_balance, e.father_name, e.village,
+             gm.group_id, g.gsl_number
       FROM   fee_ledger l
       LEFT JOIN student_directory e ON e.admission_number = l.admission_number
+      LEFT JOIN fee_group_members gm ON gm.ledger_id = l.ledger_id
+      LEFT JOIN fee_groups g ON g.group_id = gm.group_id
       WHERE  l.academic_year = ?
       AND    (? IS NULL OR l.current_class = ?)
       ORDER  BY CAST(SUBSTR(l.sl_number, 4) AS INTEGER)
@@ -4581,6 +5610,9 @@ ipcMain.handle('feeLedger:getMonthlyReport', (_evt, { academic_year, month, year
         current_class: row.current_class,
         section:       row.section,
         father_name:   row.father_name || '',
+        village:       row.village || '',
+        group_id:      row.group_id || null,
+        gsl_number:    row.gsl_number || '',
         prev_balance:  Math.round(prevBalance * 100) / 100,
         fee_due:       Math.round(feeDueAmt * 100) / 100,
         fee_paid:      Math.round(feePaidAmt * 100) / 100,
@@ -4590,6 +5622,143 @@ ipcMain.handle('feeLedger:getMonthlyReport', (_evt, { academic_year, month, year
 
     return { success: true, data, month_label: targetMonth };
   } catch(e) { return { success: false, message: e.message }; }
+});
+
+// Exports the Monthly Fee Report to an .xlsx file. Takes the exact rows/
+// totals already fetched and shown on screen (same data the print version
+// uses) rather than re-querying — the exported file can never disagree
+// with what's currently displayed.
+// Reorders rows so members of the same fee group (siblings sharing a GSL)
+// sit consecutively, even if their individual SL numbers are far apart.
+// The first time a group is encountered (in normal SL order), every member
+// of that group is emitted together right there; later encounters of
+// already-emitted members are skipped. Ungrouped students are untouched.
+function _groupSiblingsForExport(rows) {
+  const emitted = new Set();
+  const byGroup = {};
+  rows.forEach(r => { if (r.group_id) { (byGroup[r.group_id] = byGroup[r.group_id] || []).push(r); } });
+
+  const result = [];
+  rows.forEach(r => {
+    if (emitted.has(r.ledger_id)) return;
+    if (r.group_id && byGroup[r.group_id]) {
+      byGroup[r.group_id].forEach(member => {
+        if (!emitted.has(member.ledger_id)) { result.push(member); emitted.add(member.ledger_id); }
+      });
+    } else {
+      result.push(r);
+      emitted.add(r.ledger_id);
+    }
+  });
+  return result;
+}
+
+ipcMain.handle('feeLedger:exportMonthlyReportExcel', async (_evt, { rows, totals, monthLabel, cls }) => {
+  try {
+    const safeMonth = String(monthLabel || 'Report').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_');
+    const safeClass = cls ? '_' + String(cls).replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_') : '';
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: 'Save Monthly Ledger Report',
+      defaultPath: `Monthly_Ledger_Report_${safeMonth}${safeClass}.xlsx`,
+      filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }],
+    });
+    if (canceled || !filePath) return { success: false, cancelled: true };
+
+    const orderedRows = _groupSiblingsForExport(rows || []);
+
+    const header = ['Sr No', 'Student Ledger No', 'Student Name', 'Class', "Father's Name", 'Village',
+                     'Previous Balance', 'Fee Due', 'Fee Paid', 'Balance'];
+    const dataRows = orderedRows.map((r, i) => [
+      i + 1, r.sl_number, r.student_name, `${r.current_class}${r.section ? '-' + r.section : ''}`,
+      r.father_name || '', r.village || '',
+      r.prev_balance, r.fee_due, r.fee_paid, r.balance,
+    ]);
+    const totalRow = ['', '', '', '', '', 'Total',
+      totals?.prev_balance || 0, totals?.fee_due || 0, totals?.fee_paid || 0, totals?.balance || 0];
+
+    const aoa = [
+      ['BRILLIANT PUBLIC SCHOOL'],
+      ['Village-Sherpur-Nayser, Post-Jawal, District-Bulandshahr, UP-203131'],
+      [`STUDENT LEDGER SUMMARY FOR THE MONTH OF ${monthLabel || ''}${cls ? ' — ' + cls : ''}`],
+      [],
+      header,
+      ...dataRows,
+      totalRow,
+    ];
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!merges'] = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 9 } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: 9 } },
+      { s: { r: 2, c: 0 }, e: { r: 2, c: 9 } },
+    ];
+    ws['!cols'] = [
+      { wch: 6 }, { wch: 16 }, { wch: 22 }, { wch: 10 }, { wch: 20 }, { wch: 16 },
+      { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 12 },
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Monthly Report');
+    XLSX.writeFile(wb, filePath);
+
+    return { success: true, filePath };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// Exports the Class Student List to .xlsx — mirrors the same columns as
+// the existing PDF export, takes the exact (already filtered) student
+// list from the screen rather than re-querying.
+ipcMain.handle('enrollment:exportClassListExcel', async (_evt, { students, selectedClass, academicYear }) => {
+  try {
+    if (!students || students.length === 0) return { success: false, message: 'No students to export.' };
+
+    const safeClass = String(selectedClass || 'Class').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_');
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: 'Save Student List',
+      defaultPath: `StudentList_${safeClass}_${academicYear || ''}.xlsx`,
+      filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }],
+    });
+    if (canceled || !filePath) return { success: false, cancelled: true };
+
+    // Every field the student record actually has — since getByClass
+    // already does SELECT * FROM enrollment, this is the full row, not a
+    // curated subset. Derived dynamically from the data itself so it stays
+    // complete even if columns are ever added to the enrollment table.
+    const columns = Object.keys(students[0]);
+    const humanize = (key) => key.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+    const header = ['#', ...columns.map(humanize)];
+    const dataRows = students.map((s, i) => [i + 1, ...columns.map(c => s[c] ?? '')]);
+
+    const aoa = [
+      ['BRILLIANT PUBLIC SCHOOL'],
+      ['Village-Sherpur-Nayser, Post-Jawal, District-Bulandshahr, UP-203131'],
+      [`STUDENT LIST — ${selectedClass} (${academicYear || ''}) — Full Enrollment Data`],
+      [],
+      header,
+      ...dataRows,
+    ];
+
+    const lastCol = header.length - 1;
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!merges'] = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: lastCol } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: lastCol } },
+      { s: { r: 2, c: 0 }, e: { r: 2, c: lastCol } },
+    ];
+    // Reasonable default width per column, widened a little for the
+    // longer header labels rather than guessing content length.
+    ws['!cols'] = header.map(h => ({ wch: Math.max(h.length + 2, 12) }));
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Student List');
+    XLSX.writeFile(wb, filePath);
+
+    return { success: true, filePath };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
 });
 
 // ══════════════════════════════════════════════════════════════
@@ -4840,6 +6009,15 @@ ipcMain.handle('counter:savePayment', (_evt, { academic_year, ledger_id, group_i
   center_id, counter_id, collected_by, paid_by, amount_tendered,
   cheque_no, bank_name, txn_number }) => {
   try {
+    const unpostedDays = _getUnpostedPastDays(center_id, counter_id);
+    if (unpostedDays.length > 0) {
+      const formatted = unpostedDays.map(d => { const [y,m,dd] = d.split('-'); return `${dd}-${m}-${y}`; }).join(', ');
+      return {
+        success: false,
+        message: `This counter still has unposted receipts from ${formatted}. Ask your Principal to complete Day-End Posting for that date before collecting new payments.`,
+      };
+    }
+
     const VALID_MODES = ['CASH', 'CHEQUE', 'ONLINE'];
     const mode = VALID_MODES.includes(payment_mode) ? payment_mode : 'CASH';
     let chequeDetails = '';
@@ -5193,6 +6371,16 @@ ipcMain.handle('feeLedger:addToGroup', (_evt, { ledger_id, group_id, academic_ye
 // ══════════════════════════════════════════════════════════════
 
 // Get all pending staged receipts for a day grouped by receipt
+// Proactive check for the UI — same underlying logic counter:savePayment
+// enforces, so a banner shown before someone starts a payment can never
+// disagree with what actually gets blocked when they try to save one.
+ipcMain.handle('posting:checkUnposted', (_evt, { center_id, counter_id }) => {
+  try {
+    const unpostedDays = _getUnpostedPastDays(center_id, counter_id);
+    return { success: true, unposted_dates: unpostedDays };
+  } catch (err) { return { success: false, message: err.message }; }
+});
+
 ipcMain.handle('posting:getStaged', (_evt, { center_id, counter_id, date, academic_year }) => {
   try {
     const d = date || new Date().toISOString().slice(0, 10);

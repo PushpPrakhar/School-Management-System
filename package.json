@@ -37,20 +37,7 @@
     "files": [
       "build/**/*",
       "src/main/**/*",
-      "src/database/**/*",
-      "src/services/**/*",
-      "data/**/*",
       "node_modules/**/*"
-    ],
-    "extraResources": [
-      {
-        "from": "src/database/schema.sql",
-        "to": "schema.sql"
-      },
-      {
-        "from": "data/",
-        "to": "data/"
-      }
     ]
   },
   "homepage": "./",

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../utils/AuthContext';
 import MissingFeesBanner from '../components/MissingFeesBanner';
+import MonthlyLedgerReportPrintModal from '../components/MonthlyLedgerReportPrintModal';
 
 const SESSION_YEAR = (() => { const n = new Date(), y = n.getFullYear(); return n.getMonth() >= 3 ? y : y - 1; })();
 const CURRENT_YEAR = `${SESSION_YEAR}-${String(SESSION_YEAR + 1).slice(2)}`;
@@ -913,6 +914,9 @@ function MonthlyFeeReportView({ academicYear }) {
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState('');
   const [loaded,  setLoaded]  = useState(false);
+  const [showPrint, setShowPrint] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportMsg, setExportMsg] = useState('');
 
   const loadReport = useCallback(async () => {
     setLoading(true); setError('');
@@ -932,6 +936,17 @@ function MonthlyFeeReportView({ academicYear }) {
     fee_paid:     t.fee_paid     + (r.fee_paid || 0),
     balance:      t.balance      + (r.balance || 0),
   }), { prev_balance: 0, fee_due: 0, fee_paid: 0, balance: 0 });
+
+  const exportExcel = async () => {
+    setExportMsg('');
+    setExporting(true);
+    const res = await window.api.feeLedgerExportMonthlyReportExcel(rows, totals, monthLabel, cls || null);
+    setExporting(false);
+    if (res.cancelled) return;
+    if (!res.success) { setError(res.message); return; }
+    setExportMsg(`✓ Saved to ${res.filePath}`);
+    setTimeout(() => setExportMsg(''), 5000);
+  };
 
   return (
     <div>
@@ -959,15 +974,21 @@ function MonthlyFeeReportView({ academicYear }) {
             {CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
-        <button onClick={() => window.print()} disabled={rows.length === 0}
-          className="ml-auto px-5 py-2 bg-blue-700 hover:bg-blue-800 text-white rounded-xl text-sm font-medium disabled:bg-blue-300">
+        <button onClick={exportExcel} disabled={rows.length === 0 || exporting}
+          className="ml-auto px-5 py-2 border border-green-600 text-green-700 hover:bg-green-50 rounded-xl text-sm font-medium disabled:opacity-40 disabled:hover:bg-transparent">
+          {exporting ? '⏳ Saving…' : '📊 Download Excel'}
+        </button>
+        <button onClick={() => setShowPrint(true)} disabled={rows.length === 0}
+          className="px-5 py-2 bg-blue-700 hover:bg-blue-800 text-white rounded-xl text-sm font-medium disabled:bg-blue-300">
           🖨️ Print
         </button>
       </div>
 
+      {exportMsg && <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 mb-4 text-sm text-green-700 print:hidden">{exportMsg}</div>}
+
       {error && <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-4 text-sm text-red-600 print:hidden">{error}</div>}
 
-      <div className="print-root bg-white border border-gray-200 rounded-2xl overflow-hidden">
+      <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden">
 
         {loading && <p className="text-center text-gray-400 py-10">⏳ Loading report...</p>}
         {!loading && loaded && rows.length === 0 && (
@@ -983,6 +1004,7 @@ function MonthlyFeeReportView({ academicYear }) {
                   <th className="px-3 py-2 text-left">Student Ledger No</th>
                   <th className="px-3 py-2 text-left">Student Name &amp; Class</th>
                   <th className="px-3 py-2 text-left">Father's Name</th>
+                  <th className="px-3 py-2 text-left">Village</th>
                   <th className="px-3 py-2 text-right">Previous Balance</th>
                   <th className="px-3 py-2 text-right">Fee Due</th>
                   <th className="px-3 py-2 text-right">Fee Paid</th>
@@ -996,6 +1018,7 @@ function MonthlyFeeReportView({ academicYear }) {
                     <td className="px-3 py-2 font-semibold text-blue-700">{r.sl_number}</td>
                     <td className="px-3 py-2">{r.student_name} <span className="text-gray-400">({r.current_class}{r.section ? '-' + r.section : ''})</span></td>
                     <td className="px-3 py-2 text-gray-600">{r.father_name || '—'}</td>
+                    <td className="px-3 py-2 text-gray-600">{r.village || '—'}</td>
                     <td className="px-3 py-2 text-right">₹{fmt(r.prev_balance)}</td>
                     <td className="px-3 py-2 text-right">₹{fmt(r.fee_due)}</td>
                     <td className="px-3 py-2 text-right text-green-700">₹{fmt(r.fee_paid)}</td>
@@ -1005,7 +1028,7 @@ function MonthlyFeeReportView({ academicYear }) {
               </tbody>
               <tfoot>
                 <tr className="bg-gray-50 font-bold border-t-2 border-gray-300">
-                  <td className="px-3 py-2" colSpan={4}>Total</td>
+                  <td className="px-3 py-2" colSpan={5}>Total</td>
                   <td className="px-3 py-2 text-right">₹{fmt(totals.prev_balance)}</td>
                   <td className="px-3 py-2 text-right">₹{fmt(totals.fee_due)}</td>
                   <td className="px-3 py-2 text-right text-green-700">₹{fmt(totals.fee_paid)}</td>
@@ -1016,6 +1039,10 @@ function MonthlyFeeReportView({ academicYear }) {
           </div>
         )}
       </div>
+
+      {showPrint && (
+        <MonthlyLedgerReportPrintModal rows={rows} totals={totals} monthLabel={monthLabel} cls={cls} onClose={() => setShowPrint(false)} />
+      )}
     </div>
   );
 }
