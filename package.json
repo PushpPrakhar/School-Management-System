@@ -39,6 +39,12 @@
       "build/**/*",
       "src/main/**/*",
       "node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "src/database/schema.sql",
+        "to": "schema.sql"
+      }
     ]
   },
   "homepage": "./",
