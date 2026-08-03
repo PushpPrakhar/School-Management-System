@@ -277,7 +277,7 @@ function OversightTab() {
                   <td className="px-4 py-2.5 font-medium text-gray-800">{r.class}</td>
                   <td className="px-4 py-2.5 text-gray-600">{r.teacher_name}</td>
                   <td className="px-4 py-2.5"><span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">{r.subject_name}</span></td>
-                  <td className="px-4 py-2.5 text-gray-600">{r.chapter_name}</td>
+                  <td className="px-4 py-2.5 text-gray-600">{r.chapter_name || '—'}</td>
                   <td className="px-4 py-2.5 text-gray-500 max-w-xs truncate" title={r.classwork}>{r.classwork || '—'}</td>
                   <td className="px-4 py-2.5 text-gray-500 max-w-xs truncate" title={r.remarks}>{r.remarks || '—'}</td>
                 </tr>

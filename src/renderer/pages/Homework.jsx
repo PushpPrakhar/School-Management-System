@@ -58,9 +58,12 @@ function SubjectRow({ subject, entry, chapters, onChange }) {
 
 // ── Daily Report — teacher's own reference view, NOT printable ──
 function DailyReportModal({ selectedClass, displayDate, teacherName, dayStatus, subjects, entries, chaptersBySubject, absentStudents, onClose }) {
-  const filledRows = subjects.filter(s => entries[s.subject_id]?.chapter_id);
+  const filledRows = subjects.filter(s => {
+    const e = entries[s.subject_id];
+    return e && (e.chapter_id || (e.classwork || '').trim() || (e.remarks || '').trim());
+  });
   const chapterName = (subjectId, chapterId) =>
-    (chaptersBySubject[subjectId] || []).find(c => c.chapter_id === chapterId)?.chapter_name || '—';
+    chapterId ? ((chaptersBySubject[subjectId] || []).find(c => c.chapter_id === chapterId)?.chapter_name || '—') : '—';
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
@@ -204,7 +207,7 @@ export default function Homework() {
     const initial = {};
     subjectList.forEach(s => { initial[s.subject_id] = blankEntry(); });
     if (hwRes.success) {
-      hwRes.data.forEach(h => { initial[h.subject_id] = { chapter_id: h.chapter_id, classwork: h.classwork || '', remarks: h.remarks || '' }; });
+      hwRes.data.forEach(h => { initial[h.subject_id] = { chapter_id: h.chapter_id || '', classwork: h.classwork || '', remarks: h.remarks || '' }; });
     }
     setEntries(initial);
     loadDayStatus();
@@ -218,16 +221,21 @@ export default function Homework() {
     setError(''); setSaved(false);
     if (!selectedClass) { setError('Select a class first.'); return; }
 
-    // Only subjects where a chapter was actually picked get saved — a
-    // blank row just means nothing happened in that subject today.
+    // A subject gets saved if it has a chapter, classwork, or homework
+    // text — not chapter alone. Some subjects (Hindi, Hindi Grammar) may
+    // never get chapters written up, and a teacher should still be able
+    // to log classwork/homework for them.
     const toSave = subjects
-      .filter(s => entries[s.subject_id]?.chapter_id)
+      .filter(s => {
+        const e = entries[s.subject_id];
+        return e && (e.chapter_id || (e.classwork || '').trim() || (e.remarks || '').trim());
+      })
       .map(s => ({
-        subject_id: s.subject_id, chapter_id: entries[s.subject_id].chapter_id,
+        subject_id: s.subject_id, chapter_id: entries[s.subject_id].chapter_id || null,
         classwork: entries[s.subject_id].classwork, remarks: entries[s.subject_id].remarks,
       }));
 
-    if (toSave.length === 0) { setError('Select a chapter for at least one subject before saving.'); return; }
+    if (toSave.length === 0) { setError('Fill in classwork, homework, or a chapter for at least one subject before saving.'); return; }
 
     setSaving(true);
     const res = await window.api.homeworkSave(user?.user_id, selectedClass, displayDate, toSave);

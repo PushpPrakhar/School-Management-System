@@ -915,6 +915,45 @@ function initDatabase() {
   // represents the homework text specifically) — no rename needed.
   try { db.exec("ALTER TABLE homework_entries ADD COLUMN classwork TEXT NOT NULL DEFAULT ''"); } catch(_) {}
 
+  // chapter_id made optional — some subjects (Hindi, Hindi Grammar) may
+  // never get chapters written up, and teachers should still be able to
+  // log classwork/homework for them. Table rebuild since SQLite can't
+  // drop a NOT NULL constraint in place; guarded by the column's actual
+  // nullability so this only ever runs once.
+  (function migrateHomeworkChapterOptional() {
+    try {
+      const cols = db.prepare("PRAGMA table_info(homework_entries)").all();
+      const chapterCol = cols.find(c => c.name === 'chapter_id');
+      if (!chapterCol || chapterCol.notnull === 0) return; // already nullable
+      db.transaction(() => {
+        db.exec(`
+          CREATE TABLE homework_entries_new (
+            entry_id     INTEGER  PRIMARY KEY AUTOINCREMENT,
+            teacher_id   INTEGER  NOT NULL REFERENCES users(user_id),
+            class        TEXT     NOT NULL,
+            date         TEXT     NOT NULL,
+            subject_id   INTEGER  NOT NULL REFERENCES subjects(subject_id),
+            chapter_id   INTEGER  REFERENCES chapters(chapter_id),
+            remarks      TEXT     NOT NULL DEFAULT '',
+            classwork    TEXT     NOT NULL DEFAULT '',
+            created_at   DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
+          )
+        `);
+        db.exec(`
+          INSERT INTO homework_entries_new (entry_id, teacher_id, class, date, subject_id, chapter_id, remarks, classwork, created_at)
+          SELECT entry_id, teacher_id, class, date, subject_id, chapter_id, remarks, classwork, created_at FROM homework_entries
+        `);
+        db.exec(`DROP TABLE homework_entries`);
+        db.exec(`ALTER TABLE homework_entries_new RENAME TO homework_entries`);
+        db.exec(`CREATE INDEX IF NOT EXISTS idx_homework_teacher_date ON homework_entries (teacher_id, date)`);
+        db.exec(`CREATE INDEX IF NOT EXISTS idx_homework_class_date ON homework_entries (class, date)`);
+      })();
+      console.log('[DB] homework_entries migrated: chapter_id is now optional');
+    } catch (e) {
+      console.log('[DB] homework_entries chapter_id migration skipped:', e.message);
+    }
+  })();
+
   // ── Ensure all temp_admissions columns exist (safe to run repeatedly)
   const tempCols = [
     "ALTER TABLE temp_admissions ADD COLUMN submitted_by TEXT NOT NULL DEFAULT ''",
@@ -2456,7 +2495,7 @@ ipcMain.handle('homework:getForDate', (_evt, { requesting_user_id, class: cls, d
       SELECT h.entry_id, h.subject_id, s.subject_name, h.chapter_id, c.chapter_name, h.classwork, h.remarks
       FROM   homework_entries h
       JOIN   subjects s ON s.subject_id = h.subject_id
-      JOIN   chapters c ON c.chapter_id = h.chapter_id
+      LEFT JOIN chapters c ON c.chapter_id = h.chapter_id
       WHERE  h.teacher_id = ? AND h.class = ? AND h.date = ?
       ORDER  BY h.entry_id
     `).all(requesting_user_id, cls, date);
@@ -2477,14 +2516,20 @@ ipcMain.handle('homework:save', (_evt, { requesting_user_id, class: cls, date, e
     if (!Array.isArray(entries) || entries.length === 0) {
       return { success: false, message: 'Add at least one homework entry before saving.' };
     }
+    // Chapter is optional — some subjects (Hindi, Hindi Grammar) may never
+    // get chapters written up. A subject only needs SOMETHING to save: a
+    // chapter, or classwork text, or homework text.
     for (const e of entries) {
-      if (!e.subject_id || !e.chapter_id) return { success: false, message: 'Every entry needs a subject and a chapter selected.' };
+      if (!e.subject_id) return { success: false, message: 'Every entry needs a subject selected.' };
+      if (!e.chapter_id && !(e.classwork || '').trim() && !(e.remarks || '').trim()) {
+        return { success: false, message: 'Each entry needs a chapter, classwork, or homework filled in — not all blank.' };
+      }
     }
 
     const doSave = db.transaction(() => {
       db.prepare('DELETE FROM homework_entries WHERE teacher_id = ? AND class = ? AND date = ?').run(requesting_user_id, cls, date);
       const insert = db.prepare('INSERT INTO homework_entries (teacher_id, class, date, subject_id, chapter_id, classwork, remarks) VALUES (?,?,?,?,?,?,?)');
-      entries.forEach(e => insert.run(requesting_user_id, cls, date, e.subject_id, e.chapter_id, e.classwork || '', e.remarks || ''));
+      entries.forEach(e => insert.run(requesting_user_id, cls, date, e.subject_id, e.chapter_id || null, e.classwork || '', e.remarks || ''));
     });
     doSave();
 
@@ -2513,7 +2558,7 @@ ipcMain.handle('homework:getAll', (_evt, { from_date, to_date, class: cls, teach
       FROM   homework_entries h
       JOIN   users u    ON u.user_id = h.teacher_id
       JOIN   subjects s ON s.subject_id = h.subject_id
-      JOIN   chapters c ON c.chapter_id = h.chapter_id
+      LEFT JOIN chapters c ON c.chapter_id = h.chapter_id
       LEFT JOIN users st ON st.user_id = s.teacher_id
       ${where}
       ORDER  BY date(substr(h.date,7,4)||'-'||substr(h.date,4,2)||'-'||substr(h.date,1,2)) DESC, h.class, teacher_name
