@@ -10,6 +10,21 @@ const YEARS = Array.from({ length: 5 }, (_, i) => { const y = SESSION_YEAR - 1 +
 const fmt = (n) => n === null || n === undefined ? '0.00' : Number(n).toFixed(2);
 const fmtDate = (d) => d ? String(d).slice(0, 10).split('-').reverse().join('-') : '—';
 
+// April-March month options for a given academic year ('2026-27' -> April
+// 2026 through March 2027), in the exact 'YYYY-MM' format the backend
+// compares tuition_start_month against.
+const academicMonthOptions = (academicYear) => {
+  const startYear = parseInt(String(academicYear).split('-')[0], 10);
+  const MONTHS = [
+    ['04','April'],['05','May'],['06','June'],['07','July'],['08','August'],['09','September'],
+    ['10','October'],['11','November'],['12','December'],['01','January'],['02','February'],['03','March'],
+  ];
+  return MONTHS.map(([mm, label], i) => {
+    const calYear = i < 9 ? startYear : startYear + 1; // Jan-Mar fall in the following calendar year
+    return { value: `${calYear}-${mm}`, label: `${label} ${calYear}` };
+  });
+};
+
 // ── Tab 1: Create Ledger ──────────────────────────────────
 const CLASSES = ['Nursery','LKG','UKG','Class 1','Class 2','Class 3',
   'Class 4','Class 5','Class 6','Class 7','Class 8'];
@@ -58,6 +73,7 @@ function AddStudentsStep({ academicYear, onAdded }) {
   const [ledger,    setLedger]    = useState([]);
   const [selected,  setSelected]  = useState(new Set());
   const [balances,  setBalances]  = useState({});
+  const [tuitionStartMonths, setTuitionStartMonths] = useState({});
   const [loading,   setLoading]   = useState(false);
   const [adding,    setAdding]    = useState(false);
   const [error,     setError]     = useState('');
@@ -87,6 +103,7 @@ function AddStudentsStep({ academicYear, onAdded }) {
   const clearAll  = () => setSelected(new Set());
 
   const setBalance = (admNo, val) => setBalances(prev => ({ ...prev, [admNo]: val }));
+  const setTuitionStartMonth = (admNo, val) => setTuitionStartMonths(prev => ({ ...prev, [admNo]: val }));
 
   const confirmAdd = async () => {
     setAdding(true); setError('');
@@ -98,11 +115,12 @@ function AddStudentsStep({ academicYear, onAdded }) {
         current_class:    s.current_class,
         section:          s.section,
         opening_balance:  parseFloat(balances[s.admission_number]) || 0,
+        tuition_start_month: tuitionStartMonths[s.admission_number] || academicMonthOptions(academicYear)[0].value,
       }));
     const res = await window.api.feeLedgerCreateBulk(academicYear, entries, user?.username);
     setAdding(false); setConfirming(false);
     if (!res.success) { setError(res.message); return; }
-    setSelected(new Set()); setBalances({});
+    setSelected(new Set()); setBalances({}); setTuitionStartMonths({});
     await loadStudents();
     await loadLedger();
     onAdded();
@@ -169,12 +187,20 @@ function AddStudentsStep({ academicYear, onAdded }) {
                         <p className="text-xs text-gray-400">{s.admission_number} · {s.current_class} {s.section}</p>
                       </div>
                       {isSel && (
-                        <div className="flex items-center border-2 border-blue-200 focus-within:border-blue-400 rounded-xl overflow-hidden">
-                          <span className="px-2 py-1.5 text-xs text-gray-400 bg-gray-50 border-r border-gray-200">₹</span>
-                          <input type="number" min="0" value={balances[s.admission_number]||''}
-                            onChange={e => setBalance(s.admission_number, e.target.value)}
-                            placeholder="Opening bal."
-                            className="w-28 px-2 py-1.5 text-xs text-right focus:outline-none" />
+                        <div className="flex items-center gap-2">
+                          <div className="flex items-center border-2 border-blue-200 focus-within:border-blue-400 rounded-xl overflow-hidden">
+                            <span className="px-2 py-1.5 text-xs text-gray-400 bg-gray-50 border-r border-gray-200">₹</span>
+                            <input type="number" min="0" value={balances[s.admission_number]||''}
+                              onChange={e => setBalance(s.admission_number, e.target.value)}
+                              placeholder="Opening bal."
+                              className="w-28 px-2 py-1.5 text-xs text-right focus:outline-none" />
+                          </div>
+                          <select value={tuitionStartMonths[s.admission_number] || academicMonthOptions(academicYear)[0].value}
+                            onChange={e => setTuitionStartMonth(s.admission_number, e.target.value)}
+                            title="Tuition dues generate from this month onward — not before"
+                            className="border-2 border-blue-200 focus:border-blue-400 rounded-xl px-2 py-1.5 text-xs bg-white focus:outline-none">
+                            {academicMonthOptions(academicYear).map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                          </select>
                         </div>
                       )}
                     </div>
@@ -249,7 +275,8 @@ function AddStudentsStep({ academicYear, onAdded }) {
 // Step 1b — New Students (bypass formal admission, charge them anyway)
 function NewStudentStep({ academicYear, onAdded }) {
   const { user } = useAuth();
-  const blank = { student_name: '', father_name: '', current_class: '', section: 'A', village: '', opening_balance: 0 };
+  const blank = { student_name: '', father_name: '', current_class: '', section: 'A', village: '', opening_balance: 0,
+    tuition_start_month: `${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,'0')}` };
   const [form,    setForm]    = useState(blank);
   const [saving,  setSaving]  = useState(false);
   const [error,   setError]   = useState('');
@@ -264,7 +291,8 @@ function NewStudentStep({ academicYear, onAdded }) {
     setSaving(true); setError('');
     const res = await window.api.feeLedgerCreateProvisional(
       academicYear, form.student_name.trim(), form.father_name.trim(),
-      form.current_class, form.section, form.village, form.opening_balance || 0, user?.username
+      form.current_class, form.section, form.village, form.opening_balance || 0, user?.username,
+      form.tuition_start_month
     );
     setSaving(false);
     if (!res.success) { setError(res.message); return; }
@@ -327,6 +355,14 @@ function NewStudentStep({ academicYear, onAdded }) {
           <input type="number" min="0" value={form.opening_balance} onChange={e => set('opening_balance', parseFloat(e.target.value) || 0)}
             className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400" />
         </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">Tuition Dues Start From <span className="text-red-400">*</span></label>
+          <select value={form.tuition_start_month} onChange={e => set('tuition_start_month', e.target.value)}
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-blue-400">
+            {academicMonthOptions(academicYear).map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+          </select>
+          <p className="text-xs text-gray-400 mt-1">Tuition dues generate from this month onward only — nothing before it.</p>
+        </div>
         <button onClick={submit} disabled={saving}
           className="w-full px-6 py-2.5 bg-blue-700 hover:bg-blue-800 disabled:bg-blue-300 text-white rounded-xl text-sm font-medium">
           {saving ? '⏳ Adding...' : '+ Add to Ledger'}
@@ -343,6 +379,8 @@ function MakeGroupsStep({ academicYear, refreshKey }) {
   const [search,    setSearch]    = useState('');
   const [selected,  setSelected]  = useState(new Set());
   const [confirm,   setConfirm]   = useState(null);   // { members, gsl }
+  const [concessions, setConcessions] = useState({}); // { [ledger_id]: percentage string }
+  const [settings,  setSettings]  = useState(null);
   const [saving,    setSaving]    = useState(false);
   const [error,     setError]     = useState('');
   const [msg,       setMsg]       = useState('');
@@ -350,6 +388,8 @@ function MakeGroupsStep({ academicYear, refreshKey }) {
   const load = useCallback(async () => {
     const res = await window.api.feeLedgerGetUngrouped(academicYear);
     if (res.success) setUngrouped(res.data);
+    const setRes = await window.api.feeSettingsGet(academicYear);
+    if (setRes.success) setSettings(setRes.data);
   }, [academicYear]);
 
   useEffect(() => { load(); }, [load, refreshKey]);
@@ -366,24 +406,34 @@ function MakeGroupsStep({ academicYear, refreshKey }) {
            (s.father_name||'').toLowerCase().includes(q);
   });
 
+  const concessionFrom = settings?.sibling_concession_from || 3;
+  const defaultPct     = settings?.sibling_concession_pct || 0;
+
   const openConfirm = async () => {
     const gslRes = await window.api.feeLedgerGetNextGSL(academicYear);
     if (!gslRes.success) { setError(gslRes.message); return; }
     const members = ungrouped
       .filter(l => selected.has(l.ledger_id))
       .sort((a,b) => (CLASS_RANK[b.current_class]??-1) - (CLASS_RANK[a.current_class]??-1));
+    // Pre-fill every eligible sibling (3rd+ by default) with the school's
+    // standard rate — each one independently editable from here.
+    const initial = {};
+    members.forEach((m, i) => { if (i + 1 >= concessionFrom) initial[m.ledger_id] = String(defaultPct); });
+    setConcessions(initial);
     setConfirm({ members, gsl: gslRes.next_gsl, gsl_num: gslRes.next_num });
   };
+
+  const setConcession = (ledgerId, val) => setConcessions(prev => ({ ...prev, [ledgerId]: val }));
 
   const createGroup = async () => {
     if (!confirm) return;
     setSaving(true); setError('');
     const ids = confirm.members.map(m => m.ledger_id);
-    const res = await window.api.feeLedgerCreateGroup(academicYear, ids, user?.username, confirm.gsl_num);
+    const res = await window.api.feeLedgerCreateGroup(academicYear, ids, user?.username, confirm.gsl_num, concessions);
     setSaving(false);
     if (!res.success) { setError(res.message); return; }
     setMsg(`Group ${confirm.gsl} created ✓`);
-    setConfirm(null); setSelected(new Set());
+    setConfirm(null); setSelected(new Set()); setConcessions({});
     setTimeout(() => setMsg(''), 3000);
     load();
   };
@@ -452,14 +502,31 @@ function MakeGroupsStep({ academicYear, refreshKey }) {
               {/* Members list sorted oldest first */}
               <div className="bg-gray-50 rounded-xl p-3 space-y-1.5">
                 <p className="text-xs font-semibold text-gray-500 mb-2">Members (oldest → youngest):</p>
-                {confirm.members.map((m, i) => (
-                  <div key={m.ledger_id} className="flex items-center gap-2 text-sm">
-                    <span className="text-gray-400 text-xs w-4">{i+1}.</span>
-                    <span className="font-bold text-blue-700 text-xs">{m.sl_number}</span>
-                    <span className="font-medium text-gray-800">{m.student_name}</span>
-                    <span className="text-xs text-gray-400 ml-auto">{m.current_class}</span>
-                  </div>
-                ))}
+                {confirm.members.map((m, i) => {
+                  const isEligible = i + 1 >= concessionFrom;
+                  return (
+                    <div key={m.ledger_id} className="flex items-center gap-2 text-sm">
+                      <span className="text-gray-400 text-xs w-4">{i+1}.</span>
+                      <span className="font-bold text-blue-700 text-xs">{m.sl_number}</span>
+                      <span className="font-medium text-gray-800">{m.student_name}</span>
+                      <span className="text-xs text-gray-400 ml-auto">{m.current_class}</span>
+                      {isEligible && (
+                        <div className="flex items-center gap-1 shrink-0">
+                          <input type="number" min="0" max="100" value={concessions[m.ledger_id] ?? ''}
+                            onChange={e => setConcession(m.ledger_id, e.target.value)}
+                            title="Tuition concession for this sibling — set individually, doesn't affect other siblings"
+                            className="w-14 border border-purple-200 rounded-lg px-1.5 py-1 text-xs text-right focus:outline-none focus:ring-1 focus:ring-purple-400" />
+                          <span className="text-xs text-gray-400">%</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {confirm.members.length >= concessionFrom && (
+                  <p className="text-xs text-gray-400 pt-1">
+                    Pre-filled with the school's standard {defaultPct}% — adjust any sibling's number individually if a different rate (including a full 100% waiver) was agreed for them specifically.
+                  </p>
+                )}
               </div>
 
               {error && <p className="text-red-500 text-xs bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
@@ -491,17 +558,32 @@ function ManageGroupsStep({ academicYear }) {
   const [addError,  setAddError]  = useState('');
   const [saving,    setSaving]    = useState(false);
   const [msg,       setMsg]       = useState('');
+  const [settings,  setSettings]  = useState(null);
+  const [editConcession, setEditConcession] = useState({}); // { [ledger_id]: string }
 
   const load = useCallback(async () => {
-    const [ledRes, ungRes] = await Promise.all([
+    const [ledRes, ungRes, setRes] = await Promise.all([
       window.api.feeLedgerGetAll(academicYear),
       window.api.feeLedgerGetUngrouped(academicYear),
+      window.api.feeSettingsGet(academicYear),
     ]);
     if (ledRes.success) setLedger(ledRes.data);
     if (ungRes.success) setUngrouped(ungRes.data);
+    if (setRes.success) setSettings(setRes.data);
   }, [academicYear]);
 
   useEffect(() => { load(); }, [load]);
+
+  const concessionFrom = settings?.sibling_concession_from || 3;
+  const defaultPct     = settings?.sibling_concession_pct || 0;
+
+  const saveConcession = async (ledger_id, pct) => {
+    setSaving(true);
+    await window.api.feeLedgerUpdateSiblingConcession(ledger_id, pct === '' ? null : pct);
+    setSaving(false);
+    setEditConcession(p => ({ ...p, [ledger_id]: undefined }));
+    load();
+  };
 
   // Build groups map
   const grouped = {};
@@ -579,19 +661,46 @@ function ManageGroupsStep({ academicYear }) {
                 </button>
               )}
             </div>
-            {g.members.map(l => (
-              <div key={l.ledger_id} className="flex items-center gap-3 px-4 py-2.5 border-t border-purple-100">
-                <span className="text-xs font-bold text-blue-700 w-16 shrink-0">{l.sl_number}</span>
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-gray-800">{l.student_name}</p>
-                  <p className="text-xs text-gray-400">{l.father_name || '—'} · {l.current_class} {l.section}</p>
+            {g.members.map((l, idx) => {
+              const isEligible = idx + 1 >= concessionFrom;
+              return (
+                <div key={l.ledger_id} className="flex items-center gap-3 px-4 py-2.5 border-t border-purple-100">
+                  <span className="text-xs font-bold text-blue-700 w-16 shrink-0">{l.sl_number}</span>
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-gray-800">{l.student_name}</p>
+                    <p className="text-xs text-gray-400">{l.father_name || '—'} · {l.current_class} {l.section}</p>
+                  </div>
+                  {isEligible && (
+                    editConcession[l.ledger_id] !== undefined ? (
+                      <span className="flex items-center gap-1 shrink-0">
+                        <input type="number" min="0" max="100" value={editConcession[l.ledger_id]}
+                          onChange={e => setEditConcession(p => ({ ...p, [l.ledger_id]: e.target.value }))}
+                          className="w-14 border border-purple-300 rounded px-1.5 py-1 text-xs text-right focus:outline-none" />
+                        <span className="text-xs text-gray-400">%</span>
+                        <button onClick={() => saveConcession(l.ledger_id, editConcession[l.ledger_id])}
+                          className="text-xs bg-purple-600 text-white px-1.5 py-1 rounded">✓</button>
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => setEditConcession(p => ({ ...p, [l.ledger_id]: l.custom_concession_pct !== null && l.custom_concession_pct !== undefined ? String(l.custom_concession_pct) : String(defaultPct) }))}
+                        title="Tuition concession for this sibling"
+                        className={`text-xs px-2.5 py-1 rounded-lg font-medium shrink-0 border ${
+                          l.custom_concession_pct !== null && l.custom_concession_pct !== undefined
+                            ? 'border-purple-300 bg-purple-50 text-purple-700'
+                            : 'border-gray-200 text-gray-400 hover:bg-gray-50'}`}>
+                        {l.custom_concession_pct !== null && l.custom_concession_pct !== undefined
+                          ? `${l.custom_concession_pct}% (custom)`
+                          : `${defaultPct}% (default)`}
+                      </button>
+                    )
+                  )}
+                  <button onClick={() => setRemoving({ ...l, gsl_number: gsl })}
+                    className="text-xs border border-red-200 text-red-500 hover:bg-red-50 px-3 py-1.5 rounded-lg font-medium">
+                    Remove
+                  </button>
                 </div>
-                <button onClick={() => setRemoving({ ...l, gsl_number: gsl })}
-                  className="text-xs border border-red-200 text-red-500 hover:bg-red-50 px-3 py-1.5 rounded-lg font-medium">
-                  Remove
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         ))}
         {filteredGroups.length === 0 && (
@@ -1058,6 +1167,7 @@ function ViewLedgerTab({ academicYear }) {
   const [loadingTxn,  setLoadingTxn]  = useState(false);
   const [editPage,    setEditPage]    = useState({});
   const [editBal,     setEditBal]     = useState({});
+  const [editTuitionMonth, setEditTuitionMonth] = useState({});
 
   useEffect(() => {
     const t = setTimeout(async () => {
@@ -1093,6 +1203,21 @@ function ViewLedgerTab({ academicYear }) {
   const saveBalance = async (ledger_id, bal) => {
     await window.api.feeLedgerUpdateOpeningBal(ledger_id, parseFloat(bal) || 0);
     setEditBal(p => ({ ...p, [ledger_id]: undefined }));
+    if (txnData) {
+      const res = await window.api.feeLedgerGetTransactions(ledger_id, academicYear);
+      if (res.success) setTxnData(res);
+    }
+    if (groupData) {
+      const memberTxns = await Promise.all(
+        groupData.group.members.map(m => window.api.feeLedgerGetTransactions(m.ledger_id, academicYear))
+      );
+      setGroupData(prev => ({ ...prev, memberTxns: memberTxns.map((r,i) => ({ ...r, member: groupData.group.members[i] })) }));
+    }
+  };
+
+  const saveTuitionMonth = async (ledger_id, month) => {
+    await window.api.feeLedgerUpdateTuitionStartMonth(ledger_id, month);
+    setEditTuitionMonth(p => ({ ...p, [ledger_id]: undefined }));
     if (txnData) {
       const res = await window.api.feeLedgerGetTransactions(ledger_id, academicYear);
       if (res.success) setTxnData(res);
@@ -1217,7 +1342,8 @@ function ViewLedgerTab({ academicYear }) {
               </div>
             </div>
             <LedgerTransactionTable txnData={txnData} loadingTxn={loadingTxn} academicYear={academicYear}
-              fmt={fmt} fmtDate={fmtDate} editBal={editBal} setEditBal={setEditBal} saveBalance={saveBalance} />
+              fmt={fmt} fmtDate={fmtDate} editBal={editBal} setEditBal={setEditBal} saveBalance={saveBalance}
+              editTuitionMonth={editTuitionMonth} setEditTuitionMonth={setEditTuitionMonth} saveTuitionMonth={saveTuitionMonth} />
           </div>
         )}
 
@@ -1368,7 +1494,8 @@ function ViewLedgerTab({ academicYear }) {
 }
 
 // Shared transaction table component
-function LedgerTransactionTable({ txnData, loadingTxn, academicYear, fmt, fmtDate, editBal, setEditBal, saveBalance }) {
+function LedgerTransactionTable({ txnData, loadingTxn, academicYear, fmt, fmtDate, editBal, setEditBal, saveBalance,
+  editTuitionMonth, setEditTuitionMonth, saveTuitionMonth }) {
   if (loadingTxn) return <div className="text-center py-8 text-gray-400">Loading transactions...</div>;
   if (!txnData) return null;
 
@@ -1410,6 +1537,32 @@ function LedgerTransactionTable({ txnData, loadingTxn, academicYear, fmt, fmtDat
             <td className="px-4 py-2 text-right font-bold text-amber-700 cursor-pointer hover:text-amber-900"
               onClick={() => ledger && setEditBal(p => ({ ...p, [ledger.ledger_id]: ledger.opening_balance || 0 }))}>
               ₹{fmt(ledger?.opening_balance)}
+            </td>
+          </tr>
+
+          <tr className="bg-blue-50 border-b border-blue-100">
+            <td className="px-4 py-2 text-blue-700 font-medium">—</td>
+            <td className="px-3 py-2 text-blue-700">Setting</td>
+            <td className="px-3 py-2 text-blue-600" colSpan={3}>
+              Tuition dues start from
+              {editTuitionMonth[ledger?.ledger_id] !== undefined ? (
+                <span className="ml-2 inline-flex gap-1">
+                  <select value={editTuitionMonth[ledger.ledger_id] || ''}
+                    onChange={e => setEditTuitionMonth(p => ({ ...p, [ledger.ledger_id]: e.target.value }))}
+                    className="border border-blue-300 rounded px-1 py-0.5 text-xs bg-white focus:outline-none">
+                    <option value="">April (no restriction)</option>
+                    {academicMonthOptions(academicYear).map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                  </select>
+                  <button onClick={() => saveTuitionMonth(ledger.ledger_id, editTuitionMonth[ledger.ledger_id])}
+                    className="text-xs bg-blue-600 text-white px-1.5 rounded">✓</button>
+                </span>
+              ) : null}
+            </td>
+            <td className="px-4 py-2 text-right font-bold text-blue-700 cursor-pointer hover:text-blue-900"
+              onClick={() => ledger && setEditTuitionMonth(p => ({ ...p, [ledger.ledger_id]: ledger.tuition_start_month || '' }))}>
+              {ledger?.tuition_start_month
+                ? (academicMonthOptions(academicYear).find(m => m.value === ledger.tuition_start_month)?.label || ledger.tuition_start_month)
+                : 'April (default)'}
             </td>
           </tr>
 

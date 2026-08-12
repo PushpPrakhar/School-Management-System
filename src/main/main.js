@@ -228,7 +228,8 @@ function _computeAccrualPlan(academic_year) {
     'Class 4':6,'Class 5':7,'Class 6':8,'Class 7':9,'Class 8':10 };
 
   const ledgerRows = db.prepare(`
-    SELECT l.*, gm.group_id as gm_group_id, e.date_of_admission
+    SELECT l.*, gm.group_id as gm_group_id, gm.custom_concession_pct as gm_custom_concession_pct,
+           e.date_of_admission
     FROM   fee_ledger l
     LEFT JOIN fee_group_members gm ON gm.ledger_id = l.ledger_id
     LEFT JOIN student_directory e ON e.admission_number = l.admission_number
@@ -289,18 +290,27 @@ function _computeAccrualPlan(academic_year) {
     fs.forEach(f => { feeMap[f.fee_type] = f; });
     const sibPos = student._siblingPosition || null;
     const isSibling = sibPos !== null && sibPos >= (settings.sibling_concession_from || 3);
-    const concessPct = isSibling ? (settings.sibling_concession_pct || 0) : 0;
+    // A per-sibling override (set individually per child, not per group)
+    // takes precedence over the school-wide default when one is set.
+    const concessPct = isSibling
+      ? (student.gm_custom_concession_pct !== null && student.gm_custom_concession_pct !== undefined
+          ? student.gm_custom_concession_pct
+          : (settings.sibling_concession_pct || 0))
+      : 0;
 
     const lines = [];
 
     // Recurring monthly fees: Tuition, Computer, Lab + Transport (where assigned).
-    // Charged for the full academic year from April regardless of when the
-    // student was actually added to the ledger — BPS charges every admitted
-    // student April onward, no proration, matching how Annual fees already work.
+    // Computer/Lab/Transport are charged for the full academic year from
+    // April regardless of when the student was actually added to the
+    // ledger, exactly as before. Tuition specifically respects the
+    // ledger's tuition_start_month if one was set — skipped entirely for
+    // any month before it, never generated then hidden.
     elapsedMonths.forEach(({ month, feeMonth, shortLabel }) => {
       ['TUITION', 'COMPUTER', 'LAB'].forEach(ft => {
         const f = feeMap[ft];
         if (!f || f.amount <= 0 || f.frequency !== 'MONTHLY') return;
+        if (ft === 'TUITION' && student.tuition_start_month && feeMonth < student.tuition_start_month) return;
         const label = _feeLabel(ft);
         if (alreadyChargedThisMonth.get(student.ledger_id, student.ledger_id, feeMonth, label + '%')) return;
         const conc = (ft === 'TUITION' && isSibling) ? Math.round(f.amount * concessPct / 100) : 0;
@@ -1125,6 +1135,11 @@ function initDatabase() {
     UNIQUE(sl_number, academic_year),
     UNIQUE(admission_number, academic_year)
   )`);
+  // NULL = no restriction (matches every ledger created before this
+  // feature existed) — Tuition generates from April as it always has.
+  // A 'YYYY-MM' value means Tuition is never generated for any month
+  // before it, no matter what Auto-Accrual would otherwise do.
+  try { db.exec("ALTER TABLE fee_ledger ADD COLUMN tuition_start_month TEXT DEFAULT NULL"); } catch(_) {}
 
   db.exec(`CREATE TABLE IF NOT EXISTS fee_groups (
     group_id      INTEGER  PRIMARY KEY AUTOINCREMENT,
@@ -1144,6 +1159,11 @@ function initDatabase() {
     sibling_position INTEGER NOT NULL DEFAULT 1,
     UNIQUE(ledger_id)
   )`);
+  // NULL = use the school-wide sibling_concession_pct exactly as before.
+  // A specific number overrides Tuition concession for THIS sibling only
+  // — set individually per child, not per group, so one family's 3rd and
+  // 4th children can have entirely different negotiated percentages.
+  try { db.exec("ALTER TABLE fee_group_members ADD COLUMN custom_concession_pct REAL DEFAULT NULL"); } catch(_) {}
 
   db.exec(`CREATE TABLE IF NOT EXISTS prospectus_inquiries (
     inquiry_id       INTEGER  PRIMARY KEY AUTOINCREMENT,
@@ -2761,7 +2781,7 @@ function _allowedSectionsForTeacher(userId, className) {
   return rows.map(r => r.section);
 }
 
-ipcMain.handle('enrollment:getByClass', (_evt, { class: cls, section, requesting_user_id }) => {
+ipcMain.handle('enrollment:getByClass', (_evt, { class: cls, section, academic_year, requesting_user_id }) => {
   if (cls === 'ALL') {
     // Only non-teacher roles may request every class at once — teachers
     // stay restricted to their own classes regardless of what the UI offers.
@@ -2791,26 +2811,47 @@ ipcMain.handle('enrollment:getByClass', (_evt, { class: cls, section, requesting
     return { success: false, message: 'You do not have access to this section.' };
   }
 
-  const params = [cls];
   let sectionClause = '';
+  const sectionParams = [];
   if (section) {
-    sectionClause = 'AND section = ?';
-    params.push(section);
+    sectionClause = 'AND e.section = ?';
+    sectionParams.push(section);
   } else if (Array.isArray(allowedSections)) {
     // Section-scoped teacher, no specific section chosen — show only the
     // sections they're actually assigned to, not the whole class.
-    sectionClause = `AND section IN (${allowedSections.map(() => '?').join(',')})`;
-    params.push(...allowedSections);
+    sectionClause = `AND e.section IN (${allowedSections.map(() => '?').join(',')})`;
+    sectionParams.push(...allowedSections);
+  }
+
+  // Roll-number ordering only makes sense for one specific section — that's
+  // the only case with a single, coherent sequence to sort by. Anything
+  // broader (no section chosen, multiple allowed sections) stays
+  // alphabetical, same as before.
+  let joinClause = '';
+  let orderClause = 'ORDER BY e.student_name';
+  const joinParams = [];
+  if (section) {
+    joinClause = `
+      LEFT JOIN roll_numbers rn
+        ON rn.admission_number = e.admission_number
+        AND LOWER(rn.class) = LOWER(e.current_class)
+        AND rn.section = e.section
+        AND rn.academic_year = ?
+    `;
+    joinParams.push(academic_year || '');
+    orderClause = 'ORDER BY CASE WHEN rn.roll_number IS NULL THEN 1 ELSE 0 END, rn.roll_number, e.student_name';
   }
 
   // Use LOWER() on both sides so 'Nursery', 'NURSERY', 'nursery' all match
   const rows = db.prepare(`
-    SELECT * FROM enrollment
-    WHERE LOWER(current_class) = LOWER(?)
-    AND   student_status = 'ACTIVE'
+    SELECT e.*${section ? ', rn.roll_number as roll_number' : ''}
+    FROM   enrollment e
+    ${joinClause}
+    WHERE  LOWER(e.current_class) = LOWER(?)
+    AND    e.student_status = 'ACTIVE'
     ${sectionClause}
-    ORDER BY student_name
-  `).all(...params);
+    ${orderClause}
+  `).all(...joinParams, cls, ...sectionParams);
   return { success: true, data: rows };
 });
 
@@ -2927,6 +2968,27 @@ ipcMain.handle('enrollment:edit', (_evt, data) => {
       INSERT INTO edit_history (admission_number, student_name, edited_by, changes)
       VALUES (?, ?, ?, ?)
     `).run(admission_number, old.student_name, edited_by || 'admin', JSON.stringify(changes));
+
+    // If this edit results in the student being ACTIVE, and that
+    // class/section's roll numbers are already frozen, append them a
+    // mid-year roll number if they don't already have one — covers both
+    // reactivating from DROPBOX status and moving into a different,
+    // already-frozen class/section.
+    const finalStatus  = newData.student_status !== undefined ? newData.student_status : old.student_status;
+    const finalClass   = newData.current_class  !== undefined ? newData.current_class  : old.current_class;
+    const finalSection = newData.section        !== undefined ? newData.section        : old.section;
+    const finalYear    = newData.academic_year  !== undefined ? newData.academic_year  : old.academic_year;
+    if (finalStatus === 'ACTIVE' && finalClass) {
+      _addMidYearRollNumber(admission_number, finalClass, finalSection, finalYear, newData.student_name || old.student_name);
+    }
+
+    // Carry attendance history to the new section — only when the class
+    // itself stayed the same and just the section changed. A class
+    // change (promotion, correction) is a different kind of event and
+    // shouldn't relabel attendance from one class into another.
+    if (old.current_class === finalClass && old.section !== finalSection) {
+      _relabelAttendanceSection(admission_number, finalClass, finalSection);
+    }
 
     return { success: true };
   } catch (err) {
@@ -3149,15 +3211,26 @@ ipcMain.handle('dashboard:stats', (_evt, params) => {
       : [];
 
     // ── Teacher's selected class stats ───────────────────────────
+    // Respects section-level scoping: a teacher assigned to specific
+    // sections of this class only sees those sections' headcount, not
+    // the whole class — same rule already enforced for Student List.
     const teacherClassStats = teacherClass
-      ? db.prepare(`
-          SELECT COUNT(*) as total,
-            SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) as boys,
-            SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) as girls
-          FROM enrollment
-          WHERE LOWER(current_class) = LOWER(?)
-          AND   student_status = 'ACTIVE'
-        `).get(teacherClass)
+      ? (() => {
+          const allowedSections = _allowedSectionsForTeacher(requestingUserId, teacherClass);
+          const sectionClause = Array.isArray(allowedSections)
+            ? `AND section IN (${allowedSections.map(() => '?').join(',') || "''"})`
+            : '';
+          const sectionParams = Array.isArray(allowedSections) ? allowedSections : [];
+          return db.prepare(`
+            SELECT COUNT(*) as total,
+              SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) as boys,
+              SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) as girls
+            FROM enrollment
+            WHERE LOWER(current_class) = LOWER(?)
+            AND   student_status = 'ACTIVE'
+            ${sectionClause}
+          `).get(teacherClass, ...sectionParams);
+        })()
       : null;
 
     // ── Real fee/attendance/staffing numbers — replaces the old static
@@ -3390,6 +3463,12 @@ ipcMain.handle('admission:approve', (_evt, { temp_id, approved_by }) => {
 
     // Remove from temp_admissions
     db.prepare('DELETE FROM temp_admissions WHERE temp_id = ?').run(temp_id);
+
+    // If this class/section's roll numbers are already frozen for the
+    // year, this new student needs one appended — same rule promised on
+    // the Roll Numbers screen ("mid-year additions get the next
+    // available number").
+    _addMidYearRollNumber(newAdmNumber, student.class_of_admission, student.section, student.academic_year, student.student_name);
 
     return { success: true, new_admission_number: newAdmNumber };
   } catch (err) {
@@ -3952,6 +4031,115 @@ ipcMain.handle('rollNumbers:assignClass', (_evt, { class: cls, section, academic
   }
 });
 
+// ── Sync missing students into an already-frozen list ─────────
+// Safe alternative to Re-assign: only adds students who don't already
+// have a roll number, appended alphabetically among themselves after
+// the current highest number. Never touches or reshuffles anyone who
+// already has one — this is what "freeze as-is, append new students at
+// the end" actually means in practice.
+ipcMain.handle('rollNumbers:syncMissing', (_evt, { class: cls, section, academic_year, assigned_by }) => {
+  try {
+    const sec = section || 'A';
+    const missing = db.prepare(`
+      SELECT e.admission_number, e.student_name
+      FROM   enrollment e
+      LEFT JOIN roll_numbers r
+        ON r.admission_number = e.admission_number AND r.academic_year = ?
+      WHERE  LOWER(e.current_class) = LOWER(?)
+      AND    e.section = ?
+      AND    e.student_status = 'ACTIVE'
+      AND    r.roll_number IS NULL
+      ORDER  BY e.student_name ASC
+    `).all(academic_year, cls, sec);
+
+    if (missing.length === 0) {
+      return { success: true, added: 0, message: 'Everyone already has a roll number — nothing to add.' };
+    }
+
+    const maxRow = db.prepare(`
+      SELECT MAX(roll_number) as max FROM roll_numbers WHERE LOWER(class) = LOWER(?) AND section = ? AND academic_year = ?
+    `).get(cls, sec, academic_year);
+    let next = (maxRow?.max || 0) + 1;
+
+    const insert = db.prepare(`
+      INSERT INTO roll_numbers (admission_number, student_name, class, section, academic_year, roll_number, is_mid_year)
+      VALUES (?, ?, ?, ?, ?, ?, 1)
+    `);
+    db.transaction(() => {
+      missing.forEach(s => { insert.run(s.admission_number, s.student_name, cls, sec, academic_year, next); next++; });
+    })();
+
+    return { success: true, added: missing.length };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// ── Manually set/correct roll numbers for a class/section ──────
+// Takes a complete, explicitly-provided list — not auto-computed at all.
+// Built specifically for correcting a class after an accidental Re-assign
+// wiped a carefully-built order with no backup to restore from. Validates
+// thoroughly before writing anything: every student must genuinely be
+// active in this exact class/section, every number a positive integer,
+// no duplicates within the submitted list, and every currently-active
+// student in the class/section must be covered — a partial save that
+// silently drops someone is rejected rather than allowed through.
+ipcMain.handle('rollNumbers:setManual', (_evt, { class: cls, section, academic_year, assignments, assigned_by }) => {
+  try {
+    const sec = section || 'A';
+    if (!Array.isArray(assignments) || assignments.length === 0) {
+      return { success: false, message: 'No roll numbers to save.' };
+    }
+
+    const activeStudents = db.prepare(`
+      SELECT admission_number, student_name FROM enrollment
+      WHERE  LOWER(current_class) = LOWER(?) AND section = ? AND student_status = 'ACTIVE'
+    `).all(cls, sec);
+    const activeMap = new Map(activeStudents.map(s => [s.admission_number, s.student_name]));
+
+    // Every currently-active student must be covered — no silent gaps.
+    if (assignments.length !== activeStudents.length) {
+      return { success: false, message: `This class/section has ${activeStudents.length} active students, but ${assignments.length} were submitted — every student needs a roll number, not a partial list.` };
+    }
+
+    const seenNumbers = new Set();
+    const seenStudents = new Set();
+    for (const a of assignments) {
+      if (!activeMap.has(a.admission_number)) {
+        return { success: false, message: `${a.admission_number} is not an active student in ${cls} ${sec}.` };
+      }
+      if (seenStudents.has(a.admission_number)) {
+        return { success: false, message: `${activeMap.get(a.admission_number)} appears more than once in this list.` };
+      }
+      seenStudents.add(a.admission_number);
+      const n = Number(a.roll_number);
+      if (!Number.isInteger(n) || n <= 0) {
+        return { success: false, message: `"${a.roll_number}" is not a valid roll number for ${activeMap.get(a.admission_number)} — must be a positive whole number.` };
+      }
+      if (seenNumbers.has(n)) {
+        return { success: false, message: `Roll number ${n} is used more than once — every number must be unique.` };
+      }
+      seenNumbers.add(n);
+    }
+
+    const doSave = db.transaction(() => {
+      db.prepare('DELETE FROM roll_numbers WHERE LOWER(class) = LOWER(?) AND section = ? AND academic_year = ?').run(cls, sec, academic_year);
+      const insert = db.prepare(`
+        INSERT INTO roll_numbers (admission_number, student_name, class, section, academic_year, roll_number, is_mid_year)
+        VALUES (?, ?, ?, ?, ?, ?, 0)
+      `);
+      assignments.forEach(a => {
+        insert.run(a.admission_number, activeMap.get(a.admission_number), cls, sec, academic_year, Number(a.roll_number));
+      });
+    });
+    doSave();
+
+    return { success: true, count: assignments.length };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
 // ── Assign roll numbers for ALL classes at once ───────────────
 ipcMain.handle('rollNumbers:assignAll', (_evt, { academic_year, assigned_by }) => {
   try {
@@ -4023,10 +4211,53 @@ ipcMain.handle('rollNumbers:getFrozen', (_evt, { class: cls, section, academic_y
   }
 });
 
+// Appends a student to the end of an already-frozen class/section's roll
+// number list — shared by the manual 'Add Mid-Year' action and the
+// automatic triggers below (new admission approval, reactivating a
+// student from DROPBOX status). Silently does nothing if the student
+// already has a roll number for this year, or if this class/section was
+// never frozen in the first place (nothing to append to).
+function _addMidYearRollNumber(admissionNumber, cls, section, academicYear, studentName) {
+  const existing = db.prepare('SELECT roll_number FROM roll_numbers WHERE admission_number = ? AND academic_year = ?')
+    .get(admissionNumber, academicYear);
+  if (existing) return null;
+
+  const isFrozen = db.prepare(`
+    SELECT COUNT(*) as c FROM roll_numbers WHERE LOWER(class) = LOWER(?) AND section = ? AND academic_year = ?
+  `).get(cls, section || 'A', academicYear).c > 0;
+  if (!isFrozen) return null; // nothing to append to yet — normal pre-freeze case
+
+  const max = db.prepare(`
+    SELECT MAX(roll_number) as max FROM roll_numbers WHERE LOWER(class) = LOWER(?) AND section = ? AND academic_year = ?
+  `).get(cls, section || 'A', academicYear);
+  const nextRoll = (max?.max || 0) + 1;
+
+  db.prepare(`
+    INSERT INTO roll_numbers (admission_number, student_name, class, section, academic_year, roll_number, is_mid_year)
+    VALUES (?, ?, ?, ?, ?, ?, 1)
+  `).run(admissionNumber, studentName, cls, section || 'A', academicYear, nextRoll);
+
+  return nextRoll;
+}
+
+// Relabels a student's entire attendance history in their CURRENT class
+// to a new section — used whenever a section reassignment happens, so a
+// student's monthly report follows them to wherever they currently sit,
+// rather than being fragmented across their old and new section. Scoped
+// strictly to their current class: never touches attendance from a
+// different class (e.g. a prior year's class before a promotion), since
+// that's a different kind of change entirely, not a section move.
+function _relabelAttendanceSection(admissionNumber, cls, newSection) {
+  if (!cls || !newSection) return;
+  db.prepare(`
+    UPDATE attendance_daily SET section = ?
+    WHERE admission_number = ? AND LOWER(class) = LOWER(?)
+  `).run(newSection, admissionNumber, cls);
+}
+
 // ── Add mid-year student (appends to end of list) ─────────────
 ipcMain.handle('rollNumbers:addMidYear', (_evt, { admission_number, class: cls, section, academic_year }) => {
   try {
-    // Check if already has a roll number in this class/year
     const existing = db.prepare(`
       SELECT roll_number FROM roll_numbers
       WHERE admission_number = ? AND academic_year = ?
@@ -4034,27 +4265,15 @@ ipcMain.handle('rollNumbers:addMidYear', (_evt, { admission_number, class: cls, 
     if (existing)
       return { success: false, message: 'Student already has a roll number for this year.' };
 
-    // Get student details
     const student = db.prepare(
       'SELECT student_name FROM enrollment WHERE admission_number = ?'
     ).get(admission_number);
     if (!student) return { success: false, message: 'Student not found.' };
 
-    // Get highest current roll number for this class/section/year
-    const max = db.prepare(`
-      SELECT MAX(roll_number) as max FROM roll_numbers
-      WHERE LOWER(class) = LOWER(?) AND section = ? AND academic_year = ?
-    `).get(cls, section || 'A', academic_year);
+    const rollNumber = _addMidYearRollNumber(admission_number, cls, section, academic_year, student.student_name);
+    if (rollNumber === null) return { success: false, message: `Roll numbers for ${cls} ${section || 'A'} haven't been assigned yet — nothing to append to.` };
 
-    const nextRoll = (max?.max || 0) + 1;
-
-    db.prepare(`
-      INSERT INTO roll_numbers
-        (admission_number, student_name, class, section, academic_year, roll_number, is_mid_year)
-      VALUES (?, ?, ?, ?, ?, ?, 1)
-    `).run(admission_number, student.student_name, cls, section || 'A', academic_year, nextRoll);
-
-    return { success: true, roll_number: nextRoll };
+    return { success: true, roll_number: rollNumber };
   } catch (err) {
     return { success: false, message: err.message };
   }
@@ -4360,6 +4579,10 @@ ipcMain.handle('enrollment:updateStudentSection', (_evt, { admission_number, new
           JSON.stringify([{ field: 'Section', old: student.section || '(none)', new: new_section }]));
     } catch (_) {}
 
+    // Carry their attendance history in this class to the new section —
+    // their monthly report should follow them, not stay fragmented.
+    _relabelAttendanceSection(admission_number, student.current_class, new_section);
+
     return { success: true };
   } catch (err) { return { success: false, message: err.message }; }
 });
@@ -4371,7 +4594,7 @@ ipcMain.handle('enrollment:autoBalanceSections', (_evt, { class: cls, sections, 
       return { success: false, message: 'Select at least two sections to balance across.' };
     }
     const students = db.prepare(`
-      SELECT admission_number, student_name FROM enrollment
+      SELECT admission_number, student_name, section FROM enrollment
       WHERE  LOWER(current_class) = LOWER(?) AND student_status = 'ACTIVE'
       ORDER  BY student_name
     `).all(cls);
@@ -4383,6 +4606,15 @@ ipcMain.handle('enrollment:autoBalanceSections', (_evt, { class: cls, sections, 
       chunks.forEach((chunk, i) => chunk.forEach(s => update.run(sections[i], s.admission_number)));
     });
     doAll();
+
+    // Carry attendance history along for anyone whose section actually
+    // changed — some students may land back in the section they started
+    // in, so only touch the ones that genuinely moved.
+    chunks.forEach((chunk, i) => {
+      chunk.forEach(s => {
+        if (s.section !== sections[i]) _relabelAttendanceSection(s.admission_number, cls, sections[i]);
+      });
+    });
 
     const breakdown = chunks.map((c, i) => ({ section: sections[i], count: c.length }));
     try {
@@ -4409,9 +4641,14 @@ ipcMain.handle('attendance:getStudents', (_evt, { class: cls, section, academic_
     if (_classSectionAccessDenied(requesting_user_id, cls, section)) {
       return { success: false, message: 'You do not have access to this class.' };
     }
+    // A student without a matched frozen roll number sorts to the very
+    // end (never collides with a real assigned number) — this used to
+    // fall back to ROW_NUMBER() OVER (ORDER BY student_name), which
+    // computed a purely alphabetical position blind to already-assigned
+    // numbers, and could (and did) collide with a real frozen roll number.
     const students = db.prepare(`
       SELECT e.admission_number, e.student_name, e.father_name, e.gender,
-             COALESCE(r.roll_number, ROW_NUMBER() OVER (ORDER BY e.student_name)) as roll_number
+             r.roll_number as roll_number
       FROM enrollment e
       LEFT JOIN roll_numbers r
         ON r.admission_number = e.admission_number
@@ -4421,7 +4658,7 @@ ipcMain.handle('attendance:getStudents', (_evt, { class: cls, section, academic_
       WHERE LOWER(e.current_class) = LOWER(?)
       AND   e.section       = ?
       AND   e.student_status = 'ACTIVE'
-      ORDER BY roll_number, e.student_name
+      ORDER BY CASE WHEN r.roll_number IS NULL THEN 1 ELSE 0 END, r.roll_number, e.student_name
     `).all(academic_year, cls, section);
     return { success: true, data: students };
   } catch (err) {
@@ -5240,8 +5477,8 @@ ipcMain.handle('feeLedger:createBulk', (_evt, { academic_year, entries, created_
     const ins = db.prepare(`
       INSERT INTO fee_ledger
         (sl_number, admission_number, student_name, current_class, section,
-         academic_year, opening_balance, transport_route_id, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?)
+         academic_year, opening_balance, transport_route_id, created_by, tuition_start_month)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
     `);
     const create = db.transaction(() => {
       entries.forEach(e => {
@@ -5249,7 +5486,7 @@ ipcMain.handle('feeLedger:createBulk', (_evt, { academic_year, entries, created_
         ins.run(
           sl, e.admission_number, e.student_name,
           e.current_class, e.section, academic_year,
-          e.opening_balance || 0, null, created_by || ''
+          e.opening_balance || 0, null, created_by || '', e.tuition_start_month || null
         );
         nextSL++;
       });
@@ -5259,13 +5496,24 @@ ipcMain.handle('feeLedger:createBulk', (_evt, { academic_year, entries, created_
   } catch(e) { return { success: false, message: e.message }; }
 });
 
+// Correct/change an existing ledger's tuition start month — e.g. a
+// negotiated adjustment after the ledger was already created.
+ipcMain.handle('feeLedger:updateTuitionStartMonth', (_evt, { ledger_id, tuition_start_month }) => {
+  try {
+    if (!ledger_id) return { success: false, message: 'Ledger is required.' };
+    db.prepare('UPDATE fee_ledger SET tuition_start_month = ? WHERE ledger_id = ?')
+      .run(tuition_start_month || null, ledger_id);
+    return { success: true };
+  } catch (e) { return { success: false, message: e.message }; }
+});
+
 // Create a ledger entry for a student who has NOT been formally admitted
 // through New Admission (documents missing, etc.) but is attending and
 // needs to be charged. Stores their details in provisional_students —
 // never in enrollment — and assigns them the next SL number using the
 // exact same query as createBulk above, so the sequence stays unified no
 // matter which tab was used last.
-ipcMain.handle('feeLedger:createProvisionalStudent', (_evt, { academic_year, student_name, father_name, current_class, section, village, opening_balance, created_by }) => {
+ipcMain.handle('feeLedger:createProvisionalStudent', (_evt, { academic_year, student_name, father_name, current_class, section, village, opening_balance, created_by, tuition_start_month }) => {
   try {
     if (!student_name?.trim() || !father_name?.trim() || !current_class) {
       return { success: false, message: "Student name, father's name and class are required." };
@@ -5298,10 +5546,10 @@ ipcMain.handle('feeLedger:createProvisionalStudent', (_evt, { academic_year, stu
       db.prepare(`
         INSERT INTO fee_ledger
           (sl_number, admission_number, student_name, current_class, section,
-           academic_year, opening_balance, transport_route_id, created_by)
-        VALUES (?,?,?,?,?,?,?,?,?)
+           academic_year, opening_balance, transport_route_id, created_by, tuition_start_month)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
       `).run(sl_number, student_ref, student_name.trim(), current_class, section || 'A',
-             academic_year, opening_balance || 0, null, created_by || '');
+             academic_year, opening_balance || 0, null, created_by || '', tuition_start_month || null);
     });
     doAll();
 
@@ -5349,7 +5597,7 @@ ipcMain.handle('feeLedger:getUngrouped', (_evt, academic_year) => {
 });
 
 // Create sibling group (GSL) with manual GSL number
-ipcMain.handle('feeLedger:createGroup', (_evt, { academic_year, ledger_ids, created_by, gsl_number_manual }) => {
+ipcMain.handle('feeLedger:createGroup', (_evt, { academic_year, ledger_ids, created_by, gsl_number_manual, concession_overrides }) => {
   try {
     const placeholders = ledger_ids.map(() => '?').join(',');
     const members = db.prepare(
@@ -5377,22 +5625,42 @@ ipcMain.handle('feeLedger:createGroup', (_evt, { academic_year, ledger_ids, crea
       group = db.prepare('SELECT * FROM fee_groups WHERE gsl_number = ? AND academic_year = ?').get(gslNumber, academic_year);
     }
 
-    // Add members
+    // Add members — each with their own optional concession override
+    // (set individually per child, e.g. a fully negotiated waiver for one
+    // sibling while another stays at the school-wide default).
     const addMember = db.prepare(`
-      INSERT OR REPLACE INTO fee_group_members (group_id, ledger_id, sl_number, sibling_position)
-      VALUES (?,?,?,?)
+      INSERT OR REPLACE INTO fee_group_members (group_id, ledger_id, sl_number, sibling_position, custom_concession_pct)
+      VALUES (?,?,?,?,?)
     `);
     const updateLedger = db.prepare('UPDATE fee_ledger SET group_id = ? WHERE ledger_id = ?');
 
     const doIt = db.transaction(() => {
       members.forEach((m, i) => {
-        addMember.run(group.group_id, m.ledger_id, m.sl_number, i + 1);
+        const override = concession_overrides ? concession_overrides[m.ledger_id] : undefined;
+        const pct = (override !== undefined && override !== null && override !== '') ? Number(override) : null;
+        addMember.run(group.group_id, m.ledger_id, m.sl_number, i + 1, pct);
         updateLedger.run(group.group_id, m.ledger_id);
       });
     });
     doIt();
     return { success: true, gsl_number: gslNumber };
   } catch(e) { return { success: false, message: e.message }; }
+});
+
+// Correct/change one sibling's individual concession override after the
+// group already exists — e.g. a waiver negotiated after the fact, or
+// correcting one that was set wrong at creation. Set to null/empty to
+// go back to the school-wide default for that child.
+ipcMain.handle('feeLedger:updateSiblingConcession', (_evt, { ledger_id, custom_concession_pct }) => {
+  try {
+    if (!ledger_id) return { success: false, message: 'Student is required.' };
+    const member = db.prepare('SELECT member_id FROM fee_group_members WHERE ledger_id = ?').get(ledger_id);
+    if (!member) return { success: false, message: 'This student is not part of a sibling group.' };
+    const pct = (custom_concession_pct === '' || custom_concession_pct === undefined || custom_concession_pct === null)
+      ? null : Number(custom_concession_pct);
+    db.prepare('UPDATE fee_group_members SET custom_concession_pct = ? WHERE ledger_id = ?').run(pct, ledger_id);
+    return { success: true };
+  } catch (e) { return { success: false, message: e.message }; }
 });
 
 // Get all ledger entries for a year
@@ -5402,11 +5670,13 @@ ipcMain.handle('feeLedger:getAll', (_evt, academic_year) => {
       SELECT l.*,
              g.gsl_number,
              t.route_name, t.monthly_amount AS transport_amount,
-             e.father_name
+             e.father_name,
+             gm.custom_concession_pct
       FROM   fee_ledger l
       LEFT JOIN fee_groups        g ON g.group_id  = l.group_id
       LEFT JOIN transport_routes  t ON t.route_id  = l.transport_route_id
       LEFT JOIN student_directory        e ON e.admission_number = l.admission_number
+      LEFT JOIN fee_group_members gm ON gm.ledger_id = l.ledger_id
       WHERE  l.academic_year = ?
       ORDER  BY CAST(SUBSTR(l.sl_number, 4) AS INTEGER)
     `).all(academic_year);

@@ -59,6 +59,20 @@ function AssignTab() {
     }
   };
 
+  const syncMissing = async (cls, section) => {
+    setAssigning(`sync_${cls}_${section}`);
+    const res = await window.api.syncMissingRollNumbers(cls, section, year, 'admin');
+    setAssigning(null);
+    if (res.success) {
+      showToast(res.added > 0
+        ? `✅ Added ${res.added} student${res.added > 1 ? 's' : ''} to the end of ${cls} ${section} — everyone else's number stayed the same`
+        : `${cls} ${section} — everyone already has a roll number.`, 'green');
+      loadSummary();
+    } else {
+      showToast(`❌ ${res.message}`, 'red');
+    }
+  };
+
   const assignAll = async () => {
     setAssigning('ALL');
     const res = await window.api.assignRollNumbersAll(year, 'admin');
@@ -109,8 +123,9 @@ function AssignTab() {
         <ul className="text-xs space-y-1 text-blue-600 list-disc list-inside">
           <li>Click <strong>Assign All Classes</strong> at the start of the academic year</li>
           <li>Roll numbers are assigned alphabetically per class and section</li>
-          <li>Once assigned, they stay fixed for the year — mid-year additions get the next available number</li>
-          <li>Re-assigning a class will recalculate from scratch (only do this at year start)</li>
+          <li>Once assigned, they stay fixed for the year — mid-year additions normally get the next available number automatically</li>
+          <li>If someone's missing (e.g. reactivated before their class was ever assigned), use <strong>Sync Missing</strong> to add just them at the end — it never touches anyone already assigned</li>
+          <li>Re-assigning a class wipes and recalculates everyone from scratch (only do this at year start)</li>
         </ul>
       </div>
 
@@ -157,17 +172,28 @@ function AssignTab() {
                     {s.last_assigned ? s.last_assigned.slice(0, 16) : '—'}
                   </td>
                   <td className="px-5 py-3">
-                    <button
-                      onClick={() => assignClass(s.class, s.section)}
-                      disabled={assigning === `${s.class}_${s.section}`}
-                      className={`text-xs font-medium px-4 py-1.5 rounded-lg
-                        ${s.is_assigned
-                          ? 'border border-gray-300 text-gray-500 hover:bg-gray-50'
-                          : 'bg-blue-700 hover:bg-blue-800 text-white'}`}>
-                      {assigning === `${s.class}_${s.section}`
-                        ? '⏳ Assigning…'
-                        : s.is_assigned ? '↺ Re-assign' : '🔢 Assign'}
-                    </button>
+                    <div className="flex gap-2 justify-end">
+                      {s.is_assigned && (
+                        <button
+                          onClick={() => syncMissing(s.class, s.section)}
+                          disabled={assigning === `sync_${s.class}_${s.section}`}
+                          title="Add anyone active but missing a roll number to the end — doesn't touch anyone already assigned"
+                          className="text-xs font-medium px-4 py-1.5 rounded-lg border border-green-300 text-green-700 hover:bg-green-50">
+                          {assigning === `sync_${s.class}_${s.section}` ? '⏳ Syncing…' : '➕ Sync Missing'}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => assignClass(s.class, s.section)}
+                        disabled={assigning === `${s.class}_${s.section}`}
+                        className={`text-xs font-medium px-4 py-1.5 rounded-lg
+                          ${s.is_assigned
+                            ? 'border border-gray-300 text-gray-500 hover:bg-gray-50'
+                            : 'bg-blue-700 hover:bg-blue-800 text-white'}`}>
+                        {assigning === `${s.class}_${s.section}`
+                          ? '⏳ Assigning…'
+                          : s.is_assigned ? '↺ Re-assign' : '🔢 Assign'}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -321,6 +347,142 @@ function ViewTab() {
 }
 
 // ── Main ──────────────────────────────────────────────────────
+// ── Manual Fix Tab — hand-correct roll numbers ─────────────────
+// Built specifically for recovering from an accidental Re-assign with no
+// backup: every field is pre-filled with the CURRENT (possibly wrong)
+// number, so only the actually-wrong ones need changing, not all 40+
+// retyped from scratch.
+function ManualFixTab() {
+  const [year,     setYear]     = useState(CURRENT_YEAR);
+  const [cls,      setCls]      = useState('');
+  const [section,  setSection]  = useState('A');
+  const [students, setStudents] = useState([]);
+  const [values,   setValues]   = useState({});
+  const [loading,  setLoading]  = useState(false);
+  const [loaded,   setLoaded]   = useState(false);
+  const [saving,   setSaving]   = useState(false);
+  const [error,    setError]    = useState('');
+  const [msg,      setMsg]      = useState('');
+
+  const CLASSES = ['Nursery','LKG','UKG','Class 1','Class 2','Class 3','Class 4','Class 5',
+                   'Class 6','Class 7','Class 8','Class 9','Class 10','Class 11','Class 12'];
+
+  const load = async () => {
+    if (!cls) return;
+    setLoading(true); setError(''); setMsg('');
+    const res = await window.api.getByClass(cls, section, year);
+    setLoading(false); setLoaded(true);
+    if (!res.success) { setError(res.message); setStudents([]); return; }
+    setStudents(res.data);
+    const initial = {};
+    res.data.forEach(s => { initial[s.admission_number] = s.roll_number != null ? String(s.roll_number) : ''; });
+    setValues(initial);
+  };
+
+  const setValue = (admNo, v) => setValues(prev => ({ ...prev, [admNo]: v }));
+
+  // Live validation, visible before Save is even clickable
+  const numberCounts = {};
+  Object.values(values).forEach(v => { const n = v.trim(); if (n) numberCounts[n] = (numberCounts[n] || 0) + 1; });
+  const hasDuplicates = Object.values(numberCounts).some(c => c > 1);
+  const hasBlanks = students.some(s => !(values[s.admission_number] || '').trim());
+
+  const save = async () => {
+    setError(''); setMsg('');
+    if (hasBlanks) { setError('Every student needs a roll number — fill in any blank fields.'); return; }
+    if (hasDuplicates) { setError('Two or more students have the same roll number — every number must be unique.'); return; }
+    const assignments = students.map(s => ({ admission_number: s.admission_number, roll_number: Number(values[s.admission_number]) }));
+    setSaving(true);
+    const res = await window.api.setManualRollNumbers(cls, section, year, assignments, 'admin');
+    setSaving(false);
+    if (!res.success) { setError(res.message); return; }
+    setMsg(`✅ Saved ${res.count} roll numbers for ${cls} ${section}.`);
+    load();
+  };
+
+  return (
+    <div>
+      <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-5 text-sm text-amber-800">
+        <p className="font-semibold mb-1">⚠️ Manual correction tool</p>
+        <p className="text-xs">
+          Use this to fix a class's roll numbers by hand — e.g. after an accidental Re-assign with no backup to restore from.
+          Every field starts pre-filled with the current number; change only the ones that are actually wrong.
+          Every active student needs a number, and no two can share one.
+        </p>
+      </div>
+
+      <div className="bg-white border border-gray-200 rounded-xl p-5 mb-5">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 items-end">
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Class</label>
+            <select value={cls} onChange={e => { setCls(e.target.value); setLoaded(false); }}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <option value="">Select class</option>
+              {CLASSES.map(c => <option key={c}>{c}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Section</label>
+            <select value={section} onChange={e => { setSection(e.target.value); setLoaded(false); }}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+              {['A','B','C','D'].map(s => <option key={s}>{s}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Academic Year</label>
+            <select value={year} onChange={e => { setYear(e.target.value); setLoaded(false); }}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+              {ACADEMIC_YEARS.map(y => <option key={y}>{y}</option>)}
+            </select>
+          </div>
+          <button onClick={load} disabled={!cls || loading}
+            className="bg-blue-700 hover:bg-blue-800 disabled:bg-blue-300 text-white font-medium px-5 py-2 rounded-lg text-sm">
+            {loading ? '⏳ Loading…' : '📋 Load Students'}
+          </button>
+        </div>
+      </div>
+
+      {error && <p className="text-red-600 text-sm bg-red-50 border border-red-200 rounded-lg p-3 mb-4">{error}</p>}
+      {msg   && <p className="text-green-700 text-sm bg-green-50 border border-green-200 rounded-lg p-3 mb-4">{msg}</p>}
+
+      {loaded && students.length === 0 && (
+        <p className="text-center text-gray-400 py-10 text-sm">No active students found in {cls} {section}.</p>
+      )}
+
+      {loaded && students.length > 0 && (
+        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+          <div className="px-5 py-3 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
+            <span className="text-sm font-medium text-gray-700">{cls} — Section {section} — {students.length} students</span>
+            {hasDuplicates && <span className="text-xs text-red-600 font-medium">⚠️ Duplicate roll numbers — fix before saving</span>}
+          </div>
+          <div className="max-h-[28rem] overflow-y-auto divide-y divide-gray-50">
+            {students.map(s => {
+              const val = values[s.admission_number] || '';
+              const isDup = val.trim() && numberCounts[val.trim()] > 1;
+              return (
+                <div key={s.admission_number} className={`flex items-center gap-3 px-5 py-2.5 ${isDup ? 'bg-red-50' : ''}`}>
+                  <input type="number" min="1" value={val}
+                    onChange={e => setValue(s.admission_number, e.target.value)}
+                    className={`w-20 border rounded-lg px-2 py-1.5 text-sm text-center font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500
+                      ${isDup ? 'border-red-400 text-red-700' : 'border-gray-300'}`} />
+                  <span className="text-sm text-gray-800 font-medium flex-1">{s.student_name}</span>
+                  <span className="text-xs font-mono text-gray-400">{s.admission_number}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="px-5 py-4 border-t border-gray-100 flex justify-end">
+            <button onClick={save} disabled={saving || hasDuplicates || hasBlanks}
+              className="bg-green-600 hover:bg-green-700 disabled:bg-green-300 text-white font-medium px-6 py-2.5 rounded-xl text-sm">
+              {saving ? 'Saving…' : '💾 Save Corrected Roll Numbers'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function RollNumbers() {
   const [tab, setTab] = useState('assign');
 
@@ -334,7 +496,7 @@ export default function RollNumbers() {
       </div>
 
       <div className="flex gap-1 bg-gray-100 p-1 rounded-xl mb-6 w-fit">
-        {[['assign','Assign Roll Numbers'],['view','View Roll Numbers']].map(([key, label]) => (
+        {[['assign','Assign Roll Numbers'],['view','View Roll Numbers'],['manual','Manual Fix']].map(([key, label]) => (
           <button key={key} onClick={() => setTab(key)}
             className={`px-5 py-2 rounded-lg text-sm font-medium transition-colors
               ${tab === key ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
@@ -345,6 +507,7 @@ export default function RollNumbers() {
 
       {tab === 'assign' && <AssignTab />}
       {tab === 'view'   && <ViewTab />}
+      {tab === 'manual' && <ManualFixTab />}
     </div>
   );
 }

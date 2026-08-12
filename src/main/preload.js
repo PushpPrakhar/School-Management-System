@@ -88,6 +88,8 @@ contextBridge.exposeInMainWorld('api', {
   getRollNumbersDynamic:  (cls, sec, yr)        => invoke('rollNumbers:getDynamic',    { class: cls, section: sec, academic_year: yr }),
   checkRollNumbersFrozen: (cls, sec, yr)        => invoke('rollNumbers:checkFrozen',   { class: cls, section: sec, academic_year: yr }),
   assignRollNumbersClass: (cls, sec, yr, by)    => invoke('rollNumbers:assignClass',   { class: cls, section: sec, academic_year: yr, assigned_by: by }),
+  syncMissingRollNumbers: (cls, sec, yr, by)    => invoke('rollNumbers:syncMissing',   { class: cls, section: sec, academic_year: yr, assigned_by: by }),
+  setManualRollNumbers:   (cls, sec, yr, assignments, by) => invoke('rollNumbers:setManual', { class: cls, section: sec, academic_year: yr, assignments, assigned_by: by }),
   assignRollNumbersAll:   (yr, by)              => invoke('rollNumbers:assignAll',     { academic_year: yr, assigned_by: by }),
   getFrozenRollNumbers:   (cls, sec, yr)        => invoke('rollNumbers:getFrozen',     { class: cls, section: sec, academic_year: yr }),
   addMidYearRollNumber:   (admNo, cls, sec, yr) => invoke('rollNumbers:addMidYear',    { admission_number: admNo, class: cls, section: sec, academic_year: yr }),
@@ -155,9 +157,11 @@ contextBridge.exposeInMainWorld('api', {
   feeLedgerGetPrevBalance:    (admNo, yr)             => invoke('feeLedger:getPrevBalance', { admission_number: admNo, academic_year: yr }),
   feeLedgerGetNextSL:         (yr)                    => invoke('feeLedger:getNextSL', yr),
   feeLedgerCreateBulk:        (yr, entries, by)       => invoke('feeLedger:createBulk', { academic_year: yr, entries, created_by: by }),
-  feeLedgerCreateProvisional: (yr, student_name, father_name, current_class, section, village, opening_balance, by) =>
-    invoke('feeLedger:createProvisionalStudent', { academic_year: yr, student_name, father_name, current_class, section, village, opening_balance, created_by: by }),
-  feeLedgerCreateGroup:       (yr, ids, by, gsl)      => invoke('feeLedger:createGroup', { academic_year: yr, ledger_ids: ids, created_by: by, gsl_number_manual: gsl }),
+  feeLedgerCreateProvisional: (yr, student_name, father_name, current_class, section, village, opening_balance, by, tuitionStartMonth) =>
+    invoke('feeLedger:createProvisionalStudent', { academic_year: yr, student_name, father_name, current_class, section, village, opening_balance, created_by: by, tuition_start_month: tuitionStartMonth }),
+  feeLedgerCreateGroup:       (yr, ids, by, gsl, concessionOverrides) => invoke('feeLedger:createGroup', { academic_year: yr, ledger_ids: ids, created_by: by, gsl_number_manual: gsl, concession_overrides: concessionOverrides }),
+  feeLedgerUpdateTuitionStartMonth: (ledgerId, month) => invoke('feeLedger:updateTuitionStartMonth', { ledger_id: ledgerId, tuition_start_month: month }),
+  feeLedgerUpdateSiblingConcession: (ledgerId, pct)   => invoke('feeLedger:updateSiblingConcession', { ledger_id: ledgerId, custom_concession_pct: pct }),
   feeLedgerGetAll:            (yr)                    => invoke('feeLedger:getAll', yr),
   feeLedgerGetTransactions:   (lid, yr)               => invoke('feeLedger:getTransactions', { ledger_id: lid, academic_year: yr }),
   feeLedgerGetGroupTxns:      (gid, yr)               => invoke('feeLedger:getGroupTransactions', { group_id: gid, academic_year: yr }),

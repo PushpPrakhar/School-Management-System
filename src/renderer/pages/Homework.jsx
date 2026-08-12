@@ -39,7 +39,7 @@ function SubjectRow({ subject, entry, chapters, onChange }) {
         <select value={entry.chapter_id} onChange={e => onChange({ ...entry, chapter_id: e.target.value ? Number(e.target.value) : '' })}
           className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
           <option value="">{chapters.length === 0 ? 'No chapters yet' : 'Select chapter'}</option>
-          {chapters.map(c => <option key={c.chapter_id} value={c.chapter_id}>{c.chapter_name}</option>)}
+          {chapters.map((c, i) => <option key={c.chapter_id} value={c.chapter_id}>{i + 1}. {c.chapter_name}</option>)}
         </select>
       </div>
       <div className="col-span-12 sm:col-span-4">

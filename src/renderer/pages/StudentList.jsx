@@ -170,7 +170,7 @@ export default function StudentList() {
     if (!selectedClass) return;
     setLoading(true);
     setSearched(true);
-    const result = await window.api.getByClass(selectedClass, selectedSection, '', user?.user_id); // academic_year not used — list shows current enrollment
+    const result = await window.api.getByClass(selectedClass, selectedSection, academicYear, user?.user_id); // academic_year now used for roll-number ordering when a single section is selected
     setLoading(false);
     if (result.success) setStudents(result.data);
     else { setStudents([]); }
@@ -429,7 +429,7 @@ export default function StudentList() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-200">
-                    {['#', 'Adm. No.', 'Student Name',
+                    {[selectedClass !== 'ALL' && selectedSection ? 'Roll No.' : '#', 'Adm. No.', 'Student Name',
                       ...(selectedClass === 'ALL' ? ['Class'] : ['Section']),
                       "Father's Name", 'Gender', 'Date of Birth', 'Phone', 'Category', ''].map(h => (
                       <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">
@@ -445,7 +445,9 @@ export default function StudentList() {
                       className="border-b border-gray-100 hover:bg-blue-50 cursor-pointer transition-colors"
                       onClick={() => setSelectedStudent(s)}
                     >
-                      <td className="px-4 py-3 text-gray-400 text-xs">{i + 1}</td>
+                      <td className="px-4 py-3 text-gray-400 text-xs">
+                        {selectedClass !== 'ALL' && selectedSection ? (s.roll_number ?? '—') : i + 1}
+                      </td>
                       <td className="px-4 py-3 font-mono text-xs text-blue-700">{s.admission_number}</td>
                       <td className="px-4 py-3 font-medium text-gray-800">{s.student_name}</td>
                       {selectedClass === 'ALL' ? (

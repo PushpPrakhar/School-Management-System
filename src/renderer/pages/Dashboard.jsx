@@ -475,14 +475,22 @@ function TeacherDashboard({ onNavigate }) {
       {selectedClass && classData && (
         <>
           {/* Stats */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <StatCard label={`Students in ${selectedClass}`}
-              value={classData.teacherClassStats?.total || 0}
-              icon="👦" color="blue"
-              sub={`${classData.teacherClassStats?.boys || 0} Boys · ${classData.teacherClassStats?.girls || 0} Girls`} />
-            <PlaceholderCard label="Low Attendance in Class" icon="📉" />
-            <PlaceholderCard label="Last Exam Avg Score"     icon="📝" />
-          </div>
+          {(() => {
+            const scopedSections = user?.classSections?.[selectedClass];
+            const sectionNote = scopedSections && scopedSections.length > 0
+              ? ` (Section${scopedSections.length > 1 ? 's' : ''} ${scopedSections.join(', ')})`
+              : '';
+            return (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <StatCard label={`Students in ${selectedClass}${sectionNote}`}
+                  value={classData.teacherClassStats?.total || 0}
+                  icon="👦" color="blue"
+                  sub={`${classData.teacherClassStats?.boys || 0} Boys · ${classData.teacherClassStats?.girls || 0} Girls`} />
+                <PlaceholderCard label="Low Attendance in Class" icon="📉" />
+                <PlaceholderCard label="Last Exam Avg Score"     icon="📝" />
+              </div>
+            );
+          })()}
 
           {/* Quick actions */}
           <SectionCard title="Quick Actions">
