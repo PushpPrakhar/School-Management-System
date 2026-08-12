@@ -1,674 +1,289 @@
-# 🏫 School Management System — Project Documentation
+# 🏫 Brilliant Public School — Management System
 
-> **Version:** 1.0.0  
-> **Status:** Planning / Pre-Development  
-> **Type:** Offline Desktop Application  
-> **Last Updated:** May 2026
+> **Version:** 1.0.0
+> **Status:** Live / In Production
+> **Type:** Offline Desktop Application (Windows)
+> **School:** Brilliant Public School, Village Sherpur-Nayser, Post-Jawal, District Bulandshahr, UP-203131
 
 ---
 
 ## 📌 Table of Contents
 
-1. [Project Overview](#1-project-overview)
-2. [Goals & Non-Negotiables](#2-goals--non-negotiables)
-3. [Recommended Tech Stack](#3-recommended-tech-stack)
-4. [System Architecture](#4-system-architecture)
-5. [Database Schema](#5-database-schema)
-   - 5.1 [Enrollment & SR Register](#51-enrollment--sr-register)
-   - 5.2 [Fees Ledger](#52-fees-ledger)
-   - 5.3 [Attendance Register](#53-attendance-register)
-   - 5.4 [Examination Results](#54-examination-results)
-   - 5.5 [Users & Authorization](#55-users--authorization)
-6. [Features & Modules](#6-features--modules)
-   - 6.1 [Dashboard](#61-dashboard)
-   - 6.2 [Admission Form](#62-admission-form)
-   - 6.3 [Class Student List](#63-class-student-list)
-   - 6.4 [Admit Card Generator](#64-admit-card-generator)
-   - 6.5 [Examination Gadget](#65-examination-gadget)
-   - 6.6 [Fees Notice](#66-fees-notice)
-   - 6.7 [Fees Receipt](#67-fees-receipt)
-   - 6.8 [Student Attendance System](#68-student-attendance-system)
-   - 6.9 [TC Generation](#69-tc-generation)
-   - 6.10 [Backup & Restore](#610-backup--restore)
-7. [Authorization & User Roles](#7-authorization--user-roles)
-8. [UI/UX Guidelines](#8-uiux-guidelines)
-9. [Offline Strategy](#9-offline-strategy)
-10. [Future Scope](#10-future-scope)
-11. [Folder Structure (Suggested)](#11-folder-structure-suggested)
-12. [Open Questions / To Be Decided](#12-open-questions--to-be-decided)
+1. [Overview](#1-overview)
+2. [Tech Stack](#2-tech-stack)
+3. [Architecture](#3-architecture)
+4. [User Roles & Hierarchy](#4-user-roles--hierarchy)
+5. [Modules](#5-modules)
+   - 5.1 [Admissions](#51-admissions)
+   - 5.2 [Student Records](#52-student-records)
+   - 5.3 [Attendance](#53-attendance)
+   - 5.4 [Examination](#54-examination)
+   - 5.5 [Homework](#55-homework)
+   - 5.6 [Fees](#56-fees)
+   - 5.7 [Documents](#57-documents)
+   - 5.8 [Promotion & Class Sections](#58-promotion--class-sections)
+   - 5.9 [Staff & Teacher Management](#59-staff--teacher-management)
+   - 5.10 [Login, Security & Sessions](#510-login-security--sessions)
+   - 5.11 [Backup & Restore](#511-backup--restore)
+6. [Database](#6-database)
+7. [Offline-First Design](#7-offline-first-design)
+8. [Known Limitation: Single-Machine Only](#8-known-limitation-single-machine-only)
+9. [Deployment](#9-deployment)
+10. [Folder Structure](#10-folder-structure)
+11. [Future Scope](#11-future-scope)
 
 ---
 
-## 1. Project Overview
+## 1. Overview
 
-The **School Management System** is a fully offline desktop application designed to digitize and streamline the day-to-day administrative operations of a school. It replaces traditional paper-based record-keeping with a structured, user-friendly digital system.
+This is a fully offline desktop application built for Brilliant Public School to replace paper-based administration with a single, structured digital system. It covers the full academic and administrative cycle of running the school — from a family's first inquiry, through admission, daily attendance and homework, exams and report cards, fee collection, and year-end promotion to the next class.
 
-The system handles:
-- Student enrollment and registration
-- Fee collection and ledger management
-- Attendance tracking
-- Examination admit card and result management
-- Transfer Certificate (TC) generation
-- Document generation (notices, receipts, reports)
-
-The system is designed to be operated by school staff with varying levels of technical expertise, and prioritizes ease of use, data integrity, and offline reliability.
+It's built to be operated entirely by school staff with no assumed technical background, and to work with **zero internet dependency** at every step — every screen, every calculation, every printed document works the same whether the machine is online or not.
 
 ---
 
-## 2. Goals & Non-Negotiables
+## 2. Tech Stack
 
-| # | Requirement | Priority |
-|---|-------------|----------|
-| 1 | System must work **completely offline** — no internet dependency | 🔴 Critical |
-| 2 | UI must be **intuitive** — usable by a first-time user without training | 🔴 Critical |
-| 3 | **Role-based authorization** — Admin vs User vs Teacher access levels | 🔴 Critical |
-| 4 | All documents (TC, Receipt, Admit Card) must be **print-ready** | 🔴 Critical |
-| 5 | **Data backup and restore** capability (to USB/local folder) | 🟠 High |
-| 6 | System should be **modular** for easy future feature additions | 🟠 High |
-| 7 | **Academic year management** — promote students at year-end | 🟡 Medium |
+| Layer | Technology |
+|---|---|
+| Desktop Framework | **Electron.js** — packages as a Windows `.exe` installer |
+| Frontend | **React** + **TailwindCSS** |
+| Database | **SQLite** (`better-sqlite3`) — a single local file, no server |
+| PDF Generation | **jsPDF** + **jspdf-autotable** |
+| Excel Import/Export | **xlsx** (SheetJS) |
+| Password Hashing | **bcryptjs** |
+| Packaging | **electron-builder** (NSIS installer) |
+| CI/CD | **GitHub Actions** — builds and publishes a Windows installer to GitHub Releases whenever a version tag is pushed |
 
----
-
-## 3. Recommended Tech Stack
-
-### Option A — Electron.js + SQLite *(Recommended)*
-
-| Layer | Technology | Reason |
-|-------|-----------|--------|
-| Desktop Framework | **Electron.js** | Cross-platform (Windows/Mac/Linux), runs fully offline, packages as a `.exe` installer |
-| Frontend UI | **React.js** or **HTML/CSS/JS** | Component-based, easy to maintain and extend |
-| Database | **SQLite** | Lightweight, file-based, no server needed, easy to backup (single `.db` file) |
-| PDF/Print | **Puppeteer** or **jsPDF** | Generate and print documents like TC, receipts, admit cards |
-| Styling | **TailwindCSS** or **Bootstrap** | Clean UI with minimal effort |
-
-### Option B — Python Flask + SQLite *(Alternative)*
-
-| Layer | Technology | Reason |
-|-------|-----------|--------|
-| Backend | **Python (Flask)** | Simple, readable, large community |
-| Frontend | **HTML/CSS/JS + Jinja2** | Template-based rendering |
-| Database | **SQLite** | Same as above |
-| Packaging | **PyInstaller** | Converts Python app to `.exe` |
-| PDF/Print | **ReportLab** or **WeasyPrint** | Document generation |
-
-> **Recommendation:** Go with **Option A (Electron + SQLite)** for a more polished desktop experience.  
-> Go with **Option B (Flask + SQLite)** if the development team is more comfortable with Python.
+There is no backend server and no cloud service anywhere in this system. The Electron "main process" (`src/main/main.js`) *is* the entire backend — it talks directly to the SQLite file on disk, and the React frontend talks to it over Electron's IPC (inter-process communication) rather than HTTP.
 
 ---
 
-## 4. System Architecture
+## 3. Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                  SCHOOL MANAGEMENT SYSTEM           │
-│                  (Offline Desktop App)              │
-└─────────────────────────────────────────────────────┘
-          │
-          ▼
-┌─────────────────────┐
-│     UI Layer        │  ← React / HTML+CSS+JS
-│  (All screens,      │
-│   forms, reports)   │
-└─────────┬───────────┘
-          │
-          ▼
-┌─────────────────────┐
-│   Business Logic    │  ← Validation, calculations,
-│      Layer          │     document generation rules
-└─────────┬───────────┘
-          │
-          ▼
-┌─────────────────────┐
-│   Database Layer    │  ← SQLite (.db file)
-│  (SQLite via ORM    │     Stored locally on machine
-│   or raw SQL)       │
-└─────────────────────┘
-          │
-          ▼
-┌─────────────────────┐
-│  File Output Layer  │  ← PDF/Print generation,
-│                     │     Backup files
-└─────────────────────┘
+┌────────────────────────────────────────────┐
+│              React Frontend                 │  src/renderer/
+│   (pages, components, all screens & forms)   │
+└───────────────────┬──────────────────────────┘
+                     │  IPC (window.api.*, via preload.js)
+┌───────────────────▼──────────────────────────┐
+│           Electron Main Process              │  src/main/main.js
+│  All business logic, validation, IPC handlers │
+└───────────────────┬──────────────────────────┘
+                     │  better-sqlite3 (direct, synchronous)
+┌───────────────────▼──────────────────────────┐
+│                 SQLite Database               │  school.db
+│         Single file, holds everything          │
+└────────────────────────────────────────────────┘
 ```
 
----
+**Where the database actually lives:**
+- **In development** — `<project-root>/data/school.db`
+- **In the packaged, installed app** — `%APPDATA%\<AppName>\data\school.db` (Electron's standard per-user data directory)
 
-## 5. Database Schema
+This separation matters: the database lives *outside* the installed program files, so every future app update replaces the program without ever touching your data.
 
-### 5.1 Enrollment & SR Register
-
-> Primary table. Every student in the school has exactly one record here.
-
-| Column Name | Data Type | Notes |
-|-------------|-----------|-------|
-| `admission_number` | TEXT (PK) | Unique, auto-generated or manual |
-| `date_of_admission` | DATE | |
-| `class_of_admission` | TEXT | Class when student first joined |
-| `student_name` | TEXT | Full name |
-| `gender` | TEXT | `M` / `F` / `Other` |
-| `date_of_birth` | DATE | |
-| `aadhar_number` | TEXT | 12-digit, optional (sensitive) |
-| `pen_number` | TEXT | Permanent Education Number |
-| `current_class` | TEXT | Current class OR `Left` OR `TC Issued` |
-| `father_name` | TEXT | |
-| `mother_name` | TEXT | |
-| `father_phone` | TEXT | *(Suggested addition)* |
-| `mother_phone` | TEXT | *(Suggested addition)* |
-| `blood_group` | TEXT | *(Suggested addition)* |
-| `photo_path` | TEXT | Path to student photo file *(Suggested)* |
-| `prev_sr_number` | TEXT | SR number from previous school |
-| `prev_school_name` | TEXT | Name of previous school attended |
-| `documents_submitted` | TEXT | Comma-separated: `Birth Certificate`, `TC`, `Aadhar`, etc. |
-| `religion` | TEXT | |
-| `caste` | TEXT | |
-| `category` | TEXT | `GEN` / `SC` / `ST` / `OBC` |
-| `address` | TEXT | Full residential address |
-| `academic_year` | TEXT | e.g., `2025-26` *(Suggested addition)* |
-| `created_at` | DATETIME | Auto-timestamp |
-| `updated_at` | DATETIME | Auto-timestamp |
+**Schema safety:** every table is created with `CREATE TABLE IF NOT EXISTS`, and every column added since v1.0.0 uses `ALTER TABLE ... ADD COLUMN` wrapped in a safe check (or, where a constraint itself needed to change, a guarded one-time table rebuild). This means updating the app on top of an existing database only ever adds what's missing — it never wipes or resets existing data.
 
 ---
 
-### 5.2 Fees Ledger
+## 4. User Roles & Hierarchy
 
-> Tracks fee collection and balance for each student per academic year.
+| Role | Who | Access |
+|---|---|---|
+| **Director** (`super_admin`) | School owner/director | Full authority over everything except Teacher accounts specifically (Teacher Management is Principal/Manager territory) |
+| **Principal / Administrator** (`admin`) | Principal | Near-full authority — admissions, students, fees, exams, staff, teachers, reports |
+| **Manager** | Deputy manager | Student list, fees, attendance, Teacher Management |
+| **Coordinator** | Section coordinator | Student list, roll numbers, attendance, examination, admit cards |
+| **Staff** | Office/counter staff | **Per-person permissions** — each Staff account is individually granted exactly the modules their job needs (e.g. one handles admissions, another handles fee collection), rather than one fixed bucket for everyone with that title |
+| **Teacher** | Classroom teachers | Scoped to specific classes, and can be further scoped to **specific sections** of a class (e.g. "Class 5 — Section A only") — enforced at the database level in Attendance, Examination, and (at class level) Homework and Student List |
 
-| Column Name | Data Type | Notes |
-|-------------|-----------|-------|
-| `ledger_id` | INTEGER (PK) | Auto-increment |
-| `new_ledger_number` | TEXT | Unique ledger number for this year |
-| `old_ledger_number` | TEXT | Previous year ledger (if pending balance carried forward) |
-| `admission_number` | TEXT (FK) | Links to SR Register |
-| `student_name` | TEXT | |
-| `father_name` | TEXT | |
-| `class` | TEXT | |
-| `address` | TEXT | |
-| `academic_year` | TEXT | e.g., `2025-26` |
-| `prev_balance` | DECIMAL | Opening balance from previous year |
-| `prev_deposit` | DECIMAL | Amount deposited against previous balance |
-| `prev_balance_left` | DECIMAL | Remaining previous balance |
-| `monthly_tuition_fees` | DECIMAL | Standard monthly tuition |
-| `transport_fees` | DECIMAL | Monthly transport (if applicable) |
-| `concession` | DECIMAL | Any fee concession |
-| `total_monthly_fees` | DECIMAL | `tuition + transport - concession` (auto-calculated) |
-| `month` | TEXT | Month this record applies to (e.g., `April 2025`) |
-| `amount_paid_this_month` | DECIMAL | Amount paid in this transaction |
-| `total_due` | DECIMAL | Cumulative amount due |
-| `remaining_balance` | DECIMAL | `total_due - amount_paid` (auto-calculated) |
-| `payment_date` | DATE | Date of payment |
-| `receipt_number` | TEXT | Receipt number for this payment |
-| `created_at` | DATETIME | |
+Hierarchy for account creation: **Director creates Director/Principal-tier accounts; Principal creates Staff/Coordinator/Manager accounts.** Teacher accounts are created through a dedicated Teacher Management flow (Principal/Manager). This prevents anyone from being able to grant themselves or others more authority than they should have.
+
+The very first login accounts (`director`, `principal`, `staff`, `teacher`, etc.) are generic seed accounts meant only to get the system started — real, individually-named accounts should replace them as soon as possible, with the generic ones disabled afterward.
 
 ---
 
-### 5.3 Attendance Register
+## 5. Modules
 
-> Monthly attendance records per student per subject/class.
+### 5.1 Admissions
 
-| Column Name | Data Type | Notes |
-|-------------|-----------|-------|
-| `attendance_id` | INTEGER (PK) | |
-| `admission_number` | TEXT (FK) | Links to SR Register |
-| `student_name` | TEXT | |
-| `class` | TEXT | |
-| `month` | TEXT | e.g., `April 2025` |
-| `academic_year` | TEXT | |
-| `total_working_days` | INTEGER | Days school was open |
-| `days_present` | INTEGER | Days student was present |
-| `days_absent` | INTEGER | Auto-calculated: `total - present` |
-| `attendance_percent` | DECIMAL | Auto-calculated |
-| `updated_by` | TEXT | Teacher/staff who entered data |
-| `updated_at` | DATETIME | |
+- **New Admission** — full SR Register form (student identity, parents, address, category/religion/caste, documents submitted, and more), validated server-side (Aadhar format, DOB sanity, duplicate detection)
+- **Prospectus / Pre-Admission Inquiries** — tracks interested families before they formally admit, separate from the enrollment table until a decision is made
+- **Approve Admissions** — every new admission goes through a review/approval step before becoming an active student record, with the reviewer able to edit details during review
+- **Provisional Students** — a lighter-weight record type for students not yet fully enrolled, kept in a fully separate table (`provisional_students`) but surfaced transparently alongside regular enrollment through a unified `student_directory` view
 
----
+### 5.2 Student Records
 
-### 5.4 Examination Results
+- **Student List** — search and browse by class, with a **Section filter** (respecting a teacher's section-level access exactly), or **"All Classes"** at once for Principal/Director, sorted in proper class sequence (not alphabetical, so "Class 10" doesn't sort before "Class 2")
+  - **Export:** PDF (all roles with access), and **full Excel export of every enrollment field** (Principal/Director only) — not a curated subset, the entire record
+- **Edit Student** — full record editing, including section reassignment for an individual student
+- **Roll Numbers** — assign and "freeze" roll numbers per class/section/academic year
 
-> Stores examination marks per student per exam per subject.
+### 5.3 Attendance
 
-| Column Name | Data Type | Notes |
-|-------------|-----------|-------|
-| `result_id` | INTEGER (PK) | |
-| `admission_number` | TEXT (FK) | |
-| `student_name` | TEXT | |
-| `class` | TEXT | |
-| `exam_name` | TEXT | e.g., `Half Yearly`, `Annual` |
-| `academic_year` | TEXT | |
-| `subject` | TEXT | Subject name |
-| `max_marks` | INTEGER | |
-| `marks_obtained` | DECIMAL | |
-| `grade` | TEXT | Auto-calculated from marks |
-| `remarks` | TEXT | Optional teacher remarks |
+- Daily marking per class and section, with bulk "mark all present" plus individual overrides
+- Locking — once submitted, a day is locked and requires an explicit unlock to re-edit (Admin only for past days; teachers can only edit the current day)
+- Low Attendance report, Monthly attendance report
+- Fully section-aware access control — a teacher scoped to specific sections cannot mark or view attendance for sections they aren't assigned to
 
----
+### 5.4 Examination
 
-### 5.5 Users & Authorization
+- **Unit Test Results** (UT1–UT4), **Half Yearly Result**, and **Final Result** — each with its own official, printable report card matching the school's letterhead format (school header, student info grid, marks table, grade, pass/fail, and a Date/Signature block for Class Teacher and Head Teacher)
+- Half Yearly and Final results automatically combine the relevant Unit Tests into the term total, using a consistent per-subject 33%-pass rule and A–F grading scale throughout
+- **Printable** — every report card has a dedicated print preview matching the same letterhead style used across the whole system
 
-> Manages login credentials and role-based access.
+### 5.5 Homework
 
-| Column Name | Data Type | Notes |
-|-------------|-----------|-------|
-| `user_id` | INTEGER (PK) | |
-| `username` | TEXT | Unique login username |
-| `password_hash` | TEXT | Hashed password (never plain text) |
-| `full_name` | TEXT | Display name |
-| `role` | TEXT | `admin` / `staff` / `teacher` |
-| `is_active` | BOOLEAN | Enable/disable users |
-| `created_at` | DATETIME | |
-| `last_login` | DATETIME | |
+- Teachers log **Classwork** and **Homework** separately, per subject, per day, with an optional Chapter reference (chapter is not required — subjects without a written-up chapter list, like Hindi Grammar, can still have classwork/homework logged normally)
+- One row per subject already defined for that class — no manual subject picking, since **Homework Management** (Principal/Director) maintains the actual subject and chapter list per class, auto-seeded with the standard curriculum and editable as a proper Table of Contents
+- **Subject Teacher assignment** — Principal can assign which teacher actually teaches each subject; the **Review Homework** oversight view credits that subject teacher by name, even if a different teacher (e.g. the class teacher) was the one who physically logged the entry into the system
+- **Daily Report** — a non-printable, on-screen summary styled with the school letterhead, showing that day's classwork/homework by subject plus the day's **absent students**, pulled directly from Attendance
+- The system shows whether a given date was a working day, holiday, vacation, or Sunday, using the Academic Calendar as the single source of truth
 
----
+### 5.6 Fees
 
-## 6. Features & Modules
+- **Fee Settings** — the fee structure matrix per class, transport routes
+- **Fees Ledger** — per-student ledger with **sibling/group support** (linked via a GSL number so siblings' records can be viewed and reported together), Bulk Receivable Entry for mid-year setup
+- **Counter Payment** — single-writer model: counter screens only ever claim pre-generated dues, never compute them live, which is what keeps the whole fee system consistent
+- **Day-End Posting** — staged transactions get reviewed and formally posted at day's end. **A counter cannot open a new day's payments if a previous day's receipts were never posted** — this is enforced server-side, not just a UI hint, and clears automatically the moment the missed day is posted (from any date, not just today)
+- **Monthly Ledger Report** — printable and **Excel-exportable**, with **siblings grouped together** in the export (not just sorted by ledger number) and every column matching the on-screen/print view exactly
+- **Cash Book**, **Fee Reports** (Daily Collection, Defaulter List), **Fees Notice**
 
----
+### 5.7 Documents
 
-### 6.1 Dashboard
+- **Admit Cards**, **TC (Transfer Certificate) Generation** — both print-ready, matching the school's official letterhead
 
-**Access:** All roles (content filtered by role)
+### 5.8 Promotion & Class Sections
 
-**Description:**  
-The home screen that greets users after login. Displays a quick summary of the school's current status.
+- **Promote Students** — a guided, whole-school, year-end promotion wizard (Select Year → Preview & Exclude → Confirm), with a full audit history of every promotion run
+  - The preview shows each student's **Final exam pass/fail** (computed from actual exam marks, not guesswork) and automatically pre-excludes students who failed — while never penalizing a student for missing exam data, since that's not the same thing as failing
+  - Class 12 students are correctly marked "Passed Out" rather than promoted into a nonexistent class
+- **Class Sections** — view section headcounts for a class, individually reassign a student's section, or **Auto-Balance**: split a class evenly across chosen sections, distributed in **alphabetical rotation** (not solid blocks) so every section ends up with a spread across the whole alphabet, not one section owning only early names
 
-**Widgets to display:**
-- Total enrolled students (current academic year)
-- Students with pending fees
-- Today's attendance summary (if entered)
-- Class-wise student count
-- Quick action buttons → New Admission, Collect Fees, Generate TC
+### 5.9 Staff & Teacher Management
 
----
+- **Teacher Management** — assign a teacher to specific classes, and within each class, optionally scope them to **specific sections** (leaving none selected means every section of that class). This is enforced, not cosmetic: a teacher scoped to one section genuinely cannot access another section's attendance or exam marks.
+- **Staff Management** — per-person permission assignment (not a fixed role bucket), covering everything from admissions to fee collection to attendance, so two people with the "Staff" title can have entirely different access depending on their actual job
+- Auto-generated usernames and passwords, forced password change on first login, reset-and-reveal-once credential handling for both
 
-### 6.2 Admission Form
+### 5.10 Login, Security & Sessions
 
-**Access:** Admin, Staff
+- Lockout after repeated failed login attempts
+- Forced password change on first login or after any password reset
+- Session persistence across app restarts, with a 10-minute inactivity auto-lock
+- PIN-based quick-switch between multiple people who've already logged in with their real password that day
+- The last remaining Director/Principal-tier account can never be disabled — a deliberate safeguard against accidentally locking everyone out of administration entirely
 
-**Description:**  
-A form to register a new student into the system. On submission, the student is added to the **SR Register** and a new **Fees Ledger** entry is created for them.
+### 5.11 Backup & Restore
 
-**Form Fields:** *(matches SR Register schema)*
-
-**Workflow:**
-1. Staff opens Admission Form
-2. Fills in all required fields
-3. System validates: checks for duplicate Aadhar / PEN number
-4. On submit → creates entry in `enrollment` table
-5. System auto-generates Admission Number
-6. Option to print the filled admission form
-
-**Validations:**
-- Aadhar must be 12 digits (if provided)
-- Date of Birth must be in the past
-- Admission Number must be unique
-- Required fields must not be blank
+Since this is an offline, single-file database, regular backups of `school.db` are the only real safety net. Take one before any major update, and on a regular schedule otherwise.
 
 ---
 
-### 6.3 Class Student List
+## 6. Database
 
-**Access:** Admin, Staff, Teacher
+Everything lives in one SQLite file. Some of the more structurally important tables:
 
-**Description:**  
-Generates a list of all students in a given class. Can be filtered by academic year.
-
-**Inputs:**
-- Class name (dropdown: Nursery, LKG, UKG, Class 1 ... Class 12)
-- Academic Year
-
-**Output:**
-- Table showing: Admission No., Student Name, Father's Name, Gender, Date of Birth, Address, Contact
-- Options to **Print** or **Export to PDF**
-- Count of total students at the bottom
+| Table | Purpose |
+|---|---|
+| `enrollment` / `provisional_students` | Student records (unified via the `student_directory` view) |
+| `fee_ledger` / `fee_transactions` / `fee_transactions_stage` | Fee ledgers, posted transactions, and staged (pre-posting) transactions |
+| `fee_groups` / `fee_group_members` | Sibling grouping for the fee ledger |
+| `attendance_daily` | Daily attendance, per student per date |
+| `exam_marks` | Marks per student, subject, and exam type (UT1–UT4, Half Yearly, Final) |
+| `subjects` / `chapters` | Homework's per-class subject and chapter reference data, including subject-teacher assignment |
+| `homework_entries` | Daily classwork/homework log, per teacher/class/date/subject |
+| `users` / `teacher_classes` / `staff_permissions` | Accounts, and the class+section / per-permission scoping layered on top of each role |
+| `roll_numbers` | Frozen roll number assignments per class/section/year |
+| `academic_calendar` | Working days, holidays, vacations — the single source of truth for "is school open on this date" |
 
 ---
 
-### 6.4 Admit Card Generator
+## 7. Offline-First Design
 
-**Access:** Admin, Staff
+| Concern | How it's handled |
+|---|---|
+| Database | SQLite — a single local file, no server, no network dependency |
+| App delivery | Packaged as a Windows `.exe` via Electron + electron-builder |
+| PDF/Print generation | Fully client-side (jsPDF), no external service |
+| Updates | No auto-updater — updates are installed manually from a new installer; nothing changes on a deployed machine until someone deliberately runs a new install |
+| Backup | Manual — copy `school.db` to a USB drive or another folder |
 
-**Description:**  
-Generates examination admit cards for students. Before generating, checks for pending fees.
+---
 
-**Inputs:**
-- Select exam name (e.g., Half Yearly, Annual Exam)
-- Select class OR generate for all classes
+## 8. Known Limitation: Single-Machine Only
 
-**Fees Check Logic:**
+This system is currently built around **one SQLite file on one machine** — there is no server and no data syncing between installs. Running the app on two machines independently means two completely separate, unsynced databases; a payment entered on one will never appear on the other.
+
+If the school needs **true simultaneous multi-machine use** (e.g. reception and the principal's office both actively entering data at the same time), that requires a real architectural change — turning one machine into a small local server that the others connect to over the school's network, rather than each machine reading its own local file. This has been deliberately scoped as a **separate future project**, not something to retrofit quickly, since it touches nearly every feature in the system (150+ backend handlers currently talk directly to the local file).
+
+If usage is closer to "different desks use it at different times of day" rather than truly simultaneous, the existing single-machine setup works fine — just move `school.db` between machines the same way as setting up a new install (see Deployment below), rather than running both at once.
+
+---
+
+## 9. Deployment
+
+**Building a new installer:**
+```bash
+npm install
+npm run build          # react-scripts build && electron-builder
 ```
-IF student has remaining_balance > 0:
-    Show warning: "This student has pending fees of ₹[amount]"
-    Ask: "Generate admit card anyway? [Yes / No]"
-    Log the override (who approved it and when)
+Must be built on Windows (or a Windows CI runner) — `better-sqlite3` is a native module compiled per-OS, and a Mac/Linux-built installer will not run correctly on Windows.
+
+**Releasing a new version** (automated via GitHub Actions):
+```bash
+git add .
+git commit -m "..."
+git push origin main
+
+git tag v1.0.x
+git push origin v1.0.x
 ```
+Pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds the installer on a real Windows runner and attaches it to a new GitHub Release automatically — no manual building or uploading required. If a tag already exists and needs to be re-triggered, it must be deleted and recreated (`git tag -d v1.0.0 && git push origin --delete v1.0.0`), since pushing an unchanged tag doesn't fire a new build.
 
-**Admit Card Fields:**
-- School Name & Logo
-- Student Name, Class, Roll Number
-- Admission Number
-- Father's Name
-- Exam Name & Year
-- Subject-wise exam schedule (date, time, subject)
-- Invigilator signature line
-
-**Output:** Printable PDF admit card (one per student or batch)
+**Moving existing data to a new machine or install:**
+1. Back up the current `school.db`
+2. Install the app fresh, launch once, close it completely (this creates a new empty database in the correct location)
+3. Replace that freshly-created `school.db` with the real one
+4. Launch again — any schema changes since that backup was taken are added automatically and safely
 
 ---
 
-### 6.5 Examination Gadget
-
-**Access:** Admin, Staff
-
-**Description:**  
-A module to manage exam-related data — entering marks, calculating grades, and generating result sheets.
-
-**Sub-features:**
-- Define exam (name, subjects, max marks)
-- Enter marks for each student per subject
-- Auto-calculate: total marks, percentage, grade, pass/fail
-- Generate class result sheet (printable)
-- Generate individual report card (printable)
-
-**Grade Calculation:** *(configurable by Admin)*
-| Percentage | Grade |
-|------------|-------|
-| 90–100% | A+ |
-| 75–89% | A |
-| 60–74% | B |
-| 45–59% | C |
-| 33–44% | D |
-| Below 33% | F (Fail) |
-
----
-
-### 6.6 Fees Notice
-
-**Access:** Admin, Staff
-
-**Description:**  
-A mail-merge-style document generator that creates individual fee due notices for students with pending balances. Similar to "Mail Merge" in MS Word but built into the system.
-
-**Workflow:**
-1. System fetches all students with `remaining_balance > 0`
-2. Generates a personalized notice for each student
-3. Notice includes: Student name, Class, Father's name, Amount due, Last payment date, Month-wise breakdown
-4. Output: Batch PDF (all notices in one file) OR individual PDFs
-5. Option to print all notices at once
-
-**Notice Template Fields:**
-```
-To,
-[Father's Name]
-Parent/Guardian of: [Student Name]
-Class: [Class]
-Address: [Address]
-
-Subject: Reminder for Pending School Fees
-
-Dear Parent,
-This is to inform you that the following fees are pending as of [Date]:
-
-  Previous Balance:     ₹ [prev_balance_left]
-  Current Month Fees:   ₹ [total_monthly_fees]
-  Total Amount Due:     ₹ [total_due]
-
-Kindly clear the above dues at the earliest.
-
-Thank you,
-[School Name]
-```
-
----
-
-### 6.7 Fees Receipt
-
-**Access:** Admin, Staff
-
-**Description:**  
-A point-of-collection receipt system. When a parent pays fees, the staff generates a receipt.
-
-**Workflow:**
-1. Staff searches student by Name or Admission Number
-2. System displays: Student details, current pending amount, month-wise breakdown
-3. Staff enters: Amount being paid today, payment mode (Cash/Cheque/Online), date
-4. System calculates: New remaining balance
-5. Generates and prints receipt (in duplicate — one for parent, one for school)
-
-**Receipt Fields:**
-- Receipt Number (auto-generated)
-- School Name & Logo
-- Date of Payment
-- Student Name, Class, Admission No.
-- Father's Name
-- Amount Received (in digits and words)
-- Previous Balance, Amount Paid, Balance Remaining
-- Payment Mode
-- Cashier signature
-
----
-
-### 6.8 Student Attendance System
-
-**Access:** Admin, Staff, Teacher
-
-**Description:**  
-Allows teachers to record monthly attendance for their class.
-
-**Workflow:**
-1. Teacher selects: Class, Month, Academic Year
-2. System loads student list for that class
-3. Teacher enters: Total working days, Days present for each student
-4. System auto-calculates: Days absent, Attendance %
-5. Teacher submits — data saved to Attendance table
-6. Option to generate monthly attendance report per class (printable)
-
-**Rules:**
-- Teachers can only edit attendance for the current month (Admin can edit any month)
-- Once submitted, attendance is locked unless Admin unlocks it
-
----
-
-### 6.9 TC Generation
-
-**Access:** Admin only *(TC is an official document)*
-
-**Description:**  
-Generates a Transfer Certificate for a student leaving the school.
-
-**Workflow:**
-1. Admin searches student by Name or Admission Number
-2. System displays full student profile for verification
-3. Admin fills in TC-specific fields (reason for leaving, last date attended, conduct)
-4. System generates TC document
-5. On confirmation → updates student's `current_class` to `TC Issued` in SR Register
-6. TC is locked after generation (cannot be regenerated without Admin override)
-
-**TC Fields:**
-- Serial Number / TC Number
-- Student Name, Date of Birth, Gender
-- Father's Name, Mother's Name
-- Admission Number, Date of Admission
-- Class of Admission, Class at Time of Leaving
-- Date of Leaving
-- Reason for Leaving
-- Total Attendance / Working Days
-- Whether school fees are clear: Yes / No
-- Conduct & Character
-- Remarks
-- Principal Signature & School Stamp
-
----
-
-### 6.10 Backup & Restore
-
-**Access:** Admin only
-
-**Description:**  
-Since the system is offline, data backup is critical. This module allows the Admin to back up and restore the entire database.
-
-**Backup Workflow:**
-1. Admin clicks "Backup Now"
-2. System copies the `.db` file to a chosen location (USB drive or local folder)
-3. Backup file is timestamped: `school_backup_2025-11-15_10-30.db`
-4. Success confirmation shown
-
-**Restore Workflow:**
-1. Admin selects a backup file
-2. System shows backup date/time and warns: *"This will replace all current data. Are you sure?"*
-3. On confirmation → restores database from backup file
-
-> **Recommended practice:** Set a reminder in the UI to take weekly backups.
-
----
-
-## 7. Authorization & User Roles
-
-| Feature / Action | 👑 Admin | 🧑‍💼 Staff | 👩‍🏫 Teacher |
-|-----------------|---------|--------|---------|
-| View Dashboard | ✅ | ✅ | ✅ |
-| New Admission | ✅ | ✅ | ❌ |
-| Edit Student Record | ✅ | ❌ | ❌ |
-| Delete Student Record | ✅ | ❌ | ❌ |
-| Class Student List | ✅ | ✅ | ✅ (own class only) |
-| Generate Admit Card | ✅ | ✅ | ❌ |
-| Enter Exam Marks | ✅ | ✅ | ✅ (own class) |
-| Fees Notice | ✅ | ✅ | ❌ |
-| Collect Fees / Receipt | ✅ | ✅ | ❌ |
-| Attendance Entry | ✅ | ✅ | ✅ (own class) |
-| Edit Past Attendance | ✅ | ❌ | ❌ |
-| Generate TC | ✅ | ❌ | ❌ |
-| Backup & Restore | ✅ | ❌ | ❌ |
-| User Management | ✅ | ❌ | ❌ |
-| Direct DB Access | ✅ | ❌ | ❌ |
-
----
-
-## 8. UI/UX Guidelines
-
-1. **Simple Navigation:** Sidebar or top navigation with clearly labeled sections — no jargon
-2. **Search Everywhere:** Every list/table must have a search bar (by name or admission number)
-3. **Confirmation Dialogs:** All destructive actions (delete, TC issue, restore) must ask for confirmation
-4. **Error Messages:** Show human-readable errors — not technical codes
-5. **Loading States:** Show a spinner or progress bar for any action that takes time
-6. **Print Preview:** Before printing any document, show a preview screen
-7. **Color Coding:**
-   - 🔴 Red → Pending fees / Overdue
-   - 🟢 Green → Paid / Clear
-   - 🟡 Yellow → Partial payment
-8. **Keyboard Shortcuts:** Support `Enter` to submit forms, `Esc` to cancel
-9. **Responsive Layout:** Works well on both small and large monitors
-10. **Indian Date Format:** Use `DD/MM/YYYY` throughout the system
-
----
-
-## 9. Offline Strategy
-
-The system must function with **zero internet connection at all times**.
-
-| Concern | Solution |
-|---------|----------|
-| Database | SQLite — file-based, no server needed |
-| App delivery | Electron (packaged as `.exe`) or PyInstaller |
-| PDF Generation | Client-side libraries (jsPDF / WeasyPrint / ReportLab) |
-| No cloud sync | All data stays on the local machine |
-| Backup | Manual export to USB / local folder |
-| Updates | Installer-based update (distributed via USB or file share) |
-
-> **Important:** Document clearly to the school that backups must be taken regularly. Data loss risk is higher on offline-only systems.
-
----
-
-## 10. Future Scope
-
-> These features are **not in scope** for v1.0 but the system should be built in a way that adding them later is straightforward.
-
-| Feature | Notes |
-|---------|-------|
-| 📊 Annual Report Generation | Summary of student performance, fees collected, attendance across the year |
-| 👨‍🏫 Staff / Teacher Management | Staff attendance, salary records, leave management |
-| 📱 SMS / WhatsApp Notifications | Send fees reminders via SMS (would require internet) |
-| 🎓 Alumni Tracking | Records of students who have passed out |
-| 📦 Multi-Branch Support | Extend to support multiple school branches |
-| ☁️ Optional Cloud Sync | Sync local database to cloud for multi-device access (optional, internet-dependent) |
-| 🖼️ Student ID Card Generator | Photo ID card generation for students |
-| 📅 School Calendar / Events | Manage school events, exam schedules, holidays |
-| 📚 Library Management | Book issue/return tracking |
-| 🔔 In-app Reminders | Remind staff about upcoming exams, fee deadlines |
-
----
-
-## 11. Folder Structure (Suggested)
+## 10. Folder Structure
 
 ```
-school-management-system/
-│
+School-Management-System/
+├── .github/
+│   └── workflows/
+│       └── release.yml         # Builds + publishes installer on version tags
 ├── src/
-│   ├── main/                  # Electron main process (or Flask app)
-│   ├── renderer/              # UI components (React/HTML)
-│   │   ├── components/        # Reusable UI components
-│   │   ├── pages/             # Full page screens
-│   │   │   ├── Dashboard.jsx
-│   │   │   ├── Admission.jsx
-│   │   │   ├── StudentList.jsx
-│   │   │   ├── AdmitCard.jsx
-│   │   │   ├── Examination.jsx
-│   │   │   ├── FeesNotice.jsx
-│   │   │   ├── FeesReceipt.jsx
-│   │   │   ├── Attendance.jsx
-│   │   │   ├── TC.jsx
-│   │   │   └── Settings.jsx
-│   │   └── utils/             # Helper functions
-│   │
-│   ├── database/
-│   │   ├── schema.sql         # DB table definitions
-│   │   ├── db.js              # DB connection & query helpers
-│   │   └── migrations/        # Future schema changes
-│   │
-│   ├── services/              # Business logic layer
-│   │   ├── studentService.js
-│   │   ├── feesService.js
-│   │   ├── attendanceService.js
-│   │   ├── examService.js
-│   │   └── documentService.js # PDF / print generation
-│   │
-│   └── assets/
-│       ├── logo/
-│       ├── templates/         # Document templates (TC, Receipt, etc.)
-│       └── fonts/
-│
+│   ├── main/
+│   │   ├── main.js              # All backend logic, schema, IPC handlers
+│   │   └── preload.js           # IPC bridge exposed to the frontend as window.api
+│   └── renderer/
+│       ├── pages/                # One file per major screen
+│       ├── components/           # Shared/reusable UI (print modals, receipts, etc.)
+│       └── utils/
+│           └── AuthContext.jsx  # Auth state, permissions, class/section access checks
+├── public/
+│   └── electron.js              # Entry-point stub required by electron-builder's CRA preset
 ├── data/
-│   └── school.db              # SQLite database file (auto-created)
-│
-├── backups/                   # Backup files stored here
-│
-├── docs/                      # Documentation
-│   └── school_system_project.md   # This file
-│
+│   └── school.db                # SQLite database (dev only — see Section 3 for prod path)
 ├── package.json
-├── README.md
-└── .gitignore
+└── README.md
 ```
 
 ---
 
-## 12. Open Questions / To Be Decided
+## 11. Future Scope
 
-- [ ] What classes does the school offer? (Nursery to Class 12? Or different range?)
-- [ ] Should Admission Numbers be auto-generated or manually entered?
-- [ ] What is the grading system used by the school?
-- [ ] How many subjects per class? Are they configurable?
-- [ ] Should TC generation require a specific approval workflow?
-- [ ] Should the system support multiple academic years simultaneously?
-- [ ] What is the school's fee structure — flat monthly fee or different per class?
-- [ ] Does the school need the app on multiple computers (reception + principal office)?
-- [ ] What operating system does the school use? (Windows / Mac / Linux)
-- [ ] Are there any pre-existing records that need to be imported/migrated?
+- **True multi-machine, simultaneous access** — see [Section 8](#8-known-limitation-single-machine-only)
+- **Monthly Ledger Report "Posted Only" view** — a toggle to show the ledger as of the last formal Day-End Posting, separate from the real-time operational view, for month-end review/audit purposes
+- Code-signing the installer, to remove the Windows SmartScreen "Unknown Publisher" warning on install
+- Section-level access enforcement for Homework and Student List (currently class-level only, by deliberate scope decision)
 
 ---
 
-> 📝 **Note for Developers:**  
-> This document is a living specification. As decisions are made, update the relevant sections and keep a changelog at the bottom of this file. Build the system modularly so that any section can be extended independently without breaking others.
-
----
-
-*Document prepared for: School Management System Project*  
-*Template Version: 1.0*
+*This document reflects the system as actually built and deployed, not the original pre-development plan. Update it as the system continues to evolve.*
