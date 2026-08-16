@@ -73,7 +73,10 @@ function AssignTab() {
     }
   };
 
+  const [confirmAll, setConfirmAll] = useState(false);
+
   const assignAll = async () => {
+    setConfirmAll(false);
     setAssigning('ALL');
     const res = await window.api.assignRollNumbersAll(year, 'admin');
     setAssigning(null);
@@ -87,6 +90,7 @@ function AssignTab() {
 
   const allAssigned = summary.length > 0 && summary.every(s => s.is_assigned);
   const anyAssigned = summary.some(s => s.is_assigned);
+  const assignedCount = summary.filter(s => s.is_assigned).length;
 
   return (
     <div>
@@ -109,13 +113,45 @@ function AssignTab() {
             Run at the start of each academic year (April)
           </p>
         </div>
-        <button onClick={assignAll} disabled={assigning === 'ALL'}
-          className="bg-blue-700 hover:bg-blue-800 disabled:bg-blue-300 text-white font-medium px-6 py-2.5 rounded-xl text-sm flex items-center gap-2">
+        <button onClick={() => anyAssigned ? setConfirmAll(true) : assignAll()} disabled={assigning === 'ALL'}
+          className={`font-medium px-6 py-2.5 rounded-xl text-sm flex items-center gap-2
+            ${anyAssigned ? 'bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white' : 'bg-blue-700 hover:bg-blue-800 disabled:bg-blue-300 text-white'}`}>
           {assigning === 'ALL'
             ? <><span className="animate-spin">⏳</span> Assigning all…</>
             : `🔢 Assign All Classes (${year})`}
         </button>
       </div>
+
+      {confirmAll && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="bg-red-600 px-6 py-4">
+              <h3 className="text-white font-bold">⚠️ This will wipe {assignedCount} already-assigned class{assignedCount !== 1 ? 'es' : ''}</h3>
+            </div>
+            <div className="px-6 py-5">
+              <p className="text-sm text-gray-600">
+                {assignedCount} class/section{assignedCount !== 1 ? 's' : ''} in {year} already {assignedCount !== 1 ? 'have' : 'has'} frozen roll numbers.
+                Running Assign All Classes recalculates <strong>every</strong> class from scratch, alphabetically —
+                including the ones already assigned, wiping their current order and any mid-year additions.
+              </p>
+              <p className="text-sm text-gray-600 mt-2">
+                If you only meant to assign the classes still marked "Not assigned," use the individual <strong>Assign</strong> button
+                on each class below instead — this button affects everything at once.
+              </p>
+            </div>
+            <div className="px-6 pb-5 flex gap-3">
+              <button onClick={() => setConfirmAll(false)}
+                className="flex-1 border border-gray-300 text-gray-600 hover:bg-gray-50 rounded-xl py-2.5 text-sm font-medium">
+                Cancel
+              </button>
+              <button onClick={assignAll}
+                className="flex-1 bg-red-600 hover:bg-red-700 text-white rounded-xl py-2.5 text-sm font-bold">
+                Wipe & Re-assign All
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Info banner */}
       <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-5 text-sm text-blue-700">
@@ -185,9 +221,10 @@ function AssignTab() {
                       <button
                         onClick={() => assignClass(s.class, s.section)}
                         disabled={assigning === `${s.class}_${s.section}`}
+                        title={s.is_assigned ? 'Wipes and recalculates every roll number in this class/section from scratch' : undefined}
                         className={`text-xs font-medium px-4 py-1.5 rounded-lg
                           ${s.is_assigned
-                            ? 'border border-gray-300 text-gray-500 hover:bg-gray-50'
+                            ? 'border border-red-300 text-red-600 hover:bg-red-50'
                             : 'bg-blue-700 hover:bg-blue-800 text-white'}`}>
                         {assigning === `${s.class}_${s.section}`
                           ? '⏳ Assigning…'

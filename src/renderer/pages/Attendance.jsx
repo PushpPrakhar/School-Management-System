@@ -580,6 +580,8 @@ function MarkTab() {
     setIsDirty(true);
   };
 
+  const [confirmAllAbsent, setConfirmAllAbsent] = useState(false);
+
   const save = async () => {
     if (!cls || !date || students.length === 0) return;
     // Check if anything changed since last save
@@ -741,17 +743,34 @@ function MarkTab() {
                   ✗ {absent} Absent
                 </span>
               </div>
-              <div className="flex gap-2">
+              <div className="flex gap-4">
                 {!locked && (<>
                   <button onClick={() => markAll('Present')}
                     className="text-xs border border-green-300 text-green-700 hover:bg-green-50 px-3 py-1.5 rounded-lg">
                     All Present
                   </button>
-                  <button onClick={() => markAll('Absent')}
+                  <button onClick={() => setConfirmAllAbsent(true)}
                     className="text-xs border border-red-300 text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg">
                     All Absent
                   </button>
                 </>)}
+              </div>
+            </div>
+          )}
+
+          {confirmAllAbsent && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center">
+                <p className="text-3xl mb-2">⚠️</p>
+                <p className="font-bold text-gray-800 mb-1">Mark all {students.length} students absent?</p>
+                <p className="text-sm text-gray-500 mb-5">This replaces every individual mark for today with Absent — only do this if the whole class was genuinely away.</p>
+                <div className="flex gap-3">
+                  <button onClick={() => setConfirmAllAbsent(false)} className="flex-1 px-4 py-2.5 border border-gray-300 rounded-xl text-sm font-medium">Cancel</button>
+                  <button onClick={() => { markAll('Absent'); setConfirmAllAbsent(false); }}
+                    className="flex-1 px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-sm font-medium">
+                    Mark All Absent
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -841,8 +860,9 @@ function MarkTab() {
                           </div>
                         ) : (
                           <div className="flex justify-center">
-                            <span className={`w-10 h-7 rounded-lg text-xs font-bold flex items-center justify-center
-                              ${status === 'Present' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'}`}>
+                            <span className={`w-10 h-7 rounded-lg text-xs font-bold flex items-center justify-center opacity-50
+                              ${status === 'Present' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'}`}
+                              title="Locked — read only">
                               {status === 'Present' ? 'P' : 'A'}
                             </span>
                           </div>
@@ -862,7 +882,7 @@ function MarkTab() {
             </button>
             {isEditable && (
               <button onClick={save} disabled={saving}
-                className="bg-green-600 hover:bg-green-700 disabled:bg-green-300 text-white font-medium px-8 py-2.5 rounded-xl text-sm flex items-center gap-2">
+                className="bg-blue-700 hover:bg-blue-800 disabled:bg-blue-300 text-white font-medium px-8 py-2.5 rounded-xl text-sm flex items-center gap-2">
                 {saving ? <><span className="animate-spin">⏳</span> Saving…</> : '💾 Save Attendance'}
               </button>
             )}
@@ -1037,8 +1057,8 @@ function MonthlyTab() {
                   <thead className="sticky top-0 z-20">
                     <tr className="bg-gray-50 border-b-2 border-gray-200">
                       {/* Sticky columns */}
-                      <th className="sticky left-0 z-30 bg-gray-50 text-left px-3 py-3 font-semibold text-gray-600 border-r border-gray-200 w-10">#</th>
-                      <th className="sticky left-10 z-30 bg-gray-50 text-left px-3 py-3 font-semibold text-gray-600 border-r border-gray-200 min-w-36">Name</th>
+                      <th className="sticky left-0 z-30 bg-gray-50 text-left px-3 py-3 text-sm font-semibold text-gray-600 border-r border-gray-200 w-10">#</th>
+                      <th className="sticky left-10 z-30 bg-gray-50 text-left px-3 py-3 text-sm font-semibold text-gray-600 border-r border-gray-200 min-w-36">Name</th>
                       {/* Day columns */}
                       {tableData.dates.map(d => (
                         <th key={d} className="px-1.5 py-3 font-medium text-gray-500 text-center w-7 border-r border-gray-100">
@@ -1046,14 +1066,14 @@ function MonthlyTab() {
                         </th>
                       ))}
                       {/* Summary columns */}
-                      <th className="px-3 py-3 font-semibold text-green-700 text-center bg-green-50 border-l-2 border-green-200 min-w-16">Attended</th>
-                      <th className="px-3 py-3 font-semibold text-red-600 text-center bg-red-50 min-w-16">Absent</th>
-                      <th className="px-3 py-3 font-semibold text-gray-600 text-center bg-gray-50 min-w-16">Total</th>
-                      <th className="px-3 py-3 font-semibold text-purple-700 text-center bg-purple-50 min-w-28 border-l-2 border-purple-200">
+                      <th className="px-3 py-3 text-sm font-semibold text-green-700 text-center bg-green-50 border-l-2 border-green-200 min-w-16">Attended</th>
+                      <th className="px-3 py-3 text-sm font-semibold text-red-600 text-center bg-red-50 min-w-16">Absent</th>
+                      <th className="px-3 py-3 text-sm font-semibold text-gray-600 text-center bg-gray-50 min-w-16">Total</th>
+                      <th className="px-3 py-3 text-sm font-semibold text-purple-700 text-center bg-purple-50 min-w-28 border-l-2 border-purple-200">
                         Progressive
                         <span className="block text-purple-400 font-normal text-xs">Attended / Total</span>
                       </th>
-                      <th className="px-3 py-3 font-semibold text-blue-700 text-center bg-blue-50 min-w-16">%</th>
+                      <th className="px-3 py-3 text-sm font-semibold text-blue-700 text-center bg-blue-50 min-w-16">%</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1061,11 +1081,11 @@ function MonthlyTab() {
                       <tr key={s.admNo}
                         className={`border-b border-gray-100 ${getProgPct(s.admNo) < thresholdNum ? 'bg-red-50' : idx%2===0 ? 'bg-white' : 'bg-gray-50'}`}>
                         {/* Roll number */}
-                        <td className="sticky left-0 z-10 bg-inherit px-3 py-2.5 font-bold text-blue-700 border-r border-gray-200 text-center">
+                        <td className="sticky left-0 z-10 bg-inherit px-3 py-2.5 text-sm font-bold text-blue-700 border-r border-gray-200 text-center">
                           {s.roll_number === 999 ? idx+1 : s.roll_number}
                         </td>
                         {/* Name */}
-                        <td className="sticky left-10 z-10 bg-inherit px-3 py-2.5 font-medium text-gray-800 border-r border-gray-200 whitespace-nowrap">
+                        <td className="sticky left-10 z-10 bg-inherit px-3 py-2.5 text-sm font-medium text-gray-800 border-r border-gray-200 whitespace-nowrap">
                           {s.name}
                         </td>
                         {/* Day cells */}
@@ -1083,12 +1103,12 @@ function MonthlyTab() {
                           );
                         })}
                         {/* Summary */}
-                        <td className="px-3 py-2.5 text-center bg-green-50 border-l-2 border-green-200 font-bold text-green-700">
+                        <td className="px-3 py-2.5 text-center text-sm bg-green-50 border-l-2 border-green-200 font-bold text-green-700">
                           {s.present}
                         </td>
-                        <td className="px-3 py-2.5 text-center text-red-500 font-medium bg-red-50">{s.absent}</td>
-                        <td className="px-3 py-2.5 text-center text-gray-600 font-medium bg-gray-50">{s.total}</td>
-                        <td className="px-3 py-2.5 text-center bg-purple-50 border-l-2 border-purple-200">
+                        <td className="px-3 py-2.5 text-center text-sm text-red-500 font-medium bg-red-50">{s.absent}</td>
+                        <td className="px-3 py-2.5 text-center text-sm text-gray-600 font-medium bg-gray-50">{s.total}</td>
+                        <td className="px-3 py-2.5 text-center text-sm bg-purple-50 border-l-2 border-purple-200">
                           {(() => {
                             const prog = progressive.map[s.admNo];
                             const progPresent = prog?.present ?? s.present;
@@ -1099,14 +1119,14 @@ function MonthlyTab() {
                           })()}
                           <span className="text-gray-400 text-xs"> / {progressive.total_days || s.total}</span>
                         </td>
-                        <td className="px-3 py-2.5 text-center bg-blue-50">
+                        <td className="px-3 py-2.5 text-center text-sm bg-blue-50">
                           {(() => {
                             const prog = progressive.map[s.admNo];
                             const progPresent = prog?.present ?? s.present;
                             const progTotal   = progressive.total_days || s.total;
                             const progPct     = progTotal ? Math.round((progPresent / progTotal) * 100) : 0;
                             return (
-                              <span className={`font-bold px-2 py-0.5 rounded-full text-xs
+                              <span className={`font-bold px-2 py-0.5 rounded-full text-sm
                                 ${progPct < thresholdNum ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-700'}`}>
                                 {progPct}%
                               </span>

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../utils/AuthContext';
 import MissingFeesBanner from '../components/MissingFeesBanner';
 import MonthlyLedgerReportPrintModal from '../components/MonthlyLedgerReportPrintModal';
+import TransportListPrintModal from '../components/TransportListPrintModal';
 
 const SESSION_YEAR = (() => { const n = new Date(), y = n.getFullYear(); return n.getMonth() >= 3 ? y : y - 1; })();
 const CURRENT_YEAR = `${SESSION_YEAR}-${String(SESSION_YEAR + 1).slice(2)}`;
@@ -811,6 +812,9 @@ function TransportMonthlyTab({ academicYear }) {
   const [saved,    setSaved]    = useState(false);
   const [error,    setError]    = useState('');
   const [changes,  setChanges]  = useState({}); // admission_number → true/false (unset = keep as-is)
+  const [carriedForward, setCarriedForward] = useState(false);
+  const [carriedFromMonth, setCarriedFromMonth] = useState(null);
+  const [showPrint, setShowPrint] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true); setError(''); setChanges({});
@@ -818,7 +822,11 @@ function TransportMonthlyTab({ academicYear }) {
       window.api.transportGetMonthly(academicYear, month),
       window.api.transportRoutesGetAll(academicYear),
     ]);
-    if (stuRes.success)   setStudents(stuRes.data);
+    if (stuRes.success) {
+      setStudents(stuRes.data);
+      setCarriedForward(!!stuRes.carried_forward);
+      setCarriedFromMonth(stuRes.carried_from_month || null);
+    }
     if (routeRes.success) setRoutes(routeRes.data);
     setLoading(false);
   }, [academicYear, month]);
@@ -834,15 +842,32 @@ function TransportMonthlyTab({ academicYear }) {
   const isOn = (s) => changes.hasOwnProperty(s.admission_number) ? changes[s.admission_number] : !!s.assign_id;
 
   const save = async () => {
-    if (Object.keys(changes).length === 0) { setError('No changes to save.'); return; }
+    if (!carriedForward && Object.keys(changes).length === 0) { setError('No changes to save.'); return; }
     setSaving(true); setError('');
-    const assignments = Object.entries(changes).map(([admission_number, enabled]) => ({ admission_number, enabled }));
+    // First save for a carried-forward month writes the FULL effective
+    // state (carried + any edits) — there's nothing to diff against yet,
+    // since this month has never actually been saved before.
+    const assignments = carriedForward
+      ? students.map(s => ({ admission_number: s.admission_number, enabled: isOn(s) }))
+      : Object.entries(changes).map(([admission_number, enabled]) => ({ admission_number, enabled }));
     const res = await window.api.transportSaveMonthly(academicYear, month, assignments, user?.username);
     setSaving(false);
     if (!res.success) { setError(res.message); return; }
     setSaved(true); setTimeout(() => setSaved(false), 2000);
     setChanges({});
     load();
+  };
+
+  const [exportMsg, setExportMsg] = useState('');
+  const exportExcel = async () => {
+    setExportMsg('');
+    const res = await window.api.feeLedgerExportTransportListExcel(
+      visibleStudents.filter(s => isOn(s)), MONTHS_MAP[month], academicYear
+    );
+    if (res.cancelled) return;
+    if (!res.success) { setError(res.message); return; }
+    setExportMsg(`✅ Saved to ${res.filePath}`);
+    setTimeout(() => setExportMsg(''), 4000);
   };
 
   const villageOptions = [...new Set(students.map(s => s.village).filter(Boolean))].sort();
@@ -856,6 +881,7 @@ function TransportMonthlyTab({ academicYear }) {
   const changedCount  = Object.keys(changes).length;
   const assignedCount = visibleStudents.filter(s => isOn(s)).length;
   const noRouteCount  = visibleStudents.filter(s => !s.auto_route_id).length;
+  const canSave = carriedForward || changedCount > 0;
 
   return (
     <div>
@@ -895,7 +921,15 @@ function TransportMonthlyTab({ academicYear }) {
           <span className="text-xs bg-blue-50 text-blue-600 px-3 py-1.5 rounded-full">
             {assignedCount} students on transport
           </span>
-          <button onClick={save} disabled={saving || changedCount === 0}
+          <button onClick={() => setShowPrint(true)}
+            className="px-4 py-2 border border-gray-300 text-gray-600 hover:bg-gray-50 text-sm font-medium rounded-xl">
+            🖨️ Print
+          </button>
+          <button onClick={exportExcel}
+            className="px-4 py-2 border border-gray-300 text-gray-600 hover:bg-gray-50 text-sm font-medium rounded-xl">
+            📊 Excel
+          </button>
+          <button onClick={save} disabled={saving || !canSave}
             className="px-6 py-2 bg-blue-700 hover:bg-blue-800 disabled:bg-blue-300 text-white text-sm font-medium rounded-xl">
             {saving ? '⏳ Saving...' : '💾 Save Changes'}
           </button>
@@ -904,6 +938,13 @@ function TransportMonthlyTab({ academicYear }) {
 
       {error && <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-4 text-sm text-red-600">{error}</div>}
       {saved  && <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 mb-4 text-sm text-green-700">✅ Transport assignments saved for {MONTHS_MAP[month]}</div>}
+      {exportMsg && <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 mb-4 text-sm text-green-700">{exportMsg}</div>}
+      {!loading && carriedForward && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 mb-4 text-sm text-blue-700">
+          📋 {MONTHS_MAP[month]} hasn't been saved yet — showing {MONTHS_MAP[carriedFromMonth]}'s assignments carried over.
+          Add or remove anyone who's actually changing this month, then click <strong>Save Changes</strong> to confirm.
+        </div>
+      )}
       {!loading && noRouteCount > 0 && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4 text-sm text-amber-700">
           ⚠️ {noRouteCount} student{noRouteCount !== 1 ? 's live' : ' lives'} in a village with no active route set up —
@@ -1002,6 +1043,15 @@ function TransportMonthlyTab({ academicYear }) {
             </p>
           )}
         </div>
+      )}
+
+      {showPrint && (
+        <TransportListPrintModal
+          students={visibleStudents.filter(s => isOn(s))}
+          monthLabel={MONTHS_MAP[month]}
+          academicYear={academicYear}
+          onClose={() => setShowPrint(false)}
+        />
       )}
     </div>
   );

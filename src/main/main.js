@@ -6022,6 +6022,68 @@ ipcMain.handle('feeLedger:exportMonthlyReportExcel', async (_evt, { rows, totals
   }
 });
 
+// Exports the Transport List to .xlsx, grouped by route — mirrors the
+// print view's grouping, takes the exact (already filtered) student list
+// from the screen rather than re-querying.
+ipcMain.handle('feeLedger:exportTransportListExcel', async (_evt, { students, monthLabel, academicYear }) => {
+  try {
+    const safeMonth = String(monthLabel || 'Transport').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_');
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: 'Save Transport List',
+      defaultPath: `Transport_List_${safeMonth}.xlsx`,
+      filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }],
+    });
+    if (canceled || !filePath) return { success: false, cancelled: true };
+
+    const byRoute = {};
+    (students || []).forEach(s => {
+      const routeName = s.auto_route_name || 'No Route Assigned';
+      (byRoute[routeName] = byRoute[routeName] || []).push(s);
+    });
+    const routeNames = Object.keys(byRoute).sort();
+
+    const header = ['#', 'Student Name', 'Class', 'Village', 'Adm. No.', 'Monthly Fee'];
+    const aoa = [
+      ['BRILLIANT PUBLIC SCHOOL'],
+      ['Village-Sherpur-Nayser, Post-Jawal, District-Bulandshahr, UP-203131'],
+      [`TRANSPORT LIST — ${monthLabel || ''} ${academicYear || ''}`],
+      [],
+    ];
+    const merges = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 5 } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: 5 } },
+      { s: { r: 2, c: 0 }, e: { r: 2, c: 5 } },
+    ];
+
+    routeNames.forEach(routeName => {
+      const rowBefore = aoa.length;
+      aoa.push([`${routeName} — ${byRoute[routeName].length} student${byRoute[routeName].length !== 1 ? 's' : ''}`]);
+      merges.push({ s: { r: rowBefore, c: 0 }, e: { r: rowBefore, c: 5 } });
+      aoa.push(header);
+      byRoute[routeName]
+        .slice()
+        .sort((a, b) => a.student_name.localeCompare(b.student_name))
+        .forEach((s, i) => {
+          aoa.push([i + 1, s.student_name, `${s.current_class} ${s.section || ''}`.trim(), s.village || '', s.sl_number || '', s.auto_monthly_amount || '']);
+        });
+      aoa.push([]);
+    });
+    aoa.push(['', '', '', '', 'Total on transport:', students.length]);
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!merges'] = merges;
+    ws['!cols'] = [{ wch: 6 }, { wch: 22 }, { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 12 }];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Transport List');
+    XLSX.writeFile(wb, filePath);
+
+    return { success: true, filePath };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
 // Exports the Class Student List to .xlsx — mirrors the same columns as
 // the existing PDF export, takes the exact (already filtered) student
 // list from the screen rather than re-querying.
@@ -7621,6 +7683,18 @@ ipcMain.handle('counter:getDailyCollection', (_evt, { date, academic_year }) => 
 // Get transport assignments for a month
 ipcMain.handle('transport:getMonthly', (_evt, { academic_year, month }) => {
   try {
+    // Carry-forward: if this month has never been touched at all, preview it
+    // using last month's assignments instead of starting empty — staff only
+    // need to adjust the students who are actually changing, not re-select
+    // everyone. The instant this month gets its own real rows (even one),
+    // carry-forward stops — it's treated as its own data from then on.
+    const PREV_MONTH = { '05':'04','06':'05','07':'06','08':'07','09':'08','10':'09','11':'10','12':'11','01':'12','02':'01','03':'02' };
+    const hasAnyForMonth = db.prepare(
+      'SELECT COUNT(*) as c FROM student_transport_monthly WHERE academic_year = ? AND month = ?'
+    ).get(academic_year, month).c > 0;
+    const sourceMonth    = (!hasAnyForMonth && PREV_MONTH[month]) ? PREV_MONTH[month] : month;
+    const carriedForward = sourceMonth !== month;
+
     const rows = db.prepare(`
       SELECT l.ledger_id, l.sl_number, l.admission_number, l.student_name,
              l.current_class, l.section, e.village,
@@ -7640,8 +7714,8 @@ ipcMain.handle('transport:getMonthly', (_evt, { academic_year, month }) => {
             AND ar.route_name    = (UPPER(e.village) || '-SHERPUR ROUTE')
       WHERE  l.academic_year = ?
       ORDER  BY CAST(SUBSTR(l.sl_number,4) AS INTEGER)
-    `).all(month, academic_year);
-    return { success: true, data: rows };
+    `).all(sourceMonth, academic_year);
+    return { success: true, data: rows, carried_forward: carriedForward, carried_from_month: carriedForward ? sourceMonth : null };
   } catch(e) { return { success: false, message: e.message }; }
 });
 

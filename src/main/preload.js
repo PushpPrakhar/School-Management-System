@@ -170,6 +170,7 @@ contextBridge.exposeInMainWorld('api', {
   feeLedgerSearch:            (query, yr)             => invoke('feeLedger:search', { query, academic_year: yr }),
   feeLedgerGetMonthlyReport:  (yr, mon, y, cls)       => invoke('feeLedger:getMonthlyReport', { academic_year: yr, month: mon, year: y, class: cls }),
   feeLedgerExportMonthlyReportExcel: (rows, totals, monthLabel, cls) => invoke('feeLedger:exportMonthlyReportExcel', { rows, totals, monthLabel, cls }),
+  feeLedgerExportTransportListExcel: (students, monthLabel, academicYear) => invoke('feeLedger:exportTransportListExcel', { students, monthLabel, academicYear }),
   enrollmentExportClassListExcel: (students, selectedClass, academicYear) => invoke('enrollment:exportClassListExcel', { students, selectedClass, academicYear }),
 
   // Counter Payment (Phase 3)
