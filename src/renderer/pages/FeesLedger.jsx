@@ -3,6 +3,7 @@ import { useAuth } from '../utils/AuthContext';
 import MissingFeesBanner from '../components/MissingFeesBanner';
 import MonthlyLedgerReportPrintModal from '../components/MonthlyLedgerReportPrintModal';
 import TransportListPrintModal from '../components/TransportListPrintModal';
+import { gslSearchError } from '../utils/helpers';
 
 const SESSION_YEAR = (() => { const n = new Date(), y = n.getFullYear(); return n.getMonth() >= 3 ? y : y - 1; })();
 const CURRENT_YEAR = `${SESSION_YEAR}-${String(SESSION_YEAR + 1).slice(2)}`;
@@ -416,10 +417,11 @@ function MakeGroupsStep({ academicYear, refreshKey }) {
     const members = ungrouped
       .filter(l => selected.has(l.ledger_id))
       .sort((a,b) => (CLASS_RANK[b.current_class]??-1) - (CLASS_RANK[a.current_class]??-1));
-    // Pre-fill every eligible sibling (3rd+ by default) with the school's
-    // standard rate — each one independently editable from here.
+    // Pre-fill every sibling — 0% below the threshold, the school's
+    // standard rate at/above it — each one independently editable from
+    // here, not just the 3rd child onward.
     const initial = {};
-    members.forEach((m, i) => { if (i + 1 >= concessionFrom) initial[m.ledger_id] = String(defaultPct); });
+    members.forEach((m, i) => { initial[m.ledger_id] = String(i + 1 >= concessionFrom ? defaultPct : 0); });
     setConcessions(initial);
     setConfirm({ members, gsl: gslRes.next_gsl, gsl_num: gslRes.next_num });
   };
@@ -503,31 +505,26 @@ function MakeGroupsStep({ academicYear, refreshKey }) {
               {/* Members list sorted oldest first */}
               <div className="bg-gray-50 rounded-xl p-3 space-y-1.5">
                 <p className="text-xs font-semibold text-gray-500 mb-2">Members (oldest → youngest):</p>
-                {confirm.members.map((m, i) => {
-                  const isEligible = i + 1 >= concessionFrom;
-                  return (
-                    <div key={m.ledger_id} className="flex items-center gap-2 text-sm">
-                      <span className="text-gray-400 text-xs w-4">{i+1}.</span>
-                      <span className="font-bold text-blue-700 text-xs">{m.sl_number}</span>
-                      <span className="font-medium text-gray-800">{m.student_name}</span>
-                      <span className="text-xs text-gray-400 ml-auto">{m.current_class}</span>
-                      {isEligible && (
-                        <div className="flex items-center gap-1 shrink-0">
-                          <input type="number" min="0" max="100" value={concessions[m.ledger_id] ?? ''}
-                            onChange={e => setConcession(m.ledger_id, e.target.value)}
-                            title="Tuition concession for this sibling — set individually, doesn't affect other siblings"
-                            className="w-14 border border-purple-200 rounded-lg px-1.5 py-1 text-xs text-right focus:outline-none focus:ring-1 focus:ring-purple-400" />
-                          <span className="text-xs text-gray-400">%</span>
-                        </div>
-                      )}
+                {confirm.members.map((m, i) => (
+                  <div key={m.ledger_id} className="flex items-center gap-2 text-sm">
+                    <span className="text-gray-400 text-xs w-4">{i+1}.</span>
+                    <span className="font-bold text-blue-700 text-xs">{m.sl_number}</span>
+                    <span className="font-medium text-gray-800">{m.student_name}</span>
+                    <span className="text-xs text-gray-400 ml-auto">{m.current_class}</span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <input type="number" min="0" max="100" value={concessions[m.ledger_id] ?? ''}
+                        onChange={e => setConcession(m.ledger_id, e.target.value)}
+                        title="Tuition concession for this sibling — set individually, doesn't affect other siblings"
+                        className="w-14 border border-purple-200 rounded-lg px-1.5 py-1 text-xs text-right focus:outline-none focus:ring-1 focus:ring-purple-400" />
+                      <span className="text-xs text-gray-400">%</span>
                     </div>
-                  );
-                })}
-                {confirm.members.length >= concessionFrom && (
-                  <p className="text-xs text-gray-400 pt-1">
-                    Pre-filled with the school's standard {defaultPct}% — adjust any sibling's number individually if a different rate (including a full 100% waiver) was agreed for them specifically.
-                  </p>
-                )}
+                  </div>
+                ))}
+                <p className="text-xs text-gray-400 pt-1">
+                  Every sibling is individually editable — pre-filled with 0% below the school's standard threshold
+                  (currently child {concessionFrom}+) and {defaultPct}% at or past it, but any child's number can be
+                  changed, including a full 100% waiver for one specific sibling.
+                </p>
               </div>
 
               {error && <p className="text-red-500 text-xs bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
@@ -551,6 +548,7 @@ function MakeGroupsStep({ academicYear, refreshKey }) {
 
 // Step 3 — Manage Groups (existing groups, remove members, add members)
 function ManageGroupsStep({ academicYear }) {
+  const { user } = useAuth();
   const [ledger,    setLedger]    = useState([]);
   const [ungrouped, setUngrouped] = useState([]);
   const [search,    setSearch]    = useState('');
@@ -580,9 +578,13 @@ function ManageGroupsStep({ academicYear }) {
 
   const saveConcession = async (ledger_id, pct) => {
     setSaving(true);
-    await window.api.feeLedgerUpdateSiblingConcession(ledger_id, pct === '' ? null : pct);
+    const res = await window.api.feeLedgerUpdateSiblingConcession(ledger_id, pct === '' ? null : pct, user?.username);
     setSaving(false);
     setEditConcession(p => ({ ...p, [ledger_id]: undefined }));
+    if (res.success && res.adjusted > 0) {
+      setMsg(`✅ Concession updated — ${res.adjusted} already-charged Tuition entr${res.adjusted !== 1 ? 'ies' : 'y'} adjusted to match.`);
+      setTimeout(() => setMsg(''), 5000);
+    }
     load();
   };
 
@@ -663,7 +665,8 @@ function ManageGroupsStep({ academicYear }) {
               )}
             </div>
             {g.members.map((l, idx) => {
-              const isEligible = idx + 1 >= concessionFrom;
+              const positionDefaultPct = (idx + 1 >= concessionFrom) ? defaultPct : 0;
+              const hasOverride = l.custom_concession_pct !== null && l.custom_concession_pct !== undefined;
               return (
                 <div key={l.ledger_id} className="flex items-center gap-3 px-4 py-2.5 border-t border-purple-100">
                   <span className="text-xs font-bold text-blue-700 w-16 shrink-0">{l.sl_number}</span>
@@ -671,29 +674,23 @@ function ManageGroupsStep({ academicYear }) {
                     <p className="text-sm font-medium text-gray-800">{l.student_name}</p>
                     <p className="text-xs text-gray-400">{l.father_name || '—'} · {l.current_class} {l.section}</p>
                   </div>
-                  {isEligible && (
-                    editConcession[l.ledger_id] !== undefined ? (
-                      <span className="flex items-center gap-1 shrink-0">
-                        <input type="number" min="0" max="100" value={editConcession[l.ledger_id]}
-                          onChange={e => setEditConcession(p => ({ ...p, [l.ledger_id]: e.target.value }))}
-                          className="w-14 border border-purple-300 rounded px-1.5 py-1 text-xs text-right focus:outline-none" />
-                        <span className="text-xs text-gray-400">%</span>
-                        <button onClick={() => saveConcession(l.ledger_id, editConcession[l.ledger_id])}
-                          className="text-xs bg-purple-600 text-white px-1.5 py-1 rounded">✓</button>
-                      </span>
-                    ) : (
-                      <button
-                        onClick={() => setEditConcession(p => ({ ...p, [l.ledger_id]: l.custom_concession_pct !== null && l.custom_concession_pct !== undefined ? String(l.custom_concession_pct) : String(defaultPct) }))}
-                        title="Tuition concession for this sibling"
-                        className={`text-xs px-2.5 py-1 rounded-lg font-medium shrink-0 border ${
-                          l.custom_concession_pct !== null && l.custom_concession_pct !== undefined
-                            ? 'border-purple-300 bg-purple-50 text-purple-700'
-                            : 'border-gray-200 text-gray-400 hover:bg-gray-50'}`}>
-                        {l.custom_concession_pct !== null && l.custom_concession_pct !== undefined
-                          ? `${l.custom_concession_pct}% (custom)`
-                          : `${defaultPct}% (default)`}
-                      </button>
-                    )
+                  {editConcession[l.ledger_id] !== undefined ? (
+                    <span className="flex items-center gap-1 shrink-0">
+                      <input type="number" min="0" max="100" value={editConcession[l.ledger_id]}
+                        onChange={e => setEditConcession(p => ({ ...p, [l.ledger_id]: e.target.value }))}
+                        className="w-14 border border-purple-300 rounded px-1.5 py-1 text-xs text-right focus:outline-none" />
+                      <span className="text-xs text-gray-400">%</span>
+                      <button onClick={() => saveConcession(l.ledger_id, editConcession[l.ledger_id])}
+                        className="text-xs bg-purple-600 text-white px-1.5 py-1 rounded">✓</button>
+                    </span>
+                  ) : (
+                    <button
+                      onClick={() => setEditConcession(p => ({ ...p, [l.ledger_id]: hasOverride ? String(l.custom_concession_pct) : String(positionDefaultPct) }))}
+                      title="Tuition concession for this sibling — editable for any child, not just 3rd onward"
+                      className={`text-xs px-2.5 py-1 rounded-lg font-medium shrink-0 border ${
+                        hasOverride ? 'border-purple-300 bg-purple-50 text-purple-700' : 'border-gray-200 text-gray-400 hover:bg-gray-50'}`}>
+                      {hasOverride ? `${l.custom_concession_pct}% (custom)` : `${positionDefaultPct}% (default)`}
+                    </button>
                   )}
                   <button onClick={() => setRemoving({ ...l, gsl_number: gsl })}
                     className="text-xs border border-red-200 text-red-500 hover:bg-red-50 px-3 py-1.5 rounded-lg font-medium">
@@ -711,6 +708,54 @@ function ManageGroupsStep({ academicYear }) {
           </div>
         )}
       </div>
+
+      {/* Single (non-grouped) students — same individual concession editor
+          as group members get, just without a sibling position involved. */}
+      {(() => {
+        const singleStudents = ledger.filter(l => !l.gsl_number).filter(l => {
+          if (!search.trim()) return true;
+          const q = search.toLowerCase();
+          return l.student_name.toLowerCase().includes(q) || (l.father_name || '').toLowerCase().includes(q) || (l.sl_number || '').toLowerCase().includes(q);
+        });
+        if (singleStudents.length === 0) return null;
+        return (
+          <div className="mt-6">
+            <p className="text-sm text-gray-500 mb-3">{singleStudents.length} single student{singleStudents.length !== 1 ? 's' : ''} (no siblings)</p>
+            <div className="bg-white border-2 border-gray-200 rounded-2xl overflow-hidden">
+              {singleStudents.map(l => {
+                const hasOverride = l.custom_concession_pct !== null && l.custom_concession_pct !== undefined;
+                return (
+                  <div key={l.ledger_id} className="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 last:border-b-0">
+                    <span className="text-xs font-bold text-blue-700 w-16 shrink-0">{l.sl_number}</span>
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-gray-800">{l.student_name}</p>
+                      <p className="text-xs text-gray-400">{l.father_name || '—'} · {l.current_class} {l.section}</p>
+                    </div>
+                    {editConcession[l.ledger_id] !== undefined ? (
+                      <span className="flex items-center gap-1 shrink-0">
+                        <input type="number" min="0" max="100" value={editConcession[l.ledger_id]}
+                          onChange={e => setEditConcession(p => ({ ...p, [l.ledger_id]: e.target.value }))}
+                          className="w-14 border border-purple-300 rounded px-1.5 py-1 text-xs text-right focus:outline-none" />
+                        <span className="text-xs text-gray-400">%</span>
+                        <button onClick={() => saveConcession(l.ledger_id, editConcession[l.ledger_id])}
+                          className="text-xs bg-purple-600 text-white px-1.5 py-1 rounded">✓</button>
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => setEditConcession(p => ({ ...p, [l.ledger_id]: hasOverride ? String(l.custom_concession_pct) : '0' }))}
+                        title="Individually negotiated Tuition concession for this student — not tied to siblings"
+                        className={`text-xs px-2.5 py-1 rounded-lg font-medium shrink-0 border ${
+                          hasOverride ? 'border-purple-300 bg-purple-50 text-purple-700' : 'border-gray-200 text-gray-400 hover:bg-gray-50'}`}>
+                        {hasOverride ? `${l.custom_concession_pct}% (custom)` : '0% (default)'}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Remove confirmation */}
       {removing && (
@@ -853,7 +898,8 @@ function TransportMonthlyTab({ academicYear }) {
     const res = await window.api.transportSaveMonthly(academicYear, month, assignments, user?.username);
     setSaving(false);
     if (!res.success) { setError(res.message); return; }
-    setSaved(true); setTimeout(() => setSaved(false), 2000);
+    setSaved(res.reversed > 0 ? `reversed:${res.reversed}` : true);
+    setTimeout(() => setSaved(false), res.reversed > 0 ? 5000 : 2000);
     setChanges({});
     load();
   };
@@ -880,6 +926,9 @@ function TransportMonthlyTab({ academicYear }) {
 
   const changedCount  = Object.keys(changes).length;
   const assignedCount = visibleStudents.filter(s => isOn(s)).length;
+  const totalMonthlyAmount = visibleStudents
+    .filter(s => isOn(s))
+    .reduce((sum, s) => sum + (s.auto_monthly_amount || 0), 0);
   const noRouteCount  = visibleStudents.filter(s => !s.auto_route_id).length;
   const canSave = carriedForward || changedCount > 0;
 
@@ -921,6 +970,9 @@ function TransportMonthlyTab({ academicYear }) {
           <span className="text-xs bg-blue-50 text-blue-600 px-3 py-1.5 rounded-full">
             {assignedCount} students on transport
           </span>
+          <span className="text-xs bg-green-50 text-green-700 px-3 py-1.5 rounded-full font-semibold">
+            ₹{totalMonthlyAmount.toLocaleString('en-IN')}/mo total
+          </span>
           <button onClick={() => setShowPrint(true)}
             className="px-4 py-2 border border-gray-300 text-gray-600 hover:bg-gray-50 text-sm font-medium rounded-xl">
             🖨️ Print
@@ -937,7 +989,13 @@ function TransportMonthlyTab({ academicYear }) {
       </div>
 
       {error && <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-4 text-sm text-red-600">{error}</div>}
-      {saved  && <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 mb-4 text-sm text-green-700">✅ Transport assignments saved for {MONTHS_MAP[month]}</div>}
+      {saved && (
+        <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 mb-4 text-sm text-green-700">
+          {typeof saved === 'string' && saved.startsWith('reversed:')
+            ? `✅ Transport assignments saved for ${MONTHS_MAP[month]} — ${saved.split(':')[1]} removed student${saved.split(':')[1] !== '1' ? 's' : ''} had their Transport charge reversed from the ledger too.`
+            : `✅ Transport assignments saved for ${MONTHS_MAP[month]}`}
+        </div>
+      )}
       {exportMsg && <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 mb-4 text-sm text-green-700">{exportMsg}</div>}
       {!loading && carriedForward && (
         <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 mb-4 text-sm text-blue-700">
@@ -1063,6 +1121,23 @@ const REPORT_MONTHS = [
   ['10','October'],['11','November'],['12','December'],['01','January'],['02','February'],['03','March'],
 ];
 
+// Mirrors the backend's _feeLabel — every fee type the breakdown might show.
+const FEE_TYPE_LABELS = {
+  TUITION: 'Tuition', COMPUTER: 'Computer', ADMISSION: 'Admission',
+  ACTIVITY: 'Activity', LIBRARY: 'Library', LAB: 'Lab', TRANSPORT: 'Transport',
+  WELLNESS: 'Campus Wellness', BOOKS: 'Books',
+  EXAM_HY: 'Exam (Half Yearly)', EXAM_ANNUAL: 'Exam (Annual)', OTHER: 'Other',
+};
+// A fixed, deliberate order so Tuition/Transport (the two originally
+// asked for) always appear first, with everything else following —
+// rather than whatever order the database happens to return.
+const FEE_TYPE_ORDER = ['TUITION', 'TRANSPORT', 'COMPUTER', 'LAB', 'ACTIVITY', 'LIBRARY', 'WELLNESS', 'BOOKS', 'EXAM_HY', 'EXAM_ANNUAL', 'ADMISSION', 'OTHER'];
+const FEE_TYPE_COLORS = {
+  TUITION: 'bg-blue-50 text-blue-700', TRANSPORT: 'bg-amber-50 text-amber-700',
+  COMPUTER: 'bg-purple-50 text-purple-700', LAB: 'bg-green-50 text-green-700',
+};
+const FEE_TYPE_DEFAULT_COLOR = 'bg-gray-100 text-gray-600';
+
 function MonthlyFeeReportView({ academicYear }) {
   const nowMonth = String(new Date().getMonth() + 1).padStart(2, '0');
   const nowYear  = String(new Date().getFullYear());
@@ -1070,6 +1145,7 @@ function MonthlyFeeReportView({ academicYear }) {
   const [year,    setYear]    = useState(nowYear);
   const [cls,     setCls]     = useState('');
   const [rows,    setRows]    = useState([]);
+  const [feeTypeTotals, setFeeTypeTotals] = useState({});
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState('');
   const [loaded,  setLoaded]  = useState(false);
@@ -1081,8 +1157,9 @@ function MonthlyFeeReportView({ academicYear }) {
     setLoading(true); setError('');
     const res = await window.api.feeLedgerGetMonthlyReport(academicYear, month, year, cls || null);
     setLoading(false); setLoaded(true);
-    if (!res.success) { setError(res.message); setRows([]); return; }
+    if (!res.success) { setError(res.message); setRows([]); setFeeTypeTotals({}); return; }
     setRows(res.data);
+    setFeeTypeTotals(res.fee_type_totals || {});
   }, [academicYear, month, year, cls]);
 
   useEffect(() => { loadReport(); }, [loadReport]);
@@ -1099,7 +1176,7 @@ function MonthlyFeeReportView({ academicYear }) {
   const exportExcel = async () => {
     setExportMsg('');
     setExporting(true);
-    const res = await window.api.feeLedgerExportMonthlyReportExcel(rows, totals, monthLabel, cls || null);
+    const res = await window.api.feeLedgerExportMonthlyReportExcel(rows, totals, monthLabel, cls || null, academicYear, month, year);
     setExporting(false);
     if (res.cancelled) return;
     if (!res.success) { setError(res.message); return; }
@@ -1133,8 +1210,13 @@ function MonthlyFeeReportView({ academicYear }) {
             {CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
+        {!loading && rows.length > 0 && (
+          <span className="text-xs bg-blue-50 text-blue-700 px-3 py-1.5 rounded-full font-semibold ml-auto">
+            Total Fee Due: ₹{totals.fee_due.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+          </span>
+        )}
         <button onClick={exportExcel} disabled={rows.length === 0 || exporting}
-          className="ml-auto px-5 py-2 border border-green-600 text-green-700 hover:bg-green-50 rounded-xl text-sm font-medium disabled:opacity-40 disabled:hover:bg-transparent">
+          className="px-5 py-2 border border-green-600 text-green-700 hover:bg-green-50 rounded-xl text-sm font-medium disabled:opacity-40 disabled:hover:bg-transparent">
           {exporting ? '⏳ Saving…' : '📊 Download Excel'}
         </button>
         <button onClick={() => setShowPrint(true)} disabled={rows.length === 0}
@@ -1142,6 +1224,30 @@ function MonthlyFeeReportView({ academicYear }) {
           🖨️ Print
         </button>
       </div>
+
+      {!loading && rows.length > 0 && Object.keys(feeTypeTotals).length > 0 && (() => {
+        const breakdownSum = Object.values(feeTypeTotals).reduce((a, b) => a + b, 0);
+        const reconciles = Math.abs(breakdownSum - totals.fee_due) < 0.5;
+        return (
+          <div className="bg-white border border-gray-200 rounded-2xl p-4 mb-4 print:hidden">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Fee Due Breakdown by Type — {monthLabel}</p>
+              {reconciles ? (
+                <span className="text-xs text-green-600">✓ Adds up to Total Fee Due exactly</span>
+              ) : (
+                <span className="text-xs text-red-500">⚠️ Breakdown (₹{breakdownSum.toLocaleString('en-IN')}) doesn't match Total Fee Due — please report this</span>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {FEE_TYPE_ORDER.filter(t => feeTypeTotals[t] !== undefined).map(t => (
+                <span key={t} className={`text-xs px-3 py-1.5 rounded-full font-semibold ${FEE_TYPE_COLORS[t] || FEE_TYPE_DEFAULT_COLOR}`}>
+                  {FEE_TYPE_LABELS[t] || t} Due: ₹{feeTypeTotals[t].toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                </span>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
 
       {exportMsg && <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 mb-4 text-sm text-green-700 print:hidden">{exportMsg}</div>}
 
@@ -1208,8 +1314,10 @@ function MonthlyFeeReportView({ academicYear }) {
 
 // ── Tab 3: View Ledger ───────────────────────────────────────
 function ViewLedgerTab({ academicYear }) {
+  const { user } = useAuth();
   const [subView,     setSubView]     = useState('search'); // 'search' | 'monthly'
   const [query,       setQuery]       = useState('');
+  const [statusFilter, setStatusFilter] = useState('active'); // 'active' | 'inactive'
   const [results,     setResults]     = useState([]);
   const [selected,    setSelected]    = useState(null);
   const [txnData,     setTxnData]     = useState(null);
@@ -1218,15 +1326,40 @@ function ViewLedgerTab({ academicYear }) {
   const [editPage,    setEditPage]    = useState({});
   const [editBal,     setEditBal]     = useState({});
   const [editTuitionMonth, setEditTuitionMonth] = useState({});
+  const [togglingActive, setTogglingActive] = useState(false);
+
+  const refreshResults = useCallback(async () => {
+    if (gslSearchError(query)) { setResults([]); return; }
+    const wantActive = statusFilter === 'active' ? 1 : 0;
+    if (!query.trim()) {
+      // Nothing typed — browse the current tab (Active/Inactive) directly.
+      const res = await window.api.feeLedgerListByStatus(academicYear, wantActive);
+      if (res.success) setResults(res.data);
+      return;
+    }
+    const res = await window.api.feeLedgerSearch(query, academicYear);
+    if (res.success) {
+      // Group entries don't have a single active/inactive status of their
+      // own (mixed-status siblings are possible) — always show those;
+      // individual rows are filtered to the selected tab.
+      setResults(res.data.filter(r => r.is_group_entry || (r.is_active ?? 1) === wantActive));
+    }
+  }, [query, academicYear, statusFilter]);
 
   useEffect(() => {
-    const t = setTimeout(async () => {
-      if (!query.trim()) { setResults([]); return; }
-      const res = await window.api.feeLedgerSearch(query, academicYear);
-      if (res.success) setResults(res.data);
-    }, 300);
+    const t = setTimeout(refreshResults, 300);
     return () => clearTimeout(t);
-  }, [query, academicYear]);
+  }, [refreshResults]);
+
+  const toggleActive = async (row) => {
+    setTogglingActive(true);
+    const newActive = row.is_active ? 0 : 1;
+    const res = await window.api.feeLedgerSetActive(row.ledger_id, newActive);
+    setTogglingActive(false);
+    if (!res.success) return;
+    setSelected(prev => (prev && prev.ledger_id === row.ledger_id) ? { ...prev, is_active: newActive } : prev);
+    refreshResults();
+  };
 
   const openLedger = async (row) => {
     setSelected(row); setTxnData(null); setGroupData(null); setLoadingTxn(true);
@@ -1280,6 +1413,28 @@ function ViewLedgerTab({ academicYear }) {
     }
   };
 
+  const [confirmDeleteTxn, setConfirmDeleteTxn] = useState(null); // { stage_id, description, ledger_id }
+  const [deletingTxn, setDeletingTxn] = useState(false);
+
+  const deletePendingTxn = async () => {
+    if (!confirmDeleteTxn) return;
+    setDeletingTxn(true);
+    const res = await window.api.feeLedgerDeletePendingTransaction(confirmDeleteTxn.stage_id, user?.username);
+    setDeletingTxn(false);
+    setConfirmDeleteTxn(null);
+    if (!res.success) { alert(res.message); return; }
+    if (txnData) {
+      const r = await window.api.feeLedgerGetTransactions(confirmDeleteTxn.ledger_id, academicYear);
+      if (r.success) setTxnData(r);
+    }
+    if (groupData) {
+      const memberTxns = await Promise.all(
+        groupData.group.members.map(m => window.api.feeLedgerGetTransactions(m.ledger_id, academicYear))
+      );
+      setGroupData(prev => ({ ...prev, memberTxns: memberTxns.map((r,i) => ({ ...r, member: groupData.group.members[i] })) }));
+    }
+  };
+
   const fmt     = (n) => Number(n || 0).toFixed(2);
   const fmtDate = (d) => d ? String(d).slice(0, 10).split('-').reverse().join('-') : '—';
 
@@ -1305,15 +1460,27 @@ function ViewLedgerTab({ academicYear }) {
     <div className="flex gap-4">
       {/* Search sidebar */}
       <div className="w-72 shrink-0">
+        <div className="flex gap-1 bg-gray-100 p-1 rounded-xl mb-3 w-fit">
+          <button onClick={() => setStatusFilter('active')}
+            className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors
+              ${statusFilter === 'active' ? 'bg-white text-green-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
+            Active
+          </button>
+          <button onClick={() => setStatusFilter('inactive')}
+            className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors
+              ${statusFilter === 'inactive' ? 'bg-white text-red-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
+            Inactive
+          </button>
+        </div>
         <input value={query} onChange={e => setQuery(e.target.value)}
           placeholder="Search SL, GSL or student name..."
           className="w-full border border-gray-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 mb-3" />
         <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-          {results.length === 0 && query && (
-            <p className="text-center text-gray-400 text-sm py-6">No results</p>
+          {gslSearchError(query) && (
+            <p className="text-center text-amber-600 text-sm py-6 px-4">{gslSearchError(query)}</p>
           )}
-          {results.length === 0 && !query && (
-            <p className="text-center text-gray-400 text-sm py-6">Type to search ledger</p>
+          {!gslSearchError(query) && results.length === 0 && (
+            <p className="text-center text-gray-400 text-sm py-6">No {statusFilter} students{query.trim() ? ' found' : ''}</p>
           )}
           {results.map((r, i) => (
             <button key={r.is_group_entry ? r.gsl_number : r.ledger_id}
@@ -1335,6 +1502,7 @@ function ViewLedgerTab({ academicYear }) {
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-bold text-blue-700">{r.sl_number}</p>
                     {r.gsl_number && <span className="text-xs text-purple-500">{r.gsl_number}</span>}
+                    {!r.is_active && <span className="text-xs bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full">Inactive</span>}
                   </div>
                   <p className="text-xs font-semibold text-gray-800">{r.student_name}</p>
                   <p className="text-xs text-gray-400">{r.current_class} · {r.father_name || '—'}</p>
@@ -1363,8 +1531,16 @@ function ViewLedgerTab({ academicYear }) {
                 <p className="text-blue-200 text-xs">Student Fees Ledger — {academicYear}</p>
               </div>
               <div className="text-right">
-                <p className="text-white font-bold text-xl">{selected.sl_number}</p>
+                <div className="flex items-center gap-2 justify-end">
+                  <p className="text-white font-bold text-xl">{selected.sl_number}</p>
+                  {!selected.is_active && <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full font-semibold">Inactive</span>}
+                </div>
                 {selected.gsl_number && <p className="text-blue-200 text-sm">{selected.gsl_number}</p>}
+                <button onClick={() => toggleActive(selected)} disabled={togglingActive}
+                  className={`mt-1.5 text-xs px-2.5 py-1 rounded-lg font-medium transition-colors disabled:opacity-50
+                    ${selected.is_active ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-green-600 hover:bg-green-700 text-white'}`}>
+                  {selected.is_active ? 'Mark Inactive' : 'Mark Active'}
+                </button>
               </div>
             </div>
             <div className="px-6 py-3 border-b border-gray-200 bg-gray-50">
@@ -1393,7 +1569,8 @@ function ViewLedgerTab({ academicYear }) {
             </div>
             <LedgerTransactionTable txnData={txnData} loadingTxn={loadingTxn} academicYear={academicYear}
               fmt={fmt} fmtDate={fmtDate} editBal={editBal} setEditBal={setEditBal} saveBalance={saveBalance}
-              editTuitionMonth={editTuitionMonth} setEditTuitionMonth={setEditTuitionMonth} saveTuitionMonth={saveTuitionMonth} />
+              editTuitionMonth={editTuitionMonth} setEditTuitionMonth={setEditTuitionMonth} saveTuitionMonth={saveTuitionMonth}
+              setConfirmDeleteTxn={setConfirmDeleteTxn} />
           </div>
         )}
 
@@ -1505,14 +1682,37 @@ function ViewLedgerTab({ academicYear }) {
                               ${t.transaction_type==='RECEIVABLE'?'bg-red-100 text-red-600':'bg-green-100 text-green-700'}`}>
                               {t.transaction_type==='RECEIVABLE'?'Receivable':'Received'}
                             </span>
-                            {t.source==='STAGED' && <span className="ml-1 text-xs text-blue-500 italic">pending</span>}
+                            {t.source==='STAGED' && (
+                              <>
+                                <span className="ml-1 text-xs text-blue-500 italic">pending</span>
+                                <button onClick={() => setConfirmDeleteTxn({ stage_id: t.stage_id, description: t.description, ledger_id: t.ledger_id })}
+                                  title="Remove this pending entry"
+                                  className="ml-1.5 text-xs text-red-400 hover:text-red-600">✕</button>
+                              </>
+                            )}
                           </td>
                           <td className="px-3 py-2 text-gray-700">{t.description}</td>
                           <td className="px-3 py-2 text-center text-gray-500">{t.receipt_number || '—'}</td>
-                          <td className="px-3 py-2 text-right text-red-600 font-medium">{t.debit > 0 ? '₹'+fmt(t.debit) : '—'}</td>
+                          <td className="px-3 py-2 text-right text-red-600 font-medium">
+                            {t.debit > 0 ? (
+                              <>
+                                ₹{fmt(t.debit - (t.concession || 0))}
+                                {t.concession > 0 && (
+                                  <span className="block text-gray-400 text-xs font-normal">
+                                    <span className="line-through">₹{fmt(t.debit)}</span>
+                                    {t.concession_reason ? ` — ${t.concession_reason}` : ' (concession applied)'}
+                                  </span>
+                                )}
+                              </>
+                            ) : '—'}
+                          </td>
                           <td className="px-3 py-2 text-right text-green-600 font-medium">
                             {t.credit > 0 ? '₹'+fmt(t.credit) : '—'}
-                            {t.concession > 0 && <span className="block text-gray-400 text-xs">Conc: ₹{fmt(t.concession)}</span>}
+                            {t.debit === 0 && t.concession > 0 && (
+                              <span className="block text-gray-400 text-xs font-normal">
+                                Concession: ₹{fmt(t.concession)}{t.concession_reason ? ` — ${t.concession_reason}` : ''}
+                              </span>
+                            )}
                           </td>
                           <td className={`px-4 py-2 text-right font-bold ${t.running_balance>0?'text-red-600':'text-green-600'}`}>
                             ₹{fmt(t.running_balance)}
@@ -1539,13 +1739,31 @@ function ViewLedgerTab({ academicYear }) {
       </div>
     </div>
       )}
+
+      {confirmDeleteTxn && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center">
+            <p className="text-3xl mb-2">⚠️</p>
+            <p className="font-bold text-gray-800 mb-1">Remove this pending entry?</p>
+            <p className="text-sm text-gray-500 mb-1">{confirmDeleteTxn.description}</p>
+            <p className="text-xs text-gray-400 mb-5">Only pending (not yet posted) entries can be removed this way — this can't be undone.</p>
+            <div className="flex gap-3">
+              <button onClick={() => setConfirmDeleteTxn(null)} className="flex-1 px-4 py-2.5 border border-gray-300 rounded-xl text-sm font-medium">Cancel</button>
+              <button onClick={deletePendingTxn} disabled={deletingTxn}
+                className="flex-1 px-4 py-2.5 bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white rounded-xl text-sm font-medium">
+                {deletingTxn ? 'Removing…' : 'Remove'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 // Shared transaction table component
 function LedgerTransactionTable({ txnData, loadingTxn, academicYear, fmt, fmtDate, editBal, setEditBal, saveBalance,
-  editTuitionMonth, setEditTuitionMonth, saveTuitionMonth }) {
+  editTuitionMonth, setEditTuitionMonth, saveTuitionMonth, setConfirmDeleteTxn }) {
   if (loadingTxn) return <div className="text-center py-8 text-gray-400">Loading transactions...</div>;
   if (!txnData) return null;
 
@@ -1627,14 +1845,37 @@ function LedgerTransactionTable({ txnData, loadingTxn, academicYear, fmt, fmtDat
                   ${t.transaction_type==='RECEIVABLE'?'bg-red-100 text-red-600':'bg-green-100 text-green-700'}`}>
                   {t.transaction_type==='RECEIVABLE'?'Receivable':'Received'}
                 </span>
-                {t.source==='STAGED' && <span className="ml-1 text-xs text-blue-500 italic">pending</span>}
+                {t.source==='STAGED' && (
+                  <>
+                    <span className="ml-1 text-xs text-blue-500 italic">pending</span>
+                    <button onClick={() => setConfirmDeleteTxn({ stage_id: t.stage_id, description: t.description, ledger_id: t.ledger_id })}
+                      title="Remove this pending entry"
+                      className="ml-1.5 text-xs text-red-400 hover:text-red-600">✕</button>
+                  </>
+                )}
               </td>
               <td className="px-3 py-2 text-gray-700">{t.description}</td>
               <td className="px-3 py-2 text-center text-gray-500">{t.receipt_number || '—'}</td>
-              <td className="px-3 py-2 text-right text-red-600 font-medium">{t.debit > 0 ? '₹'+fmt(t.debit) : '—'}</td>
+              <td className="px-3 py-2 text-right text-red-600 font-medium">
+                {t.debit > 0 ? (
+                  <>
+                    ₹{fmt(t.debit - (t.concession || 0))}
+                    {t.concession > 0 && (
+                      <span className="block text-gray-400 text-xs font-normal">
+                        <span className="line-through">₹{fmt(t.debit)}</span>
+                        {t.concession_reason ? ` — ${t.concession_reason}` : ' (concession applied)'}
+                      </span>
+                    )}
+                  </>
+                ) : '—'}
+              </td>
               <td className="px-3 py-2 text-right text-green-600 font-medium">
                 {t.credit > 0 ? '₹'+fmt(t.credit) : '—'}
-                {t.concession > 0 && <span className="block text-gray-400 text-xs">Conc: ₹{fmt(t.concession)}</span>}
+                {t.debit === 0 && t.concession > 0 && (
+                  <span className="block text-gray-400 text-xs font-normal">
+                    Concession: ₹{fmt(t.concession)}{t.concession_reason ? ` — ${t.concession_reason}` : ''}
+                  </span>
+                )}
               </td>
               <td className={`px-4 py-2 text-right font-bold ${t.running_balance>0?'text-red-600':'text-green-600'}`}>
                 ₹{fmt(t.running_balance)}

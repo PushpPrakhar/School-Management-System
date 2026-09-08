@@ -60,13 +60,10 @@ function StatCard({ label, value, sub, color, icon }) {
   };
   return (
     <div className={`border rounded-xl p-5 ${colors[color]}`}>
-      <div className="flex items-start justify-between">
-        <div>
-          <p className="text-xs font-medium opacity-70 uppercase tracking-wide">{label}</p>
-          <p className="text-3xl font-bold mt-1">{value ?? '—'}</p>
-          {sub && <p className="text-xs opacity-60 mt-1">{sub}</p>}
-        </div>
-        <span className="text-2xl opacity-60">{icon}</span>
+      <div>
+        <p className="text-xs font-medium opacity-70 uppercase tracking-wide">{label}</p>
+        <p className="text-3xl font-bold mt-1">{value ?? '—'}</p>
+        {sub && <p className="text-xs opacity-60 mt-1">{sub}</p>}
       </div>
     </div>
   );
@@ -75,15 +72,12 @@ function StatCard({ label, value, sub, color, icon }) {
 function PlaceholderCard({ label, icon }) {
   return (
     <div className="bg-gray-50 border border-gray-200 border-dashed rounded-xl p-5">
-      <div className="flex items-start justify-between">
-        <div>
-          <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">{label}</p>
-          <p className="text-3xl font-bold text-gray-200 mt-1">—</p>
-          <span className="text-xs bg-gray-200 text-gray-400 px-2 py-0.5 rounded-full mt-2 inline-block">
-            Fees module pending
-          </span>
-        </div>
-        <span className="text-2xl opacity-20">{icon}</span>
+      <div>
+        <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">{label}</p>
+        <p className="text-3xl font-bold text-gray-200 mt-1">—</p>
+        <span className="text-xs bg-gray-200 text-gray-400 px-2 py-0.5 rounded-full mt-2 inline-block">
+          Fees module pending
+        </span>
       </div>
     </div>
   );
@@ -111,7 +105,6 @@ function QuickAction({ label, icon, onClick }) {
     <button onClick={onClick}
       className="flex flex-col items-center gap-2 bg-white border border-gray-200
                  hover:border-blue-400 hover:bg-blue-50 rounded-xl p-4 transition-colors text-center">
-      <span className="text-2xl">{icon}</span>
       <span className="text-xs font-medium text-gray-600">{label}</span>
     </button>
   );
@@ -446,7 +439,6 @@ function TeacherDashboard({ onNavigate }) {
   if (myClasses.length === 0) {
     return (
       <div className="text-center py-16 text-gray-400">
-        <div className="text-5xl mb-4">🏫</div>
         <p className="font-medium text-gray-600">No class has been assigned to you yet.</p>
         <p className="text-sm mt-1">Ask your Principal or Manager to assign a class in Teacher Management.</p>
       </div>

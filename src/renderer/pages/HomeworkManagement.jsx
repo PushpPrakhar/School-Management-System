@@ -219,6 +219,8 @@ function OversightTab() {
   const [cls,      setCls]      = useState('');
   const [rows,     setRows]     = useState([]);
   const [loading,  setLoading]  = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportMsg, setExportMsg] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -232,6 +234,19 @@ function OversightTab() {
   }, [fromDate, toDate, cls]);
 
   useEffect(() => { load(); }, [load]);
+
+  const exportExcel = async () => {
+    setExportMsg('');
+    setExporting(true);
+    const res = await window.api.homeworkExportReviewExcel(
+      rows, fromDate ? toDisplayDate(fromDate) : '', toDate ? toDisplayDate(toDate) : '', cls || null
+    );
+    setExporting(false);
+    if (res.cancelled) return;
+    if (!res.success) { setExportMsg('Export failed: ' + res.message); return; }
+    setExportMsg(`✓ Saved to ${res.filePath}`);
+    setTimeout(() => setExportMsg(''), 5000);
+  };
 
   return (
     <div>
@@ -254,7 +269,13 @@ function OversightTab() {
             {CLASSES.map(c => <option key={c}>{c}</option>)}
           </select>
         </div>
+        <button onClick={exportExcel} disabled={rows.length === 0 || exporting}
+          className="ml-auto px-5 py-2 border border-green-600 text-green-700 hover:bg-green-50 disabled:opacity-40 disabled:hover:bg-transparent rounded-xl text-sm font-medium">
+          {exporting ? '⏳ Saving…' : '📊 Download Excel'}
+        </button>
       </div>
+
+      {exportMsg && <p className="text-sm text-green-700 mb-4">{exportMsg}</p>}
 
       <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden">
         {loading ? (

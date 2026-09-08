@@ -39,6 +39,20 @@ export const MONTHS = [
   'October','November','December','January','February','March',
 ];
 
+// ── GSL number validation ─────────────────────────────────────
+// GSL numbers are a fixed 8-character format: "GSL-" + 4 digits
+// (e.g. "GSL-0012"). The moment a search query looks like a GSL lookup
+// (starts with "gsl", case-insensitive) it's held to that exact length —
+// single source of truth so every search box enforces it identically.
+export const GSL_LENGTH = 8;
+
+export function gslSearchError(query) {
+  const q = (query || '').trim();
+  if (!q.toLowerCase().startsWith('gsl')) return '';
+  if (q.length !== GSL_LENGTH) return `GSL number should be ${GSL_LENGTH} characters (e.g. GSL-0012).`;
+  return '';
+}
+
 // ── Amount to words (Indian style) ───────────────────────────
 const ones = ['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine',
               'Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen',

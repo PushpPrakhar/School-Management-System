@@ -115,7 +115,7 @@ const BLANK_GENERAL = {
   guardian_name: '', contact_email: '',
   mobile_number: '', alternate_mobile: '',
   house_no: '', village: '', post: '',
-  district: 'Bulandshahr', state_name: 'Uttar Pradesh', pin_code: '203131',
+  district: 'BULANDSHAHR', state_name: 'Uttar Pradesh', pin_code: '203131',
   caste: '', religion: '',
   category: '', minority_group: 'Not Applicable',
   bpl_beneficiary: 'No', ews_disadvantaged: 'No',

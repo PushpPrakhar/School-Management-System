@@ -133,6 +133,10 @@ export default function StudentList() {
   const [searched, setSearched]               = useState(false);
   const [query, setQuery]                     = useState('');
   const [selectedStudent, setSelectedStudent] = useState(null);
+  const [studentView, setStudentView]         = useState('active'); // 'active' | 'all'
+  const [exportingAll, setExportingAll]       = useState(false);
+  const [allStudentsMsg, setAllStudentsMsg]   = useState('');
+  const [allStudentsError, setAllStudentsError] = useState('');
   const [exportMsg, setExportMsg]             = useState('');
 
   const allowedSections = isTeacher && selectedClass && selectedClass !== 'ALL'
@@ -243,6 +247,16 @@ export default function StudentList() {
     setTimeout(() => setExportMsg(''), 5000);
   };
 
+  const exportAllStudents = async () => {
+    setAllStudentsMsg(''); setAllStudentsError(''); setExportingAll(true);
+    const res = await window.api.enrollmentExportAllStudentsExcel();
+    setExportingAll(false);
+    if (res.cancelled) return;
+    if (!res.success) { setAllStudentsError('Export failed: ' + res.message); return; }
+    setAllStudentsMsg(`✓ Saved ${res.count} students to ${res.filePath}`);
+    setTimeout(() => setAllStudentsMsg(''), 6000);
+  };
+
   // ── Print ────────────────────────────────────────────────────
   const handlePrint = () => {
     const showClassCol = selectedClass === 'ALL';
@@ -294,13 +308,40 @@ export default function StudentList() {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
           <h2 className="text-xl font-bold text-gray-800">Class Student List</h2>
           <p className="text-sm text-gray-500 mt-0.5">View and export students by class</p>
         </div>
+        {canExportExcel && (
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1 text-right">Student View</label>
+            <select value={studentView} onChange={e => setStudentView(e.target.value)}
+              className="border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <option value="active">Active Students</option>
+              <option value="all">All Students (Full Enrollment History)</option>
+            </select>
+          </div>
+        )}
       </div>
 
+      {studentView === 'all' ? (
+        <div className="bg-white border border-gray-200 rounded-xl p-8 text-center">
+          <p className="text-4xl mb-3">📚</p>
+          <p className="font-medium text-gray-700 mb-1">Full Enrollment History</p>
+          <p className="text-sm text-gray-500 mb-5 max-w-md mx-auto">
+            Downloads every student who has ever been enrolled — active, transferred out, TC-issued, or passed out —
+            across every class and academic year, directly from the database.
+          </p>
+          {allStudentsMsg && <p className="text-sm text-green-700 mb-4">{allStudentsMsg}</p>}
+          {allStudentsError && <p className="text-sm text-red-600 mb-4">{allStudentsError}</p>}
+          <button onClick={exportAllStudents} disabled={exportingAll}
+            className="bg-green-700 hover:bg-green-800 disabled:bg-green-300 text-white px-6 py-2.5 rounded-lg text-sm font-medium">
+            {exportingAll ? '⏳ Preparing…' : '📊 Download Full Enrollment (Excel)'}
+          </button>
+        </div>
+      ) : (
+      <>
       {/* Filters */}
       <div className="bg-white border border-gray-200 rounded-xl p-4 flex flex-wrap gap-4 items-end mb-4">
         <div className="flex-1 min-w-40">
@@ -485,6 +526,8 @@ export default function StudentList() {
             </div>
           )}
         </div>
+      )}
+      </>
       )}
 
       {/* Student detail modal */}

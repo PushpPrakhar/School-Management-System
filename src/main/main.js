@@ -216,6 +216,21 @@ function _elapsedMonthsInAcademicYear(academicYear) {
 // students, for both recurring monthly fees and due-dated annual/twice-yearly
 // fees. Used (read-only) by both the summary preview and the actual generator,
 // so the two can never drift apart.
+// Single source of truth for sibling concession — used by Auto-Accrual,
+// the sibling-concession editor's retroactive adjustment, and the Bulk
+// Receivable preview, so the three can never quietly disagree.
+// An explicit per-sibling override always wins, regardless of position —
+// this is what makes every sibling individually editable, not just the
+// 3rd child onward. With no override set, only positions at or past the
+// school-wide threshold get the default percentage; everyone before that
+// is 0% unless someone deliberately overrides them.
+function _effectiveSiblingConcessionPct(siblingPosition, customPct, settings) {
+  if (customPct !== null && customPct !== undefined) return customPct; // explicit override always wins — works for single students too, not just group members
+  if (siblingPosition === null || siblingPosition === undefined) return 0; // not part of a group, and no override set
+  const concessionFrom = (settings && settings.sibling_concession_from) || 3;
+  return siblingPosition >= concessionFrom ? ((settings && settings.sibling_concession_pct) || 0) : 0;
+}
+
 function _computeAccrualPlan(academic_year) {
   const elapsedMonths = _elapsedMonthsInAcademicYear(academic_year);
   if (elapsedMonths.length === 0) return { elapsedMonths, perStudentEntries: [] };
@@ -228,12 +243,12 @@ function _computeAccrualPlan(academic_year) {
     'Class 4':6,'Class 5':7,'Class 6':8,'Class 7':9,'Class 8':10 };
 
   const ledgerRows = db.prepare(`
-    SELECT l.*, gm.group_id as gm_group_id, gm.custom_concession_pct as gm_custom_concession_pct,
+    SELECT l.*, gm.group_id as gm_group_id,
            e.date_of_admission
     FROM   fee_ledger l
     LEFT JOIN fee_group_members gm ON gm.ledger_id = l.ledger_id
     LEFT JOIN student_directory e ON e.admission_number = l.admission_number
-    WHERE  l.academic_year = ?
+    WHERE  l.academic_year = ? AND l.is_active = 1
   `).all(academic_year);
 
   // Recompute sibling positions by class rank (same logic as Bulk Entry preview)
@@ -289,14 +304,8 @@ function _computeAccrualPlan(academic_year) {
     const feeMap = {};
     fs.forEach(f => { feeMap[f.fee_type] = f; });
     const sibPos = student._siblingPosition || null;
-    const isSibling = sibPos !== null && sibPos >= (settings.sibling_concession_from || 3);
-    // A per-sibling override (set individually per child, not per group)
-    // takes precedence over the school-wide default when one is set.
-    const concessPct = isSibling
-      ? (student.gm_custom_concession_pct !== null && student.gm_custom_concession_pct !== undefined
-          ? student.gm_custom_concession_pct
-          : (settings.sibling_concession_pct || 0))
-      : 0;
+    const concessPct = _effectiveSiblingConcessionPct(sibPos, student.custom_concession_pct, settings);
+    const isSibling = concessPct > 0;
 
     const lines = [];
 
@@ -1067,6 +1076,16 @@ function initDatabase() {
     updated_at             DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
   )`);
 
+  // One school-wide value, not per-year — a single row enforced by the
+  // CHECK constraint. Default 33 preserves exactly today's behavior for
+  // every school that never touches this setting.
+  db.exec(`CREATE TABLE IF NOT EXISTS academic_settings (
+    id                    INTEGER  PRIMARY KEY CHECK (id = 1),
+    min_subject_pass_pct  REAL     NOT NULL DEFAULT 33,
+    updated_by            TEXT     NOT NULL DEFAULT '',
+    updated_at            DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
+  )`);
+
   db.exec(`CREATE TABLE IF NOT EXISTS fee_structure (
     structure_id   INTEGER  PRIMARY KEY AUTOINCREMENT,
     academic_year  TEXT     NOT NULL,
@@ -1164,6 +1183,45 @@ function initDatabase() {
   // — set individually per child, not per group, so one family's 3rd and
   // 4th children can have entirely different negotiated percentages.
   try { db.exec("ALTER TABLE fee_group_members ADD COLUMN custom_concession_pct REAL DEFAULT NULL"); } catch(_) {}
+
+  // Moved off fee_group_members onto fee_ledger itself, so a single
+  // (non-grouped) student can also get an individually negotiated Tuition
+  // concession — not just students who happen to have siblings. Existing
+  // group-based overrides are copied over once so nothing already set is
+  // lost; fee_group_members.custom_concession_pct is no longer written to
+  // going forward, left in place only for historical rows.
+  try { db.exec("ALTER TABLE fee_ledger ADD COLUMN custom_concession_pct REAL DEFAULT NULL"); } catch(_) {}
+
+  // Independent of enrollment.student_status — some ledger rows belong to
+  // students added straight to the ledger without an admission record at
+  // all (bulk migration entries), so this needs its own flag rather than
+  // relying on a join. An inactive student stops accruing new charges
+  // (Auto-Accrual, Transport) but their existing balance/history is left
+  // completely untouched and stays fully visible everywhere else.
+  try { db.exec("ALTER TABLE fee_ledger ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"); } catch(_) {}
+
+  // Fees Notice legal reference numbers must be unique per notice and reset
+  // to 1 each calendar day — this table is the single source of truth for
+  // "how many notices have been issued today", keyed by date so a fresh day
+  // always starts back at serial 1.
+  db.exec(`CREATE TABLE IF NOT EXISTS fee_notice_counters (
+    notice_date  TEXT    PRIMARY KEY,
+    last_serial  INTEGER NOT NULL DEFAULT 0
+  )`);
+  try {
+    db.exec(`
+      UPDATE fee_ledger
+      SET custom_concession_pct = (
+        SELECT gm.custom_concession_pct FROM fee_group_members gm
+        WHERE gm.ledger_id = fee_ledger.ledger_id AND gm.custom_concession_pct IS NOT NULL
+      )
+      WHERE custom_concession_pct IS NULL
+      AND   EXISTS (
+        SELECT 1 FROM fee_group_members gm2
+        WHERE gm2.ledger_id = fee_ledger.ledger_id AND gm2.custom_concession_pct IS NOT NULL
+      )
+    `);
+  } catch(_) {}
 
   db.exec(`CREATE TABLE IF NOT EXISTS prospectus_inquiries (
     inquiry_id       INTEGER  PRIMARY KEY AUTOINCREMENT,
@@ -1487,6 +1545,29 @@ function _getUnpostedPastDays(center_id, counter_id) {
     AND    DATE(collected_at) < DATE('now','localtime')
     ORDER  BY d
   `).all(center_id, counter_id).map(r => r.d);
+}
+
+// Single source of truth for building a schedule ID (CENTERCODE + DDMMYY) —
+// used both when actually posting a day and when checking whether a day is
+// already posted, so the two can never disagree on what a given day's
+// schedule ID is.
+function _scheduleIdFor(center_id, dateStr) {
+  const center = db.prepare('SELECT center_code FROM collection_centers WHERE center_id = ?').get(center_id || 1);
+  const code   = (center?.center_code || 'BPS').replace(/-/g, '');
+  const dt     = new Date(dateStr);
+  const ddmmyy = String(dt.getDate()).padStart(2,'0')
+               + String(dt.getMonth()+1).padStart(2,'0')
+               + String(dt.getFullYear()).slice(2);
+  return code + ddmmyy;
+}
+
+// Whether a given center's Day-End Posting for a given date has already
+// been finalized — once true, the counter must not accept any further
+// payments for that date until the calendar rolls over to a new day.
+function _isDatePostedForCenter(center_id, dateStr) {
+  if (!center_id) return false;
+  const row = db.prepare('SELECT status FROM posting_schedules WHERE schedule_id = ?').get(_scheduleIdFor(center_id, dateStr));
+  return !!(row && row.status === 'POSTED');
 }
 
 // ── AUTH ─────────────────────────────────────────────────────
@@ -2587,6 +2668,52 @@ ipcMain.handle('homework:getAll', (_evt, { from_date, to_date, class: cls, teach
   } catch (err) { return { success: false, message: err.message }; }
 });
 
+// Exports the Review Homework list to .xlsx — takes the already-loaded
+// frontend rows directly (same date/class filters already applied on
+// screen), rather than re-querying independently.
+ipcMain.handle('homework:exportReviewExcel', async (_evt, { rows, fromDate, toDate, cls }) => {
+  try {
+    if (!rows || rows.length === 0) return { success: false, message: 'No homework entries to export.' };
+
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: 'Save Review Homework List',
+      defaultPath: `Homework_Review_${(fromDate||'').replace(/\//g,'-')}_to_${(toDate||'').replace(/\//g,'-')}.xlsx`,
+      filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }],
+    });
+    if (canceled || !filePath) return { success: false, cancelled: true };
+
+    const header = ['Date', 'Class', 'Subject Teacher', 'Subject', 'Chapter', 'Classwork', 'Homework'];
+    const dataRows = rows.map(r => [r.date, r.class, r.teacher_name, r.subject_name, r.chapter_name || '—', r.classwork || '—', r.remarks || '—']);
+
+    const totalCols = header.length;
+    const aoa = [
+      ['BRILLIANT PUBLIC SCHOOL'],
+      ['Village-Sherpur-Nayser, Post-Jawal, District-Bulandshahr, UP-203131'],
+      [`REVIEW HOMEWORK — ${fromDate || ''} to ${toDate || ''}${cls ? ' — ' + cls : ''}`],
+      [],
+      header,
+      ...dataRows,
+    ];
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!merges'] = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: totalCols - 1 } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: totalCols - 1 } },
+      { s: { r: 2, c: 0 }, e: { r: 2, c: totalCols - 1 } },
+    ];
+    ws['!cols'] = [{ wch: 12 }, { wch: 10 }, { wch: 20 }, { wch: 14 }, { wch: 22 }, { wch: 30 }, { wch: 30 }];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Review Homework');
+    XLSX.writeFile(wb, filePath);
+
+    return { success: true, filePath };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+
 // ── ENROLLMENT (SR Register) ──────────────────────────────────
 // ── Apply null-value defaults ────────────────────────────────
 function applyDefaults(data) {
@@ -2988,6 +3115,16 @@ ipcMain.handle('enrollment:edit', (_evt, data) => {
     // shouldn't relabel attendance from one class into another.
     if (old.current_class === finalClass && old.section !== finalSection) {
       _relabelAttendanceSection(admission_number, finalClass, finalSection);
+    }
+
+    // Keep every fee_ledger row for this student (across all academic
+    // years) in sync with their enrollment status — dropping a student
+    // out stops new fee accrual for them, reactivating resumes it. This
+    // never touches their existing balance or transaction history.
+    if (newData.student_status !== undefined && newData.student_status !== old.student_status) {
+      const ledgerActive = finalStatus === 'ACTIVE' ? 1 : 0;
+      db.prepare('UPDATE fee_ledger SET is_active = ? WHERE admission_number = ?')
+        .run(ledgerActive, admission_number);
     }
 
     return { success: true };
@@ -4374,13 +4511,24 @@ const PROMOTION_SUBJECTS = {
 });
 const PROMOTION_FINAL_TYPES = ['UT1','UT2','HALF_YEARLY','UT3','UT4','FINAL'];
 
-function _promotionGrade(pct) {
+// threshold = the school-wide minimum per-subject pass percentage
+// (academic_settings.min_subject_pass_pct, default 33). The F/E grade
+// boundary moves together with it deliberately — otherwise a subject
+// right at the threshold could show Grade E but Result FAIL at once.
+function _promotionGrade(pct, threshold = 33) {
   if (pct >= 85) return 'A';
   if (pct >= 70) return 'B';
   if (pct >= 55) return 'C';
   if (pct >= 40) return 'D';
-  if (pct >= 33) return 'E';
+  if (pct >= threshold) return 'E';
   return 'F';
+}
+
+function _getMinSubjectPassPct() {
+  try {
+    const row = db.prepare('SELECT min_subject_pass_pct FROM academic_settings WHERE id = 1').get();
+    return row ? row.min_subject_pass_pct : 33;
+  } catch (_) { return 33; }
 }
 
 // Returns null (not false) when there's simply no exam data for this
@@ -4389,7 +4537,7 @@ function _promotionGrade(pct) {
 // so the UI can show "No exam data" rather than a misleading FAIL badge,
 // and so promotion doesn't auto-exclude someone just because data is
 // missing, only because they actually failed.
-function _finalExamResult(admissionNumber, currentClass, marksMap) {
+function _finalExamResult(admissionNumber, currentClass, marksMap, threshold = 33) {
   const subjects = PROMOTION_SUBJECTS[currentClass];
   if (!subjects || subjects.length === 0) return null;
 
@@ -4406,7 +4554,7 @@ function _finalExamResult(admissionNumber, currentClass, marksMap) {
     };
     const raw = PROMOTION_FINAL_TYPES.reduce((a, t) => a + (get(t) ?? 0), 0); // out of 200
     const scaled = raw / 2; // out of 100
-    if (scaled < 33) allPass = false;
+    if (scaled < threshold) allPass = false;
     total += scaled;
   });
 
@@ -4414,7 +4562,7 @@ function _finalExamResult(admissionNumber, currentClass, marksMap) {
 
   const maxTotal = subjects.length * 100;
   const pct = maxTotal ? (total / maxTotal * 100) : 0;
-  return { pct: pct.toFixed(1), grade: _promotionGrade(pct), allPass };
+  return { pct: pct.toFixed(1), grade: _promotionGrade(pct, threshold), allPass };
 }
 
 ipcMain.handle('promotion:preview', (_evt, { from_year, to_year }) => {
@@ -4441,9 +4589,10 @@ ipcMain.handle('promotion:preview', (_evt, { from_year, to_year }) => {
       marksMap[r.admission_number][r.subject][r.exam_type] = { marks: r.marks_obtained, absent: !!r.is_absent };
     });
 
+    const passThreshold = _getMinSubjectPassPct();
     const studentsWithResult = students.map(s => ({
       ...s,
-      exam_result: _finalExamResult(s.admission_number, s.current_class, marksMap),
+      exam_result: _finalExamResult(s.admission_number, s.current_class, marksMap, passThreshold),
     }));
 
     const classMap = {};
@@ -5237,6 +5386,165 @@ ipcMain.handle('exam:checkLocked', (_evt, { class: cls, section, academic_year, 
   } catch(err) { return { success: false, message: err.message }; }
 });
 
+// Exports the marks grid to .xlsx — one row per student, one column per
+// subject, plus Total and Percentage. Takes the already-loaded frontend
+// data directly rather than re-querying, since the marks entry screen
+// already has everything needed in state.
+ipcMain.handle('exam:exportMarksExcel', async (_evt, { students, marks, subjects, cls, section, examLabel, maxMarks, academicYear }) => {
+  try {
+    if (!students || students.length === 0) return { success: false, message: 'No students to export.' };
+
+    const safeClass = String(cls || 'Class').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_');
+    const safeExam  = String(examLabel || 'Exam').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_');
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: 'Save Marks List',
+      defaultPath: `Marks_${safeExam}_${safeClass}_${section || ''}.xlsx`,
+      filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }],
+    });
+    if (canceled || !filePath) return { success: false, cancelled: true };
+
+    const header = ['#', 'Adm. No.', 'Student Name', ...subjects, 'Total', 'Percentage'];
+    const maxTotal = subjects.length * maxMarks;
+    const dataRows = students.map((s, i) => {
+      const studentMarks = marks[s.admission_number] || {};
+      let total = 0;
+      const cells = subjects.map(sub => {
+        const cell = studentMarks[sub];
+        if (cell?.absent) return 'AB';
+        if (cell?.val === '' || cell?.val === undefined || cell?.val === null) return '';
+        const v = parseFloat(cell.val);
+        total += isNaN(v) ? 0 : v;
+        return v;
+      });
+      const pct = maxTotal ? ((total / maxTotal) * 100).toFixed(1) + '%' : '';
+      return [i + 1, s.admission_number, s.student_name, ...cells, total, pct];
+    });
+
+    const totalCols = header.length;
+    const aoa = [
+      ['BRILLIANT PUBLIC SCHOOL'],
+      ['Village-Sherpur-Nayser, Post-Jawal, District-Bulandshahr, UP-203131'],
+      [`${examLabel || ''} — MARKS LIST — ${cls || ''} ${section ? '- ' + section : ''} (${academicYear || ''})`],
+      [],
+      header,
+      ...dataRows,
+    ];
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!merges'] = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: totalCols - 1 } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: totalCols - 1 } },
+      { s: { r: 2, c: 0 }, e: { r: 2, c: totalCols - 1 } },
+    ];
+    ws['!cols'] = [{ wch: 5 }, { wch: 14 }, { wch: 22 }, ...subjects.map(() => ({ wch: 10 })), { wch: 8 }, { wch: 11 }];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Marks');
+    XLSX.writeFile(wb, filePath);
+
+    return { success: true, filePath };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+// Exports marks for EVERY class at once, one sheet per class — subjects
+// are derived per class from what's actually been recorded in exam_marks
+// (not a hardcoded list), so this can never drift from what the entry
+// screen itself uses. Every active student in the class is included, even
+// ones with no marks yet, so a class still missing entries is visible as
+// blank cells rather than silently absent from the export.
+ipcMain.handle('exam:exportAllClassesMarksExcel', async (_evt, { exam_type, academic_year, exam_label }) => {
+  try {
+    const classRows = db.prepare(
+      `SELECT DISTINCT class FROM exam_marks WHERE exam_type = ? AND academic_year = ? ORDER BY class`
+    ).all(exam_type, academic_year);
+    if (classRows.length === 0) return { success: false, message: 'No marks have been entered for this exam yet.' };
+
+    const safeExam = String(exam_label || exam_type || 'Exam').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_');
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: 'Save All-Classes Marks List',
+      defaultPath: `Marks_AllClasses_${safeExam}_${academic_year || ''}.xlsx`,
+      filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }],
+    });
+    if (canceled || !filePath) return { success: false, cancelled: true };
+
+    const wb = XLSX.utils.book_new();
+    const usedSheetNames = new Set();
+
+    classRows.forEach(({ class: cls }) => {
+      const subjectRows = db.prepare(
+        `SELECT DISTINCT subject, max_marks FROM exam_marks WHERE class = ? AND exam_type = ? AND academic_year = ? ORDER BY subject`
+      ).all(cls, exam_type, academic_year);
+      const subjects = subjectRows.map(s => s.subject);
+      const maxMarks = subjectRows[0]?.max_marks || 10;
+      const maxTotal = subjects.length * maxMarks;
+
+      const students = db.prepare(`
+        SELECT admission_number, student_name, section
+        FROM   enrollment
+        WHERE  LOWER(current_class) = LOWER(?) AND student_status = 'ACTIVE'
+        ORDER  BY section, student_name
+      `).all(cls);
+
+      const marksRows = db.prepare(
+        `SELECT admission_number, subject, marks_obtained, is_absent FROM exam_marks WHERE class = ? AND exam_type = ? AND academic_year = ?`
+      ).all(cls, exam_type, academic_year);
+      const marksByStudent = {};
+      marksRows.forEach(m => {
+        if (!marksByStudent[m.admission_number]) marksByStudent[m.admission_number] = {};
+        marksByStudent[m.admission_number][m.subject] = m;
+      });
+
+      const header = ['#', 'Adm. No.', 'Student Name', 'Section', ...subjects, 'Total', 'Percentage'];
+      const dataRows = students.map((s, i) => {
+        const sm = marksByStudent[s.admission_number] || {};
+        let total = 0;
+        const cells = subjects.map(sub => {
+          const m = sm[sub];
+          if (!m) return '';
+          if (m.is_absent) return 'AB';
+          const v = m.marks_obtained ?? 0;
+          total += v;
+          return v;
+        });
+        const pct = maxTotal ? ((total / maxTotal) * 100).toFixed(1) + '%' : '';
+        return [i + 1, s.admission_number, s.student_name, s.section, ...cells, total, pct];
+      });
+
+      const totalCols = header.length;
+      const aoa = [
+        ['BRILLIANT PUBLIC SCHOOL'],
+        ['Village-Sherpur-Nayser, Post-Jawal, District-Bulandshahr, UP-203131'],
+        [`${exam_label || exam_type} — MARKS LIST — ${cls} (${academic_year || ''})`],
+        [],
+        header,
+        ...dataRows,
+      ];
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws['!merges'] = [
+        { s: { r: 0, c: 0 }, e: { r: 0, c: totalCols - 1 } },
+        { s: { r: 1, c: 0 }, e: { r: 1, c: totalCols - 1 } },
+        { s: { r: 2, c: 0 }, e: { r: 2, c: totalCols - 1 } },
+      ];
+      ws['!cols'] = [{ wch: 5 }, { wch: 14 }, { wch: 22 }, { wch: 8 }, ...subjects.map(() => ({ wch: 10 })), { wch: 8 }, { wch: 11 }];
+
+      // Sheet names have a 31-char limit, can't contain \/*?:[], and must
+      // be unique within the workbook — guard against all three.
+      let sheetName = cls.replace(/[\\/*?:[\]]/g, '').slice(0, 31);
+      let suffix = 2;
+      while (usedSheetNames.has(sheetName)) { sheetName = (cls.slice(0, 28) + '_' + suffix).slice(0, 31); suffix++; }
+      usedSheetNames.add(sheetName);
+      XLSX.utils.book_append_sheet(wb, ws, sheetName);
+    });
+
+    XLSX.writeFile(wb, filePath);
+    return { success: true, filePath, classCount: classRows.length };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
 // ── Submission status overview ────────────────────────────────
 ipcMain.handle('exam:getStatus', (_evt, { academic_year, class: cls, section }) => {
   try {
@@ -5262,6 +5570,32 @@ ipcMain.handle('exam:getStatus', (_evt, { academic_year, class: cls, section }) 
 // ══════════════════════════════════════════════════════════════
 // FEES MODULE — IPC HANDLERS (Phase 1)
 // ══════════════════════════════════════════════════════════════
+
+// School-wide minimum per-subject pass percentage — single source of
+// truth for Examination results AND Promotion's pass/fail preview, so
+// the two can never quietly disagree on who actually passed.
+ipcMain.handle('academicSettings:get', () => {
+  try {
+    const row = db.prepare('SELECT * FROM academic_settings WHERE id = 1').get();
+    return { success: true, data: row || { min_subject_pass_pct: 33 } };
+  } catch (e) { return { success: false, message: e.message }; }
+});
+
+ipcMain.handle('academicSettings:save', (_evt, { min_subject_pass_pct, updated_by }) => {
+  try {
+    const pct = Number(min_subject_pass_pct);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+      return { success: false, message: 'Enter a percentage between 0 and 100.' };
+    }
+    db.prepare(`
+      INSERT INTO academic_settings (id, min_subject_pass_pct, updated_by, updated_at)
+      VALUES (1, ?, ?, datetime('now','localtime'))
+      ON CONFLICT(id) DO UPDATE SET min_subject_pass_pct = excluded.min_subject_pass_pct,
+        updated_by = excluded.updated_by, updated_at = excluded.updated_at
+    `).run(pct, updated_by || '');
+    return { success: true };
+  } catch (e) { return { success: false, message: e.message }; }
+});
 
 ipcMain.handle('feeSettings:get', (_evt, academic_year) => {
   try {
@@ -5651,15 +5985,90 @@ ipcMain.handle('feeLedger:createGroup', (_evt, { academic_year, ledger_ids, crea
 // group already exists — e.g. a waiver negotiated after the fact, or
 // correcting one that was set wrong at creation. Set to null/empty to
 // go back to the school-wide default for that child.
-ipcMain.handle('feeLedger:updateSiblingConcession', (_evt, { ledger_id, custom_concession_pct }) => {
+ipcMain.handle('feeLedger:updateSiblingConcession', (_evt, { ledger_id, custom_concession_pct, updated_by }) => {
   try {
     if (!ledger_id) return { success: false, message: 'Student is required.' };
-    const member = db.prepare('SELECT member_id FROM fee_group_members WHERE ledger_id = ?').get(ledger_id);
-    if (!member) return { success: false, message: 'This student is not part of a sibling group.' };
+    const ledgerRow = db.prepare('SELECT sl_number, academic_year FROM fee_ledger WHERE ledger_id = ?').get(ledger_id);
+    if (!ledgerRow) return { success: false, message: 'Student ledger not found.' };
+
     const pct = (custom_concession_pct === '' || custom_concession_pct === undefined || custom_concession_pct === null)
       ? null : Number(custom_concession_pct);
-    db.prepare('UPDATE fee_group_members SET custom_concession_pct = ? WHERE ledger_id = ?').run(pct, ledger_id);
-    return { success: true };
+
+    db.prepare('UPDATE fee_ledger SET custom_concession_pct = ? WHERE ledger_id = ?').run(pct, ledger_id);
+
+    // Sibling position only matters as a fallback default if no override
+    // is set — a single (non-grouped) student simply has none, which the
+    // shared helper already treats correctly as "not in a group."
+    const member = db.prepare('SELECT sibling_position FROM fee_group_members WHERE ledger_id = ?').get(ledger_id);
+    const settings = db.prepare('SELECT sibling_concession_pct, sibling_concession_from FROM fee_settings WHERE academic_year = ?').get(ledgerRow.academic_year)
+      || { sibling_concession_pct: 0, sibling_concession_from: 3 };
+
+    const effectivePct = _effectiveSiblingConcessionPct(member ? member.sibling_position : null, pct, settings);
+
+    // Applies from the current month onward only — not retroactively
+    // across the whole year. A change made in August affects August and
+    // later; April through July stay exactly as they already were,
+    // whether pending or posted.
+    const currentMonth = new Date().toISOString().slice(0, 7); // 'YYYY-MM'
+
+    let adjusted = 0;
+
+    {
+      // Unposted Tuition charges, this month onward — safe to correct in
+      // place, same pattern Counter Payment already uses when applying a
+      // concession to a due Auto Accrual generated.
+      const pendingRows = db.prepare(
+        "SELECT stage_id, debit FROM fee_transactions_stage WHERE ledger_id = ? AND fee_type = 'TUITION' AND academic_year = ? AND status = 'PENDING' AND transaction_type = 'RECEIVABLE' AND fee_month >= ?"
+      ).all(ledger_id, ledgerRow.academic_year, currentMonth);
+      const updatePending = db.prepare('UPDATE fee_transactions_stage SET concession = ? WHERE stage_id = ?');
+      pendingRows.forEach(r => {
+        updatePending.run(Math.round((r.debit || 0) * effectivePct / 100), r.stage_id);
+        adjusted++;
+      });
+
+      // Already-posted Tuition, this month onward — permanent record, so
+      // instead of editing it directly, add a correcting adjustment for
+      // the difference, same approach as the Transport removal reversal.
+      // Months before this one are never touched, posted or not.
+      const postedRows = db.prepare(
+        "SELECT txn_id, debit, concession, fee_month FROM fee_transactions WHERE ledger_id = ? AND fee_type = 'TUITION' AND academic_year = ? AND fee_month >= ?"
+      ).all(ledger_id, ledgerRow.academic_year, currentMonth);
+      const insertAdjustment = db.prepare(`
+        INSERT INTO fee_transactions_stage
+          (ledger_id, sl_number, academic_year, transaction_type, description,
+           debit, credit, payment_mode, center_id, counter_id, collected_by, status, fee_month, fee_type)
+        VALUES (?, ?, ?, 'ADJUSTMENT', ?, ?, ?, 'AUTO', 1, 1, ?, 'PENDING', ?, 'TUITION')
+      `);
+      postedRows.forEach(r => {
+        const newConc = Math.round((r.debit || 0) * effectivePct / 100);
+
+        // Prior correction adjustments already issued for this exact
+        // month (pending or already posted themselves) — without this,
+        // changing the concession a second time would recompute the
+        // delta against the original, never-changing posted concession
+        // and re-issue the same correction again on top of the first.
+        const priorAdjustments = db.prepare(`
+          SELECT COALESCE(SUM(credit),0) - COALESCE(SUM(debit),0) as net
+          FROM   (
+            SELECT credit, debit FROM fee_transactions
+            WHERE  ledger_id = ? AND fee_type = 'TUITION' AND fee_month = ? AND transaction_type = 'ADJUSTMENT'
+            UNION ALL
+            SELECT credit, debit FROM fee_transactions_stage
+            WHERE  ledger_id = ? AND fee_type = 'TUITION' AND fee_month = ? AND transaction_type = 'ADJUSTMENT' AND status = 'PENDING'
+          )
+        `).get(ledger_id, r.fee_month, ledger_id, r.fee_month).net;
+
+        const effectiveConcessionSoFar = (r.concession || 0) + priorAdjustments;
+        const delta = newConc - effectiveConcessionSoFar;
+        if (Math.abs(delta) < 0.5) return; // no meaningful change
+        const desc = `Concession correction (${r.fee_month || ''})`;
+        if (delta > 0) insertAdjustment.run(ledger_id, ledgerRow.sl_number, ledgerRow.academic_year, desc, 0, delta, updated_by || '', r.fee_month || '');
+        else insertAdjustment.run(ledger_id, ledgerRow.sl_number, ledgerRow.academic_year, desc, -delta, 0, updated_by || '', r.fee_month || '');
+        adjusted++;
+      });
+    }
+
+    return { success: true, adjusted };
   } catch (e) { return { success: false, message: e.message }; }
 });
 
@@ -5670,13 +6079,11 @@ ipcMain.handle('feeLedger:getAll', (_evt, academic_year) => {
       SELECT l.*,
              g.gsl_number,
              t.route_name, t.monthly_amount AS transport_amount,
-             e.father_name,
-             gm.custom_concession_pct
+             e.father_name
       FROM   fee_ledger l
       LEFT JOIN fee_groups        g ON g.group_id  = l.group_id
       LEFT JOIN transport_routes  t ON t.route_id  = l.transport_route_id
       LEFT JOIN student_directory        e ON e.admission_number = l.admission_number
-      LEFT JOIN fee_group_members gm ON gm.ledger_id = l.ledger_id
       WHERE  l.academic_year = ?
       ORDER  BY CAST(SUBSTR(l.sl_number, 4) AS INTEGER)
     `).all(academic_year);
@@ -5685,6 +6092,29 @@ ipcMain.handle('feeLedger:getAll', (_evt, academic_year) => {
 });
 
 // Get full transaction history for a ledger (individual)
+// Removes one erroneous, still-pending transaction outright — deliberately
+// restricted to status='PENDING' only. A posted transaction is a permanent
+// record and must never be deletable this way; if a posted entry turns
+// out wrong, the correct fix is always a new offsetting adjustment, not
+// deleting history. Built to clean up leftover duplicate correction
+// entries from before a bug fix, but works as a general safety valve.
+ipcMain.handle('feeLedger:deletePendingTransaction', (_evt, { stage_id, deleted_by }) => {
+  try {
+    if (!stage_id) return { success: false, message: 'Transaction is required.' };
+    const row = db.prepare('SELECT * FROM fee_transactions_stage WHERE stage_id = ?').get(stage_id);
+    if (!row) return { success: false, message: 'Transaction not found.' };
+    if (row.status !== 'PENDING') {
+      return { success: false, message: 'Only pending (not yet posted) transactions can be removed this way.' };
+    }
+    db.prepare('DELETE FROM fee_transactions_stage WHERE stage_id = ?').run(stage_id);
+    try {
+      db.prepare("INSERT INTO edit_history (admission_number, student_name, edited_by, changes) VALUES ('SYSTEM', 'PENDING TXN REMOVED', ?, ?)")
+        .run(deleted_by || 'admin', JSON.stringify([{ field: 'Deleted pending transaction', old: `${row.description || row.fee_type} — debit ${row.debit}, credit ${row.credit}, fee_month ${row.fee_month}`, new: '(removed)' }]));
+    } catch (_) {}
+    return { success: true };
+  } catch (e) { return { success: false, message: e.message }; }
+});
+
 ipcMain.handle('feeLedger:getTransactions', (_evt, { ledger_id, academic_year }) => {
   try {
     const ledger = db.prepare(`
@@ -5836,6 +6266,35 @@ ipcMain.handle('feeLedger:search', (_evt, { query, academic_year }) => {
   } catch(e) { return { success: false, message: e.message }; }
 });
 
+// Browse the ledger by active/inactive status with no search query typed —
+// backs the Active/Inactive tab in View Ledger. Same row shape as
+// feeLedger:search so the frontend can render both with the same code.
+ipcMain.handle('feeLedger:listByStatus', (_evt, { academic_year, is_active }) => {
+  try {
+    const rows = db.prepare(`
+      SELECT l.*, g.gsl_number, g.group_id as gsl_group_id, e.father_name, t.route_name
+      FROM   fee_ledger l
+      LEFT JOIN fee_groups       g ON g.group_id = l.group_id
+      LEFT JOIN student_directory       e ON e.admission_number = l.admission_number
+      LEFT JOIN transport_routes t ON t.route_id = l.transport_route_id
+      WHERE  l.academic_year = ? AND l.is_active = ?
+      ORDER  BY CAST(SUBSTR(l.sl_number,4) AS INTEGER)
+    `).all(academic_year, is_active ? 1 : 0);
+    return { success: true, data: rows };
+  } catch(e) { return { success: false, message: e.message }; }
+});
+
+// Manually flip a single ledger row's active flag — the same toggle Edit
+// Student's dropout status drives automatically, exposed directly here so
+// ledger-only entries (added straight to the ledger, no admission record
+// behind them) can be marked inactive too. Never touches balance/history.
+ipcMain.handle('feeLedger:setActive', (_evt, { ledger_id, is_active }) => {
+  try {
+    db.prepare('UPDATE fee_ledger SET is_active = ? WHERE ledger_id = ?').run(is_active ? 1 : 0, ledger_id);
+    return { success: true };
+  } catch(e) { return { success: false, message: e.message }; }
+});
+
 // Monthly Fee Pending Report — one row per student showing:
 //   Previous Balance (everything due before the selected month)
 //   Fee Due          (new charges raised FOR the selected month)
@@ -5935,7 +6394,34 @@ ipcMain.handle('feeLedger:getMonthlyReport', (_evt, { academic_year, month, year
       };
     });
 
-    return { success: true, data, month_label: targetMonth };
+    // Full breakdown by fee type — the exact same underlying rows as
+    // fee_due above, just grouped by fee_type instead of summed together.
+    // Guaranteed to add up to the same total shown on screen, since it's
+    // not a second, separately-computed number.
+    const byTypeRows = db.prepare(`
+      SELECT fee_type, SUM(debit) - SUM(concession) as amt
+      FROM   (
+        SELECT ft.debit, ft.concession, ft.fee_type, ft.fee_month, ft.collected_at, l.current_class
+        FROM   fee_transactions ft
+        JOIN   fee_ledger l ON l.ledger_id = ft.ledger_id
+        WHERE  ft.academic_year = ? AND ft.transaction_type = 'RECEIVABLE'
+        UNION ALL
+        SELECT fts.debit, fts.concession, fts.fee_type, fts.fee_month, fts.collected_at, l.current_class
+        FROM   fee_transactions_stage fts
+        JOIN   fee_ledger l ON l.ledger_id = fts.ledger_id
+        WHERE  fts.academic_year = ? AND fts.transaction_type = 'RECEIVABLE' AND fts.status = 'PENDING'
+      )
+      WHERE  COALESCE(NULLIF(fee_month,''), strftime('%Y-%m', collected_at)) = ?
+      AND    (? IS NULL OR current_class = ?)
+      GROUP  BY fee_type
+    `).all(academic_year, academic_year, targetMonth, cls || null, cls || null);
+
+    const fee_type_totals = {};
+    byTypeRows.forEach(r => {
+      if (Math.abs(r.amt) > 0.005) fee_type_totals[r.fee_type || 'OTHER'] = Math.round(r.amt * 100) / 100;
+    });
+
+    return { success: true, data, month_label: targetMonth, fee_type_totals };
   } catch(e) { return { success: false, message: e.message }; }
 });
 
@@ -5968,7 +6454,7 @@ function _groupSiblingsForExport(rows) {
   return result;
 }
 
-ipcMain.handle('feeLedger:exportMonthlyReportExcel', async (_evt, { rows, totals, monthLabel, cls }) => {
+ipcMain.handle('feeLedger:exportMonthlyReportExcel', async (_evt, { rows, totals, monthLabel, cls, academic_year, month, year }) => {
   try {
     const safeMonth = String(monthLabel || 'Report').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_');
     const safeClass = cls ? '_' + String(cls).replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_') : '';
@@ -5981,16 +6467,54 @@ ipcMain.handle('feeLedger:exportMonthlyReportExcel', async (_evt, { rows, totals
 
     const orderedRows = _groupSiblingsForExport(rows || []);
 
+    // Per-student, per-fee-type breakdown — Excel only, never shown on
+    // screen. Independent query, not derived from the on-screen rows, so
+    // it can't accidentally leak into or be confused with the main table.
+    let feeTypeColumns = [];
+    let byLedgerByType = {};
+    if (academic_year && month && year) {
+      const targetMonth = `${year}-${String(month).padStart(2, '0')}`;
+      const breakdownRows = db.prepare(`
+        SELECT ledger_id, fee_type, SUM(debit) - SUM(concession) as amt
+        FROM   (
+          SELECT ledger_id, debit, concession, fee_type, fee_month, collected_at FROM fee_transactions
+          WHERE  academic_year = ? AND transaction_type = 'RECEIVABLE'
+          UNION ALL
+          SELECT ledger_id, debit, concession, fee_type, fee_month, collected_at FROM fee_transactions_stage
+          WHERE  academic_year = ? AND transaction_type = 'RECEIVABLE' AND status = 'PENDING'
+        )
+        WHERE  COALESCE(NULLIF(fee_month,''), strftime('%Y-%m', collected_at)) = ?
+        GROUP  BY ledger_id, fee_type
+      `).all(academic_year, academic_year, targetMonth);
+
+      const typesPresent = new Set();
+      breakdownRows.forEach(r => {
+        if (Math.abs(r.amt) < 0.005) return;
+        typesPresent.add(r.fee_type || 'OTHER');
+        if (!byLedgerByType[r.ledger_id]) byLedgerByType[r.ledger_id] = {};
+        byLedgerByType[r.ledger_id][r.fee_type || 'OTHER'] = Math.round(r.amt * 100) / 100;
+      });
+      // Fixed, deliberate order — Tuition/Transport first, matching the
+      // on-screen breakdown panel — rather than whatever order SQL returns.
+      const FEE_TYPE_ORDER = ['TUITION','TRANSPORT','COMPUTER','LAB','ACTIVITY','LIBRARY','WELLNESS','BOOKS','EXAM_HY','EXAM_ANNUAL','ADMISSION','OTHER'];
+      feeTypeColumns = FEE_TYPE_ORDER.filter(t => typesPresent.has(t));
+    }
+
     const header = ['Sr No', 'Student Ledger No', 'Student Name', 'Class', "Father's Name", 'Village',
-                     'Previous Balance', 'Fee Due', 'Fee Paid', 'Balance'];
+                     'Previous Balance', 'Fee Due', ...feeTypeColumns.map(t => _feeLabel(t)), 'Fee Paid', 'Balance'];
     const dataRows = orderedRows.map((r, i) => [
       i + 1, r.sl_number, r.student_name, `${r.current_class}${r.section ? '-' + r.section : ''}`,
       r.father_name || '', r.village || '',
-      r.prev_balance, r.fee_due, r.fee_paid, r.balance,
+      r.prev_balance, r.fee_due,
+      ...feeTypeColumns.map(t => (byLedgerByType[r.ledger_id] && byLedgerByType[r.ledger_id][t]) || 0),
+      r.fee_paid, r.balance,
     ]);
     const totalRow = ['', '', '', '', '', 'Total',
-      totals?.prev_balance || 0, totals?.fee_due || 0, totals?.fee_paid || 0, totals?.balance || 0];
+      totals?.prev_balance || 0, totals?.fee_due || 0,
+      ...feeTypeColumns.map(t => orderedRows.reduce((s, r) => s + ((byLedgerByType[r.ledger_id] && byLedgerByType[r.ledger_id][t]) || 0), 0)),
+      totals?.fee_paid || 0, totals?.balance || 0];
 
+    const totalCols = header.length;
     const aoa = [
       ['BRILLIANT PUBLIC SCHOOL'],
       ['Village-Sherpur-Nayser, Post-Jawal, District-Bulandshahr, UP-203131'],
@@ -6003,13 +6527,13 @@ ipcMain.handle('feeLedger:exportMonthlyReportExcel', async (_evt, { rows, totals
 
     const ws = XLSX.utils.aoa_to_sheet(aoa);
     ws['!merges'] = [
-      { s: { r: 0, c: 0 }, e: { r: 0, c: 9 } },
-      { s: { r: 1, c: 0 }, e: { r: 1, c: 9 } },
-      { s: { r: 2, c: 0 }, e: { r: 2, c: 9 } },
+      { s: { r: 0, c: 0 }, e: { r: 0, c: totalCols - 1 } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: totalCols - 1 } },
+      { s: { r: 2, c: 0 }, e: { r: 2, c: totalCols - 1 } },
     ];
     ws['!cols'] = [
       { wch: 6 }, { wch: 16 }, { wch: 22 }, { wch: 10 }, { wch: 20 }, { wch: 16 },
-      { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 12 },
+      { wch: 14 }, { wch: 12 }, ...feeTypeColumns.map(() => ({ wch: 13 })), { wch: 12 }, { wch: 12 },
     ];
 
     const wb = XLSX.utils.book_new();
@@ -6138,6 +6662,58 @@ ipcMain.handle('enrollment:exportClassListExcel', async (_evt, { students, selec
   }
 });
 
+// Full enrollment history — every student ever, any status (active,
+// dropped out, TC-issued, passed out), any class, any year. Queries the
+// table directly rather than relying on whatever's currently browsed on
+// screen, since 'All Students' is meant to be a complete database export,
+// not a filtered view.
+ipcMain.handle('enrollment:exportAllStudentsExcel', async () => {
+  try {
+    const students = db.prepare(`SELECT * FROM enrollment ORDER BY student_name`).all();
+    if (students.length === 0) return { success: false, message: 'No students found in the database.' };
+
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: 'Save Full Enrollment List',
+      defaultPath: `Full_Enrollment_List_${new Date().toISOString().slice(0,10)}.xlsx`,
+      filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }],
+    });
+    if (canceled || !filePath) return { success: false, cancelled: true };
+
+    const columns = Object.keys(students[0]);
+    const humanize = (key) => key.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+    const header = ['#', ...columns.map(humanize)];
+    const dataRows = students.map((s, i) => [i + 1, ...columns.map(c => s[c] ?? '')]);
+
+    const aoa = [
+      ['BRILLIANT PUBLIC SCHOOL'],
+      ['Village-Sherpur-Nayser, Post-Jawal, District-Bulandshahr, UP-203131'],
+      [`FULL ENROLLMENT LIST — Every Student, All Statuses (${students.length} total)`],
+      [],
+      header,
+      ...dataRows,
+    ];
+
+    const lastCol = header.length - 1;
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!merges'] = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: lastCol } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: lastCol } },
+      { s: { r: 2, c: 0 }, e: { r: 2, c: lastCol } },
+    ];
+    ws['!cols'] = header.map(h => ({ wch: Math.max(h.length + 2, 12) }));
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Full Enrollment');
+    XLSX.writeFile(wb, filePath);
+
+    return { success: true, filePath, count: students.length };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+
+
 // ══════════════════════════════════════════════════════════════
 // FEES MODULE — COUNTER PAYMENT HANDLERS (Phase 3)
 // ══════════════════════════════════════════════════════════════
@@ -6263,7 +6839,7 @@ ipcMain.handle('counter:getLedgerForPayment', (_evt, { query, academic_year }) =
       SELECT stage_id as existing_stage_id, description, debit as amount, concession, concession_reason, fee_type
       FROM   fee_transactions_stage
       WHERE  ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVABLE'
-        AND  fee_month = ? AND status != 'CANCELLED'
+        AND  fee_month = ? AND status = 'PENDING'
         AND  (receipt_number IS NULL OR receipt_number = '')
     `).all(ledger.ledger_id, academic_year, currentFeeMonth)
       .map(i => ({ ...i, fee_type: i.fee_type || _guessFeeTypeFromDescription(i.description) || '' }));
@@ -6302,6 +6878,63 @@ ipcMain.handle('counter:getLedgerForPayment', (_evt, { query, academic_year }) =
       current_fee_month: currentFeeMonth,
       alreadyPaidThisMonth,
     };
+  } catch(e) { return { success: false, message: e.message }; }
+});
+
+// Admit Card — search by SL number, admission number, or student name.
+// Reuses the exact same balance formula as Fees Notice/Defaulter List
+// (_ledgerBalances) so "Total Fee Pending" can never quietly disagree with
+// what those screens show. Only active students are eligible — a dropped-
+// out student has no business being handed an exam admit card.
+ipcMain.handle('admitCard:search', (_evt, { query, academic_year }) => {
+  try {
+    const q = '%' + (query || '') + '%';
+    const rows = db.prepare(`
+      SELECT l.ledger_id, l.sl_number, l.admission_number, l.student_name,
+             COALESCE(e.current_class, l.current_class) as current_class,
+             COALESCE(e.section, l.section)             as section,
+             e.father_name, e.mother_name,
+             rn.roll_number
+      FROM   fee_ledger l
+      LEFT JOIN student_directory e  ON e.admission_number = l.admission_number
+      LEFT JOIN roll_numbers      rn ON rn.admission_number = l.admission_number
+                                     AND rn.class   = COALESCE(e.current_class, l.current_class)
+                                     AND rn.section = COALESCE(e.section, l.section)
+                                     AND rn.academic_year = l.academic_year
+      WHERE  l.academic_year = ? AND l.is_active = 1
+      AND    (l.sl_number LIKE ? OR l.student_name LIKE ? OR l.admission_number LIKE ?)
+      ORDER  BY CAST(SUBSTR(l.sl_number,4) AS INTEGER)
+      LIMIT  20
+    `).all(academic_year, q, q, q);
+    const data = rows.map(r => ({ ...r, balance: (_ledgerBalances(academic_year, r.ledger_id)[0] || {}).balance || 0 }));
+    return { success: true, data };
+  } catch(e) { return { success: false, message: e.message }; }
+});
+
+// Admit Card — whole class/section at once, ordered by roll number (students
+// with no roll number yet fall to the end, same ordering convention used by
+// Roll Numbers and Attendance).
+ipcMain.handle('admitCard:getForClass', (_evt, { current_class, section, academic_year }) => {
+  try {
+    const rows = db.prepare(`
+      SELECT l.ledger_id, l.sl_number, l.admission_number, l.student_name,
+             COALESCE(e.current_class, l.current_class) as current_class,
+             COALESCE(e.section, l.section)             as section,
+             e.father_name, e.mother_name,
+             rn.roll_number
+      FROM   fee_ledger l
+      LEFT JOIN student_directory e  ON e.admission_number = l.admission_number
+      LEFT JOIN roll_numbers      rn ON rn.admission_number = l.admission_number
+                                     AND rn.class   = COALESCE(e.current_class, l.current_class)
+                                     AND rn.section = COALESCE(e.section, l.section)
+                                     AND rn.academic_year = l.academic_year
+      WHERE  l.academic_year = ? AND l.is_active = 1
+      AND    COALESCE(e.current_class, l.current_class) = ?
+      AND    COALESCE(e.section, l.section) = ?
+      ORDER  BY CASE WHEN rn.roll_number IS NULL THEN 1 ELSE 0 END, rn.roll_number, l.student_name
+    `).all(academic_year, current_class, section);
+    const data = rows.map(r => ({ ...r, balance: (_ledgerBalances(academic_year, r.ledger_id)[0] || {}).balance || 0 }));
+    return { success: true, data };
   } catch(e) { return { success: false, message: e.message }; }
 });
 
@@ -6357,7 +6990,7 @@ ipcMain.handle('counter:getGroupForPayment', (_evt, { query, academic_year }) =>
         SELECT stage_id as existing_stage_id, description, debit as amount, concession, concession_reason, fee_type
         FROM   fee_transactions_stage
         WHERE  ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVABLE'
-          AND  fee_month = ? AND status != 'CANCELLED'
+          AND  fee_month = ? AND status = 'PENDING'
           AND  (receipt_number IS NULL OR receipt_number = '')
       `).all(m.ledger_id, academic_year, currentFeeMonth)
         .map(i => ({ ...i, fee_type: i.fee_type || _guessFeeTypeFromDescription(i.description) || '' }));
@@ -6392,6 +7025,15 @@ ipcMain.handle('counter:savePayment', (_evt, { academic_year, ledger_id, group_i
       return {
         success: false,
         message: `This counter still has unposted receipts from ${formatted}. Ask your Principal to complete Day-End Posting for that date before collecting new payments.`,
+      };
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    if (_isDatePostedForCenter(center_id, today)) {
+      const center = db.prepare('SELECT center_name FROM collection_centers WHERE center_id = ?').get(center_id);
+      return {
+        success: false,
+        message: `Day-End Posting has already been completed for today at ${center?.center_name || 'this center'}. This counter is locked until tomorrow.`,
       };
     }
 
@@ -6478,7 +7120,13 @@ ipcMain.handle('counter:cancelPayment', (_evt, { receipt_number, academic_year, 
       'SELECT * FROM fee_transactions_stage WHERE receipt_number = ? AND academic_year = ?'
     ).all(receipt_number, academic_year);
     if (rows.length === 0) return { success: false, message: 'Receipt not found: ' + receipt_number };
-    const isPosted = rows.some(r => r.schedule_id && r.schedule_id !== '');
+    // A receipt is "posted" only once its actual payment (the RECEIVED row)
+    // has gone through Day-End Posting — not whenever any associated row
+    // happens to carry a schedule_id. A claimed RECEIVABLE line can carry a
+    // schedule_id from whenever that debit was originally posted, which may
+    // predate this receipt entirely and has no bearing on whether today's
+    // payment itself has been posted.
+    const isPosted = rows.some(r => r.transaction_type === 'RECEIVED' && r.schedule_id && r.schedule_id !== '');
     if (isPosted) return { success: false, message: 'This receipt has already been posted. Cancellation not allowed.' };
     db.prepare(
       'UPDATE fee_transactions_stage SET status = ? WHERE receipt_number = ? AND academic_year = ?'
@@ -6754,7 +7402,9 @@ ipcMain.handle('feeLedger:addToGroup', (_evt, { ledger_id, group_id, academic_ye
 ipcMain.handle('posting:checkUnposted', (_evt, { center_id, counter_id }) => {
   try {
     const unpostedDays = _getUnpostedPastDays(center_id, counter_id);
-    return { success: true, unposted_dates: unpostedDays };
+    const today = new Date().toISOString().slice(0, 10);
+    const todayPosted = _isDatePostedForCenter(center_id, today);
+    return { success: true, unposted_dates: unpostedDays, today_posted: todayPosted };
   } catch (err) { return { success: false, message: err.message }; }
 });
 
@@ -6791,6 +7441,7 @@ ipcMain.handle('posting:getStaged', (_evt, { center_id, counter_id, date, academ
       AND    s.status             IN ('PENDING', 'CANCELLED')
       AND    (? IS NULL OR s.center_id  = ?)
       AND    (? IS NULL OR s.counter_id = ?)
+      AND    (s.transaction_type != 'RECEIVABLE' OR (s.receipt_number IS NOT NULL AND s.receipt_number != ''))
       GROUP  BY s.receipt_number, s.ledger_id
       ORDER  BY s.receipt_number, CAST(SUBSTR(s.sl_number,4) AS INTEGER)
     `).all(d, academic_year, center_id || null, center_id || null, counter_id || null, counter_id || null);
@@ -6816,16 +7467,9 @@ ipcMain.handle('posting:createAndPost', (_evt, { center_id, counter_id, date, ac
   try {
     const d = date || new Date().toISOString().slice(0, 10);
 
-    // Get center code for schedule ID
+    // Get center for schedule name/message purposes
     const center = db.prepare('SELECT * FROM collection_centers WHERE center_id = ?').get(center_id || 1);
-    const code   = (center?.center_code || 'BPS').replace(/-/g, '');
-
-    // Build schedule ID: CENTERCODE + DDMMYY
-    const dt     = new Date(d);
-    const ddmmyy = String(dt.getDate()).padStart(2,'0')
-                 + String(dt.getMonth()+1).padStart(2,'0')
-                 + String(dt.getFullYear()).slice(2);
-    const scheduleId = code + ddmmyy;
+    const scheduleId = _scheduleIdFor(center_id, d);
 
     // Check not already posted for this day+center
     const existing = db.prepare('SELECT * FROM posting_schedules WHERE schedule_id = ?').get(scheduleId);
@@ -6841,14 +7485,18 @@ ipcMain.handle('posting:createAndPost', (_evt, { center_id, counter_id, date, ac
       AND    status              = 'PENDING'
       AND    (? IS NULL OR center_id  = ?)
       AND    (? IS NULL OR counter_id = ?)
+      AND    (transaction_type != 'RECEIVABLE' OR (receipt_number IS NOT NULL AND receipt_number != ''))
     `).all(d, academic_year, center_id || null, center_id || null, counter_id || null, counter_id || null);
 
     // If specific (receipt_number, ledger_id) pairs were selected, only post
     // those students' rows — anything unchecked stays PENDING, untouched.
-    if (Array.isArray(selected_keys) && selected_keys.length > 0) {
-      const keySet = new Set(selected_keys);
-      staged = staged.filter(r => keySet.has(r.receipt_number + '::' + r.ledger_id));
+    // An empty selection is always an error, never "post everything" — the
+    // caller must be explicit about what it's posting.
+    if (!Array.isArray(selected_keys) || selected_keys.length === 0) {
+      return { success: false, message: 'No pending transactions selected for ' + d };
     }
+    const keySet = new Set(selected_keys);
+    staged = staged.filter(r => keySet.has(r.receipt_number + '::' + r.ledger_id));
 
     if (staged.length === 0) return { success: false, message: 'No pending transactions selected for ' + d };
 
@@ -7088,7 +7736,122 @@ ipcMain.handle('reports:getDefaulters', (_evt, { academic_year, class: cls }) =>
   } catch(e) { return { success: false, message: e.message }; }
 });
 
-// Get receipt for reprint (checks both staged and posted)
+// Real-time pending balance for one ledger — exact same formula as the
+// Defaulter List (opening balance + posted + staged-pending), so Fees
+// Notice can never quietly quote a different number than every other
+// screen that shows a student's balance.
+function _ledgerBalances(academic_year, ledgerIdFilter) {
+  const clause = ledgerIdFilter ? 'AND l.ledger_id = ?' : '';
+  const params = ledgerIdFilter ? [academic_year, academic_year, academic_year, ledgerIdFilter] : [academic_year, academic_year, academic_year];
+  const rows = db.prepare(`
+    SELECT l.ledger_id, l.sl_number, l.student_name, l.current_class, l.section,
+           l.opening_balance, l.admission_number, l.group_id, g.gsl_number,
+           e.father_name, e.mother_name, e.mobile_number,
+           COALESCE(pt.debit,0)   - COALESCE(pt.credit,0)   - COALESCE(pt.conc,0)   as posted_bal,
+           COALESCE(st.debit,0)   - COALESCE(st.credit,0)   - COALESCE(st.conc,0)   as staged_bal,
+           st.last_payment
+    FROM   fee_ledger l
+    LEFT JOIN fee_groups g ON g.group_id = l.group_id
+    LEFT JOIN student_directory e ON e.admission_number = l.admission_number
+    LEFT JOIN (
+      SELECT ledger_id, SUM(debit) as debit, SUM(credit) as credit, SUM(concession) as conc
+      FROM   fee_transactions WHERE academic_year = ?
+      GROUP  BY ledger_id
+    ) pt ON pt.ledger_id = l.ledger_id
+    LEFT JOIN (
+      SELECT ledger_id, SUM(debit) as debit, SUM(credit) as credit, SUM(concession) as conc,
+             MAX(CASE WHEN transaction_type='RECEIVED' THEN collected_at END) as last_payment
+      FROM   fee_transactions_stage
+      WHERE  academic_year = ? AND status = 'PENDING'
+      GROUP  BY ledger_id
+    ) st ON st.ledger_id = l.ledger_id
+    WHERE  l.academic_year = ? ${clause}
+  `).all(...params);
+  return rows.map(r => ({ ...r, balance: (r.opening_balance||0) + (r.posted_bal||0) + (r.staged_bal||0) }));
+}
+
+// Search for the Fees Notice list — by SL number, GSL number, or student
+// name, with an optional 'balance greater than X' threshold.
+ipcMain.handle('feesNotice:search', (_evt, { academic_year, search, min_amount }) => {
+  try {
+    let rows = _ledgerBalances(academic_year);
+    if (search && search.trim()) {
+      const q = search.trim().toLowerCase();
+      rows = rows.filter(r =>
+        (r.sl_number || '').toLowerCase().includes(q) ||
+        (r.gsl_number || '').toLowerCase().includes(q) ||
+        (r.student_name || '').toLowerCase().includes(q)
+      );
+    }
+    const min = Number(min_amount) || 0;
+    rows = rows.filter(r => r.balance > Math.max(min, 0.005));
+    rows.sort((a, b) => b.balance - a.balance);
+    return { success: true, data: rows };
+  } catch (e) { return { success: false, message: e.message }; }
+});
+
+// Notice detail for one student — if they're part of a sibling group,
+// every group member's individual balance plus a combined total; if not,
+// just the one student. Also returns their pending transaction lines
+// (staged + posted) for a month-wise breakdown on the notice itself.
+ipcMain.handle('feesNotice:getDetail', (_evt, { ledger_id, academic_year }) => {
+  try {
+    const focusRows = _ledgerBalances(academic_year, ledger_id);
+    if (focusRows.length === 0) return { success: false, message: 'Ledger not found.' };
+    const focusStudent = focusRows[0];
+
+    let group = null;
+    if (focusStudent.group_id) {
+      const memberLinks = db.prepare(
+        'SELECT ledger_id FROM fee_group_members WHERE group_id = ? ORDER BY sibling_position'
+      ).all(focusStudent.group_id);
+      const members = memberLinks
+        .map(m => _ledgerBalances(academic_year, m.ledger_id)[0])
+        .filter(Boolean);
+      if (members.length > 1) {
+        group = {
+          gsl_number: focusStudent.gsl_number,
+          members,
+          total_balance: members.reduce((sum, m) => sum + m.balance, 0),
+        };
+      }
+    }
+
+    const transactions = db.prepare(`
+      SELECT fee_type, description, fee_month, debit, credit, concession, 'POSTED' as status
+      FROM   fee_transactions WHERE ledger_id = ? AND academic_year = ?
+      UNION ALL
+      SELECT fee_type, description, fee_month, debit, credit, concession, 'PENDING' as status
+      FROM   fee_transactions_stage WHERE ledger_id = ? AND academic_year = ? AND status = 'PENDING'
+      ORDER  BY fee_month
+    `).all(ledger_id, academic_year, ledger_id, academic_year);
+
+    return { success: true, focusStudent, group, transactions };
+  } catch (e) { return { success: false, message: e.message }; }
+});
+
+// Reserve N consecutive notice serial numbers for a given calendar date —
+// called once when a print job actually opens (single = 1, bulk = however
+// many notices are in that job), never just from browsing a preview, so
+// serials track what was actually issued that day. Synchronous read-then-
+// write with no await between them, so it's atomic within this single-
+// threaded process.
+ipcMain.handle('feesNotice:reserveSerials', (_evt, { date, count }) => {
+  try {
+    const n = Math.max(1, parseInt(count, 10) || 1);
+    const row = db.prepare('SELECT last_serial FROM fee_notice_counters WHERE notice_date = ?').get(date);
+    const start = (row ? row.last_serial : 0) + 1;
+    const end = start + n - 1;
+    if (row) {
+      db.prepare('UPDATE fee_notice_counters SET last_serial = ? WHERE notice_date = ?').run(end, date);
+    } else {
+      db.prepare('INSERT INTO fee_notice_counters (notice_date, last_serial) VALUES (?, ?)').run(date, end);
+    }
+    const serials = [];
+    for (let s = start; s <= end; s++) serials.push(s);
+    return { success: true, data: serials };
+  } catch (e) { return { success: false, message: e.message }; }
+});
 ipcMain.handle('reports:getReceiptForPrint', (_evt, { receipt_number, academic_year }) => {
   try {
     // Try posted first
@@ -7712,7 +8475,7 @@ ipcMain.handle('transport:getMonthly', (_evt, { academic_year, month }) => {
              ON ar.academic_year = l.academic_year
             AND ar.is_active     = 1
             AND ar.route_name    = (UPPER(e.village) || '-SHERPUR ROUTE')
-      WHERE  l.academic_year = ?
+      WHERE  l.academic_year = ? AND l.is_active = 1
       ORDER  BY CAST(SUBSTR(l.sl_number,4) AS INTEGER)
     `).all(sourceMonth, academic_year);
     return { success: true, data: rows, carried_forward: carriedForward, carried_from_month: carriedForward ? sourceMonth : null };
@@ -7743,7 +8506,30 @@ ipcMain.handle('transport:saveMonthly', (_evt, { academic_year, month, assignmen
     const remove = db.prepare(
       'DELETE FROM student_transport_monthly WHERE admission_number=? AND academic_year=? AND month=?'
     );
-    let skipped = 0;
+
+    // Reversal support — when a student is turned OFF, any Transport
+    // charge already raised for that month needs to actually leave their
+    // ledger, not just the assignment row. A charge still PENDING (never
+    // posted) is deleted outright; one already POSTED is a permanent
+    // record, so instead of deleting it we add a matching credit reversal
+    // that nets it out once posted, same as any other correction.
+    const feeMonth = _feeMonthFor(academic_year, month);
+    const findLedger = db.prepare('SELECT ledger_id, sl_number FROM fee_ledger WHERE admission_number = ? AND academic_year = ?');
+    const findPendingCharge = db.prepare(
+      "SELECT stage_id, debit FROM fee_transactions_stage WHERE ledger_id = ? AND fee_type = 'TRANSPORT' AND fee_month = ? AND status = 'PENDING' AND transaction_type = 'RECEIVABLE'"
+    );
+    const deletePendingCharge = db.prepare('DELETE FROM fee_transactions_stage WHERE stage_id = ?');
+    const findPostedCharge = db.prepare(
+      "SELECT txn_id, debit FROM fee_transactions WHERE ledger_id = ? AND fee_type = 'TRANSPORT' AND fee_month = ?"
+    );
+    const insertReversal = db.prepare(`
+      INSERT INTO fee_transactions_stage
+        (ledger_id, sl_number, academic_year, transaction_type, description,
+         debit, credit, payment_mode, center_id, counter_id, collected_by, status, fee_month, fee_type)
+      VALUES (?, ?, ?, 'ADJUSTMENT', ?, 0, ?, 'AUTO', 1, 1, ?, 'PENDING', ?, 'TRANSPORT')
+    `);
+
+    let skipped = 0, reversed = 0;
     const doAll = db.transaction(() => {
       assignments.forEach(a => {
         if (a.enabled) {
@@ -7755,11 +8541,27 @@ ipcMain.handle('transport:saveMonthly', (_evt, { academic_year, month, assignmen
           }
         } else {
           remove.run(a.admission_number, academic_year, month);
+
+          const ledger = findLedger.get(a.admission_number, academic_year);
+          if (ledger) {
+            const pending = findPendingCharge.get(ledger.ledger_id, feeMonth);
+            if (pending) { deletePendingCharge.run(pending.stage_id); reversed++; }
+
+            const posted = findPostedCharge.get(ledger.ledger_id, feeMonth);
+            if (posted && posted.debit > 0) {
+              insertReversal.run(
+                ledger.ledger_id, ledger.sl_number, academic_year,
+                `Transport Fee removal reversal (${month}/${academic_year})`,
+                posted.debit, saved_by || '', feeMonth
+              );
+              reversed++;
+            }
+          }
         }
       });
     });
     doAll();
-    return { success: true, skipped };
+    return { success: true, skipped, reversed };
   } catch(e) { return { success: false, message: e.message }; }
 });
 
@@ -7872,8 +8674,8 @@ ipcMain.handle('counter:getBulkPreview', (_evt, { academic_year, month, year, fe
 
       // Sibling concession
       const sibPos     = student._siblingPosition || null;
-      const isSibling  = sibPos !== null && sibPos >= (settings.sibling_concession_from || 3);
-      const concessPct = isSibling ? (settings.sibling_concession_pct || 0) : 0;
+      const concessPct = _effectiveSiblingConcessionPct(sibPos, student.custom_concession_pct, settings);
+      const isSibling  = concessPct > 0;
 
       // Build line items for selected fee types
       const lines = [];

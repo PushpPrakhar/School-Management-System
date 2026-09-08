@@ -4,6 +4,7 @@ import MissingFeesBanner from '../components/MissingFeesBanner';
 import PaperReceiptModal from '../components/PaperReceiptModal';
 import CounterOtherReceiptModal from '../components/CounterOtherReceiptModal';
 import DailyCollectionPrintModal from '../components/DailyCollectionPrintModal';
+import { gslSearchError } from '../utils/helpers';
 
 // ── Helpers ───────────────────────────────────────────────────
 const SESSION_YEAR = (() => { const n = new Date(), y = n.getFullYear(); return n.getMonth() >= 3 ? y : y - 1; })();
@@ -158,6 +159,7 @@ function IndividualTab({ academicYear }) {
   const [centerId,    setCenterId]    = useState(1);
   const [counterId,   setCounterId]   = useState(1);
   const [unpostedDates, setUnpostedDates] = useState([]);
+  const [todayPosted, setTodayPosted] = useState(false);
 
   useEffect(() => {
     window.api.centersGetAll().then(r => {
@@ -173,11 +175,11 @@ function IndividualTab({ academicYear }) {
 
   useEffect(() => {
     window.api.postingCheckUnposted(centerId, counterId).then(r => {
-      if (r.success) setUnpostedDates(r.unposted_dates || []);
+      if (r.success) { setUnpostedDates(r.unposted_dates || []); setTodayPosted(!!r.today_posted); }
     });
   }, [centerId, counterId]);
 
-  const blockedByUnposted = unpostedDates.length > 0;
+  const blockedByUnposted = unpostedDates.length > 0 || todayPosted;
   const unpostedDatesDisplay = unpostedDates.map(d => { const [y,m,dd] = d.split('-'); return `${dd}-${m}-${y}`; }).join(', ');
 
   const search = async () => {
@@ -199,10 +201,10 @@ function IndividualTab({ academicYear }) {
     const items = (res.currentMonthItems || []).map(i => ({ ...i }));
     const settings = res.settings || {};
     const today = new Date();
-    const dueDay = settings.grace_period_days || 10;
+    const dueDay = settings.grace_period_days ?? 10;
     if (today.getDate() > dueDay) {
       const lateDays = today.getDate() - dueDay;
-      const lateFee  = Math.min(lateDays * (settings.late_fee_per_day || 5), settings.late_fee_annual_cap || 1000);
+      const lateFee  = Math.min(lateDays * (settings.late_fee_per_day ?? 5), settings.late_fee_annual_cap ?? 1000);
       if (lateFee > 0) items.push({ description: `Late Fee (${lateDays} days × ₹${settings.late_fee_per_day})`, amount: lateFee, concession: 0, concession_reason: '', fee_type: '', is_late_fee: true });
     }
     setChargeItems(items);
@@ -312,8 +314,17 @@ function IndividualTab({ academicYear }) {
     <div>
       {blockedByUnposted && (
         <div className="bg-red-50 border border-red-300 rounded-2xl px-5 py-4 mb-4">
-          <p className="text-sm font-semibold text-red-700">⚠️ This counter has unposted receipts from {unpostedDatesDisplay}.</p>
-          <p className="text-xs text-red-600 mt-1">New payments can't be collected on this counter until that day's Day-End Posting is completed. Ask your Principal/Manager to post it, or select a different counter below.</p>
+          {todayPosted ? (
+            <>
+              <p className="text-sm font-semibold text-red-700">🔒 Day-End Posting has already been completed for today at this center.</p>
+              <p className="text-xs text-red-600 mt-1">This counter is locked for new payments until tomorrow. Select a different, not-yet-posted counter below if one is available.</p>
+            </>
+          ) : (
+            <>
+              <p className="text-sm font-semibold text-red-700">⚠️ This counter has unposted receipts from {unpostedDatesDisplay}.</p>
+              <p className="text-xs text-red-600 mt-1">New payments can't be collected on this counter until that day's Day-End Posting is completed. Ask your Principal/Manager to post it, or select a different counter below.</p>
+            </>
+          )}
         </div>
       )}
 
@@ -506,16 +517,17 @@ function GroupTab({ academicYear }) {
   const [receipt,     setReceipt]     = useState(null);
   const [settings,    setSettings]    = useState(null);
   const [unpostedDates, setUnpostedDates] = useState([]);
+  const [todayPosted, setTodayPosted] = useState(false);
 
   useEffect(() => {
     // Group Payment always posts as center 1 / counter 1 (no counter
     // selector of its own) — check matches exactly what savePayment sends.
     window.api.postingCheckUnposted(1, 1).then(r => {
-      if (r.success) setUnpostedDates(r.unposted_dates || []);
+      if (r.success) { setUnpostedDates(r.unposted_dates || []); setTodayPosted(!!r.today_posted); }
     });
   }, []);
 
-  const blockedByUnposted = unpostedDates.length > 0;
+  const blockedByUnposted = unpostedDates.length > 0 || todayPosted;
   const unpostedDatesDisplay = unpostedDates.map(d => { const [y,m,dd] = d.split('-'); return `${dd}-${m}-${y}`; }).join(', ');
 
   useEffect(() => {
@@ -530,6 +542,8 @@ function GroupTab({ academicYear }) {
   const search = async () => {
     if (!query.trim()) return;
     setLoading(true); setError(''); setGroupData(null); setMemberItems({}); setAdjustments({});
+    const lengthError = gslSearchError(query.trim());
+    if (lengthError) { setLoading(false); setError(lengthError); return; }
     // Try GSL search first, then member search
     let res = await window.api.counterGetGroup(query.trim(), academicYear);
     if (!res.success) {
@@ -566,7 +580,7 @@ function GroupTab({ academicYear }) {
     const itemsMap = {};
     const adj = {};
     const today   = new Date();
-    const dueDay  = sett.grace_period_days || 10;
+    const dueDay  = sett.grace_period_days ?? 10;
     sorted.forEach((m, idx) => {
       const position = idx + 1; // 1 = oldest
       const items = (m.currentMonthItems || []).map(i => ({ ...i }));
@@ -574,8 +588,8 @@ function GroupTab({ academicYear }) {
       // Late fee — always computed live (depends on today's date, not pre-generated)
       if (today.getDate() > dueDay) {
         const lateDays = today.getDate() - dueDay;
-        const lateFee  = Math.min(lateDays * (sett.late_fee_per_day||5), sett.late_fee_annual_cap||1000);
-        if (lateFee > 0) items.push({ description:`Late Fee (${lateDays} days × ₹${sett.late_fee_per_day||5})`, amount:lateFee, concession:0, concession_reason:'', fee_type:'', is_late_fee: true });
+        const lateFee  = Math.min(lateDays * (sett.late_fee_per_day ?? 5), sett.late_fee_annual_cap ?? 1000);
+        if (lateFee > 0) items.push({ description:`Late Fee (${lateDays} days × ₹${sett.late_fee_per_day ?? 5})`, amount:lateFee, concession:0, concession_reason:'', fee_type:'', is_late_fee: true });
       }
 
       itemsMap[m.admission_number] = { member: m, items, position };
@@ -696,8 +710,17 @@ function GroupTab({ academicYear }) {
     <div>
       {blockedByUnposted && (
         <div className="bg-red-50 border border-red-300 rounded-2xl px-5 py-4 mb-4">
-          <p className="text-sm font-semibold text-red-700">⚠️ This counter has unposted receipts from {unpostedDatesDisplay}.</p>
-          <p className="text-xs text-red-600 mt-1">New payments can't be collected until that day's Day-End Posting is completed. Ask your Principal/Manager to post it.</p>
+          {todayPosted ? (
+            <>
+              <p className="text-sm font-semibold text-red-700">🔒 Day-End Posting has already been completed for today at this center.</p>
+              <p className="text-xs text-red-600 mt-1">This counter is locked for new payments until tomorrow.</p>
+            </>
+          ) : (
+            <>
+              <p className="text-sm font-semibold text-red-700">⚠️ This counter has unposted receipts from {unpostedDatesDisplay}.</p>
+              <p className="text-xs text-red-600 mt-1">New payments can't be collected until that day's Day-End Posting is completed. Ask your Principal/Manager to post it.</p>
+            </>
+          )}
         </div>
       )}
 
@@ -881,7 +904,14 @@ function CancelTab({ academicYear }) {
   const rows     = receipt || [];
   const paid     = rows.filter(r => r.transaction_type === 'RECEIVED').reduce((s,r) => s + (r.credit||0), 0);
   const isCancelled = rows.some(r => r.status === 'CANCELLED');
-  const isPosted    = rows.some(r => r.schedule_id && r.schedule_id !== '');
+  // A receipt is "posted" only once its actual payment (the RECEIVED row)
+  // has gone through Day-End Posting — not whenever any associated row
+  // happens to carry a schedule_id. A claimed RECEIVABLE line can carry a
+  // schedule_id from whenever that debit was originally posted, which may
+  // predate this receipt entirely and has no bearing on whether today's
+  // payment itself has been posted. Matches the identical check in the
+  // counter:cancelPayment backend handler — must never drift apart from it.
+  const isPosted    = rows.some(r => r.transaction_type === 'RECEIVED' && r.schedule_id && r.schedule_id !== '');
 
   return (
     <div className="max-w-xl">

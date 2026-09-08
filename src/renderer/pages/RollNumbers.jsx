@@ -118,7 +118,7 @@ function AssignTab() {
             ${anyAssigned ? 'bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white' : 'bg-blue-700 hover:bg-blue-800 disabled:bg-blue-300 text-white'}`}>
           {assigning === 'ALL'
             ? <><span className="animate-spin">⏳</span> Assigning all…</>
-            : `🔢 Assign All Classes (${year})`}
+            : `Assign All Classes (${year})`}
         </button>
       </div>
 
@@ -215,7 +215,7 @@ function AssignTab() {
                           disabled={assigning === `sync_${s.class}_${s.section}`}
                           title="Add anyone active but missing a roll number to the end — doesn't touch anyone already assigned"
                           className="text-xs font-medium px-4 py-1.5 rounded-lg border border-green-300 text-green-700 hover:bg-green-50">
-                          {assigning === `sync_${s.class}_${s.section}` ? '⏳ Syncing…' : '➕ Sync Missing'}
+                          {assigning === `sync_${s.class}_${s.section}` ? '⏳ Syncing…' : 'Sync Missing'}
                         </button>
                       )}
                       <button
@@ -228,7 +228,7 @@ function AssignTab() {
                             : 'bg-blue-700 hover:bg-blue-800 text-white'}`}>
                         {assigning === `${s.class}_${s.section}`
                           ? '⏳ Assigning…'
-                          : s.is_assigned ? '↺ Re-assign' : '🔢 Assign'}
+                          : s.is_assigned ? 'Re-assign' : 'Assign'}
                       </button>
                     </div>
                   </td>
@@ -309,7 +309,7 @@ function ViewTab() {
         <div className="mt-4 flex gap-3 items-center">
           <button onClick={load} disabled={!cls || loading}
             className="bg-blue-700 hover:bg-blue-800 disabled:bg-blue-300 text-white px-6 py-2 rounded-lg text-sm font-medium">
-            {loading ? '⏳ Loading…' : '🔍 Show Roll Numbers'}
+            {loading ? '⏳ Loading…' : 'Show Roll Numbers'}
           </button>
           <p className="text-xs text-gray-400">
             {mode === 'frozen'
@@ -363,7 +363,7 @@ function ViewTab() {
                   <td className="px-4 py-3 font-medium text-gray-800">{r.student_name}</td>
                   <td className="px-4 py-3 font-mono text-xs text-gray-500">{r.admission_number}</td>
                   <td className="px-4 py-3 text-center text-gray-600">
-                    {r.gender === 'M' ? '👦' : r.gender === 'F' ? '👧' : '—'}
+                    {r.gender === 'M' ? 'M' : r.gender === 'F' ? 'F' : '—'}
                   </td>
                   <td className="px-4 py-3 text-gray-600 text-xs">{r.father_name}</td>
                   {mode === 'frozen' && (
@@ -474,7 +474,7 @@ function ManualFixTab() {
           </div>
           <button onClick={load} disabled={!cls || loading}
             className="bg-blue-700 hover:bg-blue-800 disabled:bg-blue-300 text-white font-medium px-5 py-2 rounded-lg text-sm">
-            {loading ? '⏳ Loading…' : '📋 Load Students'}
+            {loading ? '⏳ Loading…' : 'Load Students'}
           </button>
         </div>
       </div>
@@ -511,7 +511,7 @@ function ManualFixTab() {
           <div className="px-5 py-4 border-t border-gray-100 flex justify-end">
             <button onClick={save} disabled={saving || hasDuplicates || hasBlanks}
               className="bg-green-600 hover:bg-green-700 disabled:bg-green-300 text-white font-medium px-6 py-2.5 rounded-xl text-sm">
-              {saving ? 'Saving…' : '💾 Save Corrected Roll Numbers'}
+              {saving ? 'Saving…' : 'Save Corrected Roll Numbers'}
             </button>
           </div>
         </div>

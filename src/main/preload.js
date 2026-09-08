@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld('api', {
   homeworkGetForDate:  (requestingUserId, cls, date) => invoke('homework:getForDate', { requesting_user_id: requestingUserId, class: cls, date }),
   homeworkSave:        (requestingUserId, cls, date, entries) => invoke('homework:save', { requesting_user_id: requestingUserId, class: cls, date, entries }),
   homeworkGetAll:      (filters)           => invoke('homework:getAll', filters),
+  homeworkExportReviewExcel: (rows, fromDate, toDate, cls) => invoke('homework:exportReviewExcel', { rows, fromDate, toDate, cls }),
   teachersToggle:      (id, active, requestingUserId) => invoke('users:toggle', { userId: id, isActive: active, requesting_user_id: requestingUserId }),
 
   // Enrollment
@@ -137,9 +138,15 @@ contextBridge.exposeInMainWorld('api', {
   examLock:         (cls, sec, yr, type, by)              => invoke('exam:lock',        { class: cls, section: sec, academic_year: yr, exam_type: type, locked_by: by }),
   examUnlock:       (cls, sec, yr, type, uid)              => invoke('exam:unlock',      { class: cls, section: sec, academic_year: yr, exam_type: type, requesting_user_id: uid }),
   examCheckLocked:  (cls, sec, yr, type)                  => invoke('exam:checkLocked', { class: cls, section: sec, academic_year: yr, exam_type: type }),
+  examExportMarksExcel: (students, marks, subjects, cls, section, examLabel, maxMarks, academicYear) =>
+    invoke('exam:exportMarksExcel', { students, marks, subjects, cls, section, examLabel, maxMarks, academicYear }),
+  examExportAllClassesMarksExcel: (examType, academicYear, examLabel) =>
+    invoke('exam:exportAllClassesMarksExcel', { exam_type: examType, academic_year: academicYear, exam_label: examLabel }),
   examGetStatus:    (yr, cls, sec)                        => invoke('exam:getStatus',   { academic_year: yr, class: cls, section: sec }),
 
   // Fee Settings (Phase 1)
+  academicSettingsGet:      ()                => invoke('academicSettings:get'),
+  academicSettingsSave:     (pct, by)         => invoke('academicSettings:save', { min_subject_pass_pct: pct, updated_by: by }),
   feeSettingsGet:           (yr)              => invoke('feeSettings:get', yr),
   feeSettingsSave:          (data)            => invoke('feeSettings:save', data),
   feeStructureGet:          (yr)              => invoke('feeStructure:get', yr),
@@ -161,17 +168,23 @@ contextBridge.exposeInMainWorld('api', {
     invoke('feeLedger:createProvisionalStudent', { academic_year: yr, student_name, father_name, current_class, section, village, opening_balance, created_by: by, tuition_start_month: tuitionStartMonth }),
   feeLedgerCreateGroup:       (yr, ids, by, gsl, concessionOverrides) => invoke('feeLedger:createGroup', { academic_year: yr, ledger_ids: ids, created_by: by, gsl_number_manual: gsl, concession_overrides: concessionOverrides }),
   feeLedgerUpdateTuitionStartMonth: (ledgerId, month) => invoke('feeLedger:updateTuitionStartMonth', { ledger_id: ledgerId, tuition_start_month: month }),
-  feeLedgerUpdateSiblingConcession: (ledgerId, pct)   => invoke('feeLedger:updateSiblingConcession', { ledger_id: ledgerId, custom_concession_pct: pct }),
+  feeLedgerUpdateSiblingConcession: (ledgerId, pct, by) => invoke('feeLedger:updateSiblingConcession', { ledger_id: ledgerId, custom_concession_pct: pct, updated_by: by }),
   feeLedgerGetAll:            (yr)                    => invoke('feeLedger:getAll', yr),
   feeLedgerGetTransactions:   (lid, yr)               => invoke('feeLedger:getTransactions', { ledger_id: lid, academic_year: yr }),
+  feeLedgerDeletePendingTransaction: (stageId, by)     => invoke('feeLedger:deletePendingTransaction', { stage_id: stageId, deleted_by: by }),
   feeLedgerGetGroupTxns:      (gid, yr)               => invoke('feeLedger:getGroupTransactions', { group_id: gid, academic_year: yr }),
   feeLedgerUpdatePage:        (lid, page)             => invoke('feeLedger:updatePage', { ledger_id: lid, physical_page: page }),
   feeLedgerUpdateOpeningBal:  (lid, bal)              => invoke('feeLedger:updateOpeningBalance', { ledger_id: lid, opening_balance: bal }),
   feeLedgerSearch:            (query, yr)             => invoke('feeLedger:search', { query, academic_year: yr }),
+  admitCardSearch:            (query, yr)             => invoke('admitCard:search', { query, academic_year: yr }),
+  admitCardGetForClass:       (cls, section, yr)      => invoke('admitCard:getForClass', { current_class: cls, section, academic_year: yr }),
+  feeLedgerListByStatus:      (yr, isActive)          => invoke('feeLedger:listByStatus', { academic_year: yr, is_active: isActive }),
+  feeLedgerSetActive:         (ledgerId, isActive)    => invoke('feeLedger:setActive', { ledger_id: ledgerId, is_active: isActive }),
   feeLedgerGetMonthlyReport:  (yr, mon, y, cls)       => invoke('feeLedger:getMonthlyReport', { academic_year: yr, month: mon, year: y, class: cls }),
-  feeLedgerExportMonthlyReportExcel: (rows, totals, monthLabel, cls) => invoke('feeLedger:exportMonthlyReportExcel', { rows, totals, monthLabel, cls }),
+  feeLedgerExportMonthlyReportExcel: (rows, totals, monthLabel, cls, academicYear, month, year) => invoke('feeLedger:exportMonthlyReportExcel', { rows, totals, monthLabel, cls, academic_year: academicYear, month, year }),
   feeLedgerExportTransportListExcel: (students, monthLabel, academicYear) => invoke('feeLedger:exportTransportListExcel', { students, monthLabel, academicYear }),
   enrollmentExportClassListExcel: (students, selectedClass, academicYear) => invoke('enrollment:exportClassListExcel', { students, selectedClass, academicYear }),
+  enrollmentExportAllStudentsExcel: () => invoke('enrollment:exportAllStudentsExcel'),
 
   // Counter Payment (Phase 3)
   counterGetNextReceipt:    (yr)                    => invoke('counter:getNextReceipt', yr),
@@ -194,6 +207,9 @@ contextBridge.exposeInMainWorld('api', {
   // Reports & Reprints (Phase 5)
   reportsGetDailyPayout:     (cid, date, yr, mode)    => invoke('reports:getDailyPayout',      { center_id: cid, date, academic_year: yr, payment_mode: mode }),
   reportsGetDefaulters:      (yr, cls)                => invoke('reports:getDefaulters',        { academic_year: yr, class: cls }),
+  feesNoticeSearch:          (yr, search, minAmount)  => invoke('feesNotice:search',            { academic_year: yr, search, min_amount: minAmount }),
+  feesNoticeGetDetail:       (ledgerId, yr)           => invoke('feesNotice:getDetail',          { ledger_id: ledgerId, academic_year: yr }),
+  feesNoticeReserveSerials:  (date, count)            => invoke('feesNotice:reserveSerials',     { date, count }),
   reportsGetReceiptForPrint: (rcpt, yr)               => invoke('reports:getReceiptForPrint',   { receipt_number: rcpt, academic_year: yr }),
   reportsGetReceiptHistory:  (yr, mon, y, cls)        => invoke('reports:getReceiptHistory',    { academic_year: yr, month: mon, year: y, class: cls }),
 

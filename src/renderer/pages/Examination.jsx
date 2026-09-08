@@ -32,12 +32,21 @@ const EXAM_TYPES = {
 const HY_TYPES    = ['UT1','UT2','HALF_YEARLY'];
 const FINAL_TYPES = ['UT1','UT2','HALF_YEARLY','UT3','UT4','FINAL'];
 
+// School-wide minimum per-subject pass percentage — set once from the
+// academic_settings table when the Examination page loads (see the
+// top-level Examination component below). Module-level rather than
+// threaded through every calc function's parameters, since it's one
+// global value the whole page shares, and this is a single-user desktop
+// app, not a multi-tenant server. Default 33 matches today's behavior
+// until the setting is actually fetched.
+let PASS_THRESHOLD = 33;
+
 const getGrade = (pct) => {
   if (pct >= 85) return 'A';
   if (pct >= 70) return 'B';
   if (pct >= 55) return 'C';
   if (pct >= 40) return 'D';
-  if (pct >= 33) return 'E';
+  if (pct >= PASS_THRESHOLD) return 'E';
   return 'F';
 };
 const GRADE_STYLE = {
@@ -73,8 +82,8 @@ const calcHY = (admNo, subjects, marksMap) => {
     const hy  = s.HALF_YEARLY?.absent ? 'AB' : (s.HALF_YEARLY?.marks ?? null);
     const subTotal = (ut1==='AB'?0:(ut1??0)) + (ut2==='AB'?0:(ut2??0)) + (hy==='AB'?0:(hy??0));
     const pct = subTotal; // already /100
-    if (pct < 33) allPass = false;
-    subjects_result[sub] = { ut1, ut2, hy, total: subTotal, grade: getGrade(pct), pass: pct >= 33 };
+    if (pct < PASS_THRESHOLD) allPass = false;
+    subjects_result[sub] = { ut1, ut2, hy, total: subTotal, grade: getGrade(pct), pass: pct >= PASS_THRESHOLD };
     total += subTotal;
   });
 
@@ -97,8 +106,8 @@ const calcFinal = (admNo, subjects, marksMap) => {
     const raw = Object.values(vals).reduce((a,v) => a + (v==='AB'?0:(v??0)), 0); // out of 200
     const scaled = raw / 2; // out of 100
     const pct = scaled;
-    if (pct < 33) allPass = false;
-    subjects_result[sub] = { ...vals, scaled: scaled.toFixed(1), grade: getGrade(pct), pass: pct >= 33 };
+    if (pct < PASS_THRESHOLD) allPass = false;
+    subjects_result[sub] = { ...vals, scaled: scaled.toFixed(1), grade: getGrade(pct), pass: pct >= PASS_THRESHOLD };
     total += scaled;
   });
 
@@ -254,6 +263,30 @@ function EnterMarksTab() {
     setLocked(false);
   };
 
+  const [showMarksPrint, setShowMarksPrint] = useState(false);
+  const [exportingMarks, setExportingMarks] = useState(false);
+  const [exportingAllClasses, setExportingAllClasses] = useState(false);
+  const [allClassesMsg, setAllClassesMsg] = useState('');
+  const canExportAllClasses = ['super_admin','admin','coordinator'].includes(user?.role);
+
+  const exportMarksExcel = async () => {
+    setExportingMarks(true);
+    const res = await window.api.examExportMarksExcel(students, marks, subjects, cls, section, examLabel, maxMarks, academicYear);
+    setExportingMarks(false);
+    if (res.cancelled) return;
+    if (!res.success) { setError(res.message); return; }
+  };
+
+  const exportAllClassesExcel = async () => {
+    setAllClassesMsg(''); setExportingAllClasses(true);
+    const res = await window.api.examExportAllClassesMarksExcel(examType, academicYear, examLabel);
+    setExportingAllClasses(false);
+    if (res.cancelled) return;
+    if (!res.success) { setAllClassesMsg(res.message); return; }
+    setAllClassesMsg(`✓ Saved ${res.classCount} classes to ${res.filePath}`);
+    setTimeout(() => setAllClassesMsg(''), 6000);
+  };
+
   return (
     <div>
       <SelectorBar cls={cls} setCls={v=>{setCls(v);setLoaded(false);}}
@@ -269,6 +302,16 @@ function EnterMarksTab() {
           </div>
         }
       />
+
+      {canExportAllClasses && (
+        <div className="flex items-center gap-3 mb-4">
+          <button onClick={exportAllClassesExcel} disabled={exportingAllClasses}
+            className="text-sm border border-green-600 text-green-700 hover:bg-green-50 disabled:opacity-40 disabled:hover:bg-transparent px-4 py-2 rounded-lg font-medium">
+            {exportingAllClasses ? '⏳ Preparing…' : `📊 Download All Classes (${examLabel})`}
+          </button>
+          {allClassesMsg && <span className="text-sm text-gray-600">{allClassesMsg}</span>}
+        </div>
+      )}
 
       {/* Lock banner */}
       {loaded && locked && (
@@ -314,6 +357,14 @@ function EnterMarksTab() {
                 <button onClick={markAllPresent} disabled={locked}
                   className="text-xs bg-white bg-opacity-20 hover:bg-opacity-30 text-white px-3 py-1.5 rounded-lg disabled:opacity-40">
                   Clear All AB
+                </button>
+                <button onClick={() => setShowMarksPrint(true)}
+                  className="text-xs bg-white bg-opacity-20 hover:bg-opacity-30 text-white px-3 py-1.5 rounded-lg">
+                  🖨️ Print
+                </button>
+                <button onClick={exportMarksExcel} disabled={exportingMarks}
+                  className="text-xs bg-white bg-opacity-20 hover:bg-opacity-30 text-white px-3 py-1.5 rounded-lg disabled:opacity-40">
+                  {exportingMarks ? '⏳ Saving…' : '📊 Excel'}
                 </button>
               </div>
             </div>
@@ -420,6 +471,66 @@ function EnterMarksTab() {
           <p>No active students found in {cls} Section {section}</p>
         </div>
       )}
+
+      {showMarksPrint && (
+        <ReportCardPrintModal studentName={`${cls} — Section ${section} (${examLabel})`} onClose={() => setShowMarksPrint(false)}>
+          <MarksListPrintContent students={students} marks={marks} subjects={subjects}
+            cls={cls} section={section} examLabel={examLabel} maxMarks={maxMarks} academicYear={academicYear} />
+        </ReportCardPrintModal>
+      )}
+    </div>
+  );
+}
+
+// ── Marks List — printable/exportable table for a whole class/section ──
+function MarksListPrintContent({ students, marks, subjects, cls, section, examLabel, maxMarks, academicYear }) {
+  const maxTotal = subjects.length * maxMarks;
+  return (
+    <div>
+      <div className="text-center border-b-2 border-gray-800 pb-3 mb-4">
+        <h1 className="text-xl font-bold tracking-wide">BRILLIANT PUBLIC SCHOOL</h1>
+        <p className="text-xs text-gray-500">Village-Sherpur-Nayser, Post-Jawal, District-Bulandshahr, UP-203131</p>
+        <h2 className="text-base font-bold mt-2">{examLabel} — MARKS LIST</h2>
+        <p className="text-sm text-gray-600">{cls} — Section {section} · {academicYear}</p>
+      </div>
+
+      <table className="w-full text-xs border border-gray-400 border-collapse">
+        <thead>
+          <tr className="bg-gray-100">
+            <th className="border border-gray-400 px-2 py-1.5 w-8">#</th>
+            <th className="border border-gray-400 px-2 py-1.5">Adm. No.</th>
+            <th className="border border-gray-400 px-2 py-1.5 text-left">Student Name</th>
+            {subjects.map(sub => <th key={sub} className="border border-gray-400 px-2 py-1.5">{sub}</th>)}
+            <th className="border border-gray-400 px-2 py-1.5">Total</th>
+            <th className="border border-gray-400 px-2 py-1.5">%</th>
+          </tr>
+        </thead>
+        <tbody>
+          {students.map((s, i) => {
+            const studentMarks = marks[s.admission_number] || {};
+            let total = 0;
+            const cells = subjects.map(sub => {
+              const cell = studentMarks[sub];
+              if (cell?.absent) return 'AB';
+              if (cell?.val === '' || cell?.val === undefined || cell?.val === null) return '—';
+              const v = parseFloat(cell.val);
+              total += isNaN(v) ? 0 : v;
+              return v;
+            });
+            const pct = maxTotal ? ((total / maxTotal) * 100).toFixed(1) : '0.0';
+            return (
+              <tr key={s.admission_number}>
+                <td className="border border-gray-400 px-2 py-1 text-center">{i + 1}</td>
+                <td className="border border-gray-400 px-2 py-1 text-center font-mono text-blue-700">{s.admission_number}</td>
+                <td className="border border-gray-400 px-2 py-1">{s.student_name}</td>
+                {cells.map((c, j) => <td key={j} className="border border-gray-400 px-2 py-1 text-center">{c}</td>)}
+                <td className="border border-gray-400 px-2 py-1 text-center font-bold">{total}</td>
+                <td className="border border-gray-400 px-2 py-1 text-center">{pct}%</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -503,13 +614,13 @@ function ReportCard({ student, marksMap, subjects, cls, section, academicYear, t
         <table className="w-full border-collapse text-xs">
           <thead>
             <tr>
-              <th className={`${th} w-32`} rowSpan={2}>Subject / विषय</th>
+              <th className={`${th} w-32`} rowSpan={2}>Subject</th>
               <th className={`${th} bg-blue-50`} colSpan={4}>
-                अर्द्ध-वार्षिक परीक्षा / Half Yearly Examination
+                Half Yearly Examination
               </th>
               {!isHY && (
                 <th className={`${th} bg-green-50`} colSpan={4}>
-                  वार्षिक परीक्षा / Annual Examination
+                  Annual Examination
                 </th>
               )}
               {!isHY && (
@@ -554,7 +665,7 @@ function ReportCard({ student, marksMap, subjects, cls, section, academicYear, t
           </tbody>
           <tfoot>
             <tr>
-              <td className={`${tf} text-left`}>कुल / Total</td>
+              <td className={`${tf} text-left`}>Total</td>
               <td className={tf}>{maxSub}</td>
               <td className={tf}>{totUT1+totUT2}</td>
               <td className={tf}>{totHY}</td>
@@ -680,6 +791,7 @@ function ResultView({ type }) {
   const [marksMap,     setMarksMap]    = useState({});
   const [loaded,       setLoaded]      = useState(false);
   const [showPrint,    setShowPrint]   = useState(false);
+  const [showPrintAll, setShowPrintAll]= useState(false);
   const [loading,      setLoading]     = useState(false);
   const [error,        setError]       = useState('');
   const [selectedIdx,  setSelectedIdx] = useState(0);
@@ -775,6 +887,10 @@ function ResultView({ type }) {
                   className="px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white rounded-lg text-sm font-medium">
                   🖨️ Print
                 </button>
+                <button onClick={() => setShowPrintAll(true)}
+                  className="px-4 py-2 border border-blue-300 text-blue-700 hover:bg-blue-50 rounded-lg text-sm font-medium">
+                  🖨️ Print All ({students.length})
+                </button>
               </div>
               <button onClick={() => setSelectedIdx(i => Math.min(students.length-1, i+1))} disabled={selectedIdx === students.length-1}
                 className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-30">
@@ -808,6 +924,24 @@ function ResultView({ type }) {
             academicYear={academicYear}
             type={type}
           />
+        </ReportCardPrintModal>
+      )}
+
+      {showPrintAll && students.length > 0 && (
+        <ReportCardPrintModal studentName={`${cls} — Section ${section} (${students.length} students)`} onClose={() => setShowPrintAll(false)}>
+          {students.map((s, i) => (
+            <div key={s.admission_number} style={i < students.length - 1 ? { breakAfter: 'page' } : undefined}>
+              <ReportCard
+                student={s}
+                marksMap={marksMap}
+                subjects={subjects}
+                cls={cls}
+                section={section}
+                academicYear={academicYear}
+                type={type}
+              />
+            </div>
+          ))}
         </ReportCardPrintModal>
       )}
 
@@ -848,7 +982,7 @@ function UnitTestReportCard({ student, marksMap, subjects, cls, section, academi
   const rows = subjects.map(sub => {
     const m = getM(sub);
     const pct = maxMarks ? (num(m) / maxMarks * 100) : 0;
-    return { sub, m, pct, pass: pct >= 33 };
+    return { sub, m, pct, pass: pct >= PASS_THRESHOLD };
   });
 
   const total    = rows.reduce((a, r) => a + num(r.m), 0);
@@ -888,7 +1022,7 @@ function UnitTestReportCard({ student, marksMap, subjects, cls, section, academi
         <table className="w-full border-collapse text-xs">
           <thead>
             <tr>
-              <th className={`${th} text-left`}>Subject / विषय</th>
+              <th className={`${th} text-left`}>Subject</th>
               <th className={th}>Max Marks</th>
               <th className={th}>Marks Obtained</th>
             </tr>
@@ -904,7 +1038,7 @@ function UnitTestReportCard({ student, marksMap, subjects, cls, section, academi
           </tbody>
           <tfoot>
             <tr>
-              <td className={`${tf} text-left`}>कुल / Total</td>
+              <td className={`${tf} text-left`}>Total</td>
               <td className={tf}>{maxTotal}</td>
               <td className={`${tf} text-blue-700`}>{total}</td>
             </tr>
@@ -970,6 +1104,7 @@ function UnitTestResultTab() {
   const [error,        setError]       = useState('');
   const [selectedIdx,  setSelectedIdx] = useState(0);
   const [showPrint,    setShowPrint]   = useState(false);
+  const [showPrintAll, setShowPrintAll]= useState(false);
 
   const subjects = SUBJECTS[cls] || [];
   const maxMarks = EXAM_TYPES[examType]?.max || 10;
@@ -1000,7 +1135,7 @@ function UnitTestResultTab() {
       const numeric = e?.absent ? 0 : (e?.marks ?? 0);
       total += numeric;
       const pct = maxMarks ? (numeric / maxMarks * 100) : 0;
-      if (pct < 33) allPass = false;
+      if (pct < PASS_THRESHOLD) allPass = false;
     });
     const maxTotal = subjects.length * maxMarks;
     const pct = maxTotal ? (total / maxTotal * 100) : 0;
@@ -1085,6 +1220,10 @@ function UnitTestResultTab() {
                   className="px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white rounded-lg text-sm font-medium">
                   🖨️ Print
                 </button>
+                <button onClick={() => setShowPrintAll(true)}
+                  className="px-4 py-2 border border-blue-300 text-blue-700 hover:bg-blue-50 rounded-lg text-sm font-medium">
+                  🖨️ Print All ({students.length})
+                </button>
               </div>
               <button onClick={() => setSelectedIdx(i => Math.min(students.length-1, i+1))} disabled={selectedIdx === students.length-1}
                 className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-30">
@@ -1121,6 +1260,24 @@ function UnitTestResultTab() {
         </ReportCardPrintModal>
       )}
 
+      {showPrintAll && students.length > 0 && (
+        <ReportCardPrintModal studentName={`${cls} — Section ${section} (${students.length} students)`} onClose={() => setShowPrintAll(false)}>
+          {students.map((s, i) => (
+            <div key={s.admission_number} style={i < students.length - 1 ? { breakAfter: 'page' } : undefined}>
+              <UnitTestReportCard
+                student={s}
+                marksMap={marksMap}
+                subjects={subjects}
+                cls={cls}
+                section={section}
+                academicYear={academicYear}
+                examType={examType}
+              />
+            </div>
+          ))}
+        </ReportCardPrintModal>
+      )}
+
       {loaded && students.length === 0 && (
         <div className="text-center py-12 text-gray-400">
           <p className="text-4xl mb-3">📋</p>
@@ -1134,14 +1291,93 @@ function UnitTestResultTab() {
 // ══════════════════════════════════════════════════════════════
 // MAIN
 // ══════════════════════════════════════════════════════════════
+// ── Pass Criteria Settings — Director/Principal only ────────────
+function PassCriteriaSettings() {
+  const { user } = useAuth();
+  const [value,   setValue]   = useState('33');
+  const [saved_,  setSavedAt] = useState(null);
+  const [saving,  setSaving]  = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState('');
+  const [msg,     setMsg]     = useState('');
+
+  useEffect(() => {
+    window.api.academicSettingsGet().then(res => {
+      if (res.success) {
+        setValue(String(res.data.min_subject_pass_pct));
+        setSavedAt(res.data.updated_at || null);
+      }
+      setLoading(false);
+    });
+  }, []);
+
+  const save = async () => {
+    setError(''); setMsg('');
+    const pct = Number(value);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+      setError('Enter a percentage between 0 and 100.');
+      return;
+    }
+    setSaving(true);
+    const res = await window.api.academicSettingsSave(pct, user?.username);
+    setSaving(false);
+    if (!res.success) { setError(res.message); return; }
+    PASS_THRESHOLD = pct; // takes effect immediately, no restart needed
+    setMsg('✅ Saved — this applies to every result screen and Promote Students from now on.');
+    setTimeout(() => setMsg(''), 4000);
+  };
+
+  if (loading) return <p className="text-gray-400 text-sm py-6">Loading…</p>;
+
+  return (
+    <div className="max-w-xl">
+      <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-5 text-sm text-blue-700">
+        A student must score at least this percentage in <strong>every individual subject</strong> to pass —
+        not just on average. This is one school-wide number, used consistently across Unit Test, Half Yearly,
+        and Final results, and by Promote Students when deciding who's eligible to move up.
+      </div>
+
+      <div className="bg-white border border-gray-200 rounded-xl p-5">
+        <label className="block text-xs font-medium text-gray-500 mb-2">Minimum pass percentage per subject</label>
+        <div className="flex items-center gap-3">
+          <input type="number" min="0" max="100" value={value} onChange={e => setValue(e.target.value)}
+            className="w-28 border border-gray-300 rounded-lg px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <span className="text-gray-500">%</span>
+          <button onClick={save} disabled={saving}
+            className="ml-auto bg-blue-700 hover:bg-blue-800 disabled:bg-blue-300 text-white font-medium px-6 py-2 rounded-xl text-sm">
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+        {error && <p className="text-red-600 text-xs mt-2">{error}</p>}
+        {msg   && <p className="text-green-700 text-xs mt-2">{msg}</p>}
+        {saved_ && <p className="text-xs text-gray-400 mt-3">Last changed: {saved_}</p>}
+      </div>
+    </div>
+  );
+}
+
 export default function Examination() {
+  const { user } = useAuth();
   const [tab, setTab] = useState('enter');
+  const [thresholdLoaded, setThresholdLoaded] = useState(false);
+  const canEditSettings = ['super_admin', 'admin'].includes(user?.role);
+
+  // Fetch the school-wide pass threshold once, before any result tab
+  // renders — otherwise results could briefly show pass/fail computed
+  // against the stale default before the real setting arrives.
+  useEffect(() => {
+    window.api.academicSettingsGet().then(res => {
+      if (res.success) PASS_THRESHOLD = res.data.min_subject_pass_pct;
+      setThresholdLoaded(true);
+    });
+  }, []);
 
   const TABS = [
     { key: 'enter',      label: '✏️ Enter Marks'       },
     { key: 'unittest',   label: '📝 Unit Test Result'   },
     { key: 'halfyearly', label: '📊 Half Yearly Result' },
     { key: 'final',      label: '🏆 Final Result'       },
+    ...(canEditSettings ? [{ key: 'settings', label: '⚙️ Pass Criteria' }] : []),
   ];
 
   return (
@@ -1162,10 +1398,17 @@ export default function Examination() {
         ))}
       </div>
 
-      {tab === 'enter'      && <EnterMarksTab />}
-      {tab === 'unittest'   && <UnitTestResultTab />}
-      {tab === 'halfyearly' && <HalfYearlyTab />}
-      {tab === 'final'      && <FinalTab />}
+      {!thresholdLoaded ? (
+        <p className="text-gray-400 text-sm py-10 text-center">Loading…</p>
+      ) : (
+        <>
+          {tab === 'enter'      && <EnterMarksTab />}
+          {tab === 'unittest'   && <UnitTestResultTab />}
+          {tab === 'halfyearly' && <HalfYearlyTab />}
+          {tab === 'final'      && <FinalTab />}
+          {tab === 'settings'   && canEditSettings && <PassCriteriaSettings />}
+        </>
+      )}
     </div>
   );
 }

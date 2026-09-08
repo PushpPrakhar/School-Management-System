@@ -75,11 +75,11 @@ function SelectorBar({ cls, setCls, section, setSection, academicYear, setAcadem
 
 // Day type config for attendance display
 const DAY_STATUS = {
-  SUNDAY:   { icon: '📅', label: 'Sunday',     bg: 'bg-gray-100',   text: 'text-gray-600',  border: 'border-gray-200'  },
-  HOLIDAY:  { icon: '🎉', label: 'Holiday',    bg: 'bg-red-50',     text: 'text-red-700',   border: 'border-red-200'   },
-  VACATION: { icon: '🏖️', label: 'Vacation',   bg: 'bg-amber-50',   text: 'text-amber-700', border: 'border-amber-200' },
+  SUNDAY:   { icon: '', label: 'Sunday',     bg: 'bg-gray-100',   text: 'text-gray-600',  border: 'border-gray-200'  },
+  HOLIDAY:  { icon: '', label: 'Holiday',    bg: 'bg-red-50',     text: 'text-red-700',   border: 'border-red-200'   },
+  VACATION: { icon: '', label: 'Vacation',   bg: 'bg-amber-50',   text: 'text-amber-700', border: 'border-amber-200' },
   HALF_DAY: { icon: '⏰', label: 'Half Day',   bg: 'bg-blue-50',    text: 'text-blue-700',  border: 'border-blue-200'  },
-  WORKING:  { icon: '✅', label: 'Working Day', bg: 'bg-green-50',  text: 'text-green-700', border: 'border-green-200' },
+  WORKING:  { icon: '', label: 'Working Day', bg: 'bg-green-50',  text: 'text-green-700', border: 'border-green-200' },
 };
 
 // Check if a DD-MM-YYYY date is a Sunday
@@ -249,7 +249,7 @@ function StudentMonthlyMark({ academicYear, filterClass, filterSection, onClose 
           <div className="flex-1 overflow-y-auto px-6 py-6">
             <div className="relative mb-6">
               <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
-                <span className="text-gray-400 text-lg">🔍</span>
+                
               </div>
               <input autoFocus value={query} onChange={e => setQuery(e.target.value)}
                 placeholder={filterClass ? `Search in ${filterClass} Section ${filterSection}...` : "Type student name or BPS number..."}
@@ -258,7 +258,7 @@ function StudentMonthlyMark({ academicYear, filterClass, filterSection, onClose 
 
             {query && results.length === 0 && (
               <div className="text-center py-12 text-gray-400">
-                <p className="text-3xl mb-2">🔍</p>
+                
                 <p className="text-sm">No students found for "{query}"</p>
               </div>
             )}
@@ -288,7 +288,7 @@ function StudentMonthlyMark({ academicYear, filterClass, filterSection, onClose 
 
             {!query && (
               <div className="text-center py-12 text-gray-300">
-                <p className="text-5xl mb-3">👤</p>
+                
                 <p className="text-sm text-gray-400">Start typing to search students</p>
               </div>
             )}
@@ -320,11 +320,11 @@ function StudentMonthlyMark({ academicYear, filterClass, filterSection, onClose 
               <div className="flex gap-2 mb-4">
                 <button onClick={() => markAll('Present')}
                   className="flex-1 py-2 rounded-xl text-xs font-semibold border-2 border-green-200 text-green-700 hover:bg-green-50 transition-colors">
-                  ✓ Mark All Present
+                  Mark All Present
                 </button>
                 <button onClick={() => markAll('Absent')}
                   className="flex-1 py-2 rounded-xl text-xs font-semibold border-2 border-red-200 text-red-500 hover:bg-red-50 transition-colors">
-                  ✗ Mark All Absent
+                  Mark All Absent
                 </button>
               </div>
 
@@ -644,7 +644,7 @@ function MarkTab() {
               <div className="flex items-end">
                 <button onClick={() => setShowFindStudent(true)}
                   className="flex items-center gap-2 border border-blue-300 text-blue-700 hover:bg-blue-50 bg-white font-medium px-4 py-2 rounded-lg text-sm transition-colors">
-                  🔍 Find Student
+                  Find Student
                 </button>
               </div>
             )}
@@ -681,7 +681,7 @@ function MarkTab() {
       {/* Teacher class notice */}
       {isTeacher && !isNonWorkingDay && (
         <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-2.5 mb-4 text-sm text-blue-700">
-          📌 You are marking attendance for your assigned class. Class assignment will be configured by the principal.
+          You are marking attendance for your assigned class. Class assignment will be configured by the principal.
         </div>
       )}
 
@@ -689,7 +689,7 @@ function MarkTab() {
         <div className="text-center py-4">
           <button onClick={loadStudents} disabled={!cls || loading}
             className="bg-blue-700 hover:bg-blue-800 disabled:bg-blue-300 text-white font-medium px-8 py-2.5 rounded-xl text-sm">
-            {loading ? '⏳ Loading…' : '📋 Load Students'}
+            {loading ? '⏳ Loading…' : 'Load Students'}
           </button>
           {!cls && <p className="text-xs text-gray-400 mt-2">Select a class first</p>}
         </div>
@@ -734,13 +734,13 @@ function MarkTab() {
             <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
               <div className="flex gap-2">
                 <span className="bg-blue-100 text-blue-700 text-xs font-semibold px-3 py-1.5 rounded-full">
-                  👥 {students.length} Total
+                  {students.length} Total
                 </span>
                 <span className="bg-green-100 text-green-700 text-xs font-semibold px-3 py-1.5 rounded-full">
-                  ✓ {present} Present
+                  {present} Present
                 </span>
                 <span className="bg-red-100 text-red-600 text-xs font-semibold px-3 py-1.5 rounded-full">
-                  ✗ {absent} Absent
+                  {absent} Absent
                 </span>
               </div>
               <div className="flex gap-4">
@@ -883,7 +883,7 @@ function MarkTab() {
             {isEditable && (
               <button onClick={save} disabled={saving}
                 className="bg-blue-700 hover:bg-blue-800 disabled:bg-blue-300 text-white font-medium px-8 py-2.5 rounded-xl text-sm flex items-center gap-2">
-                {saving ? <><span className="animate-spin">⏳</span> Saving…</> : '💾 Save Attendance'}
+                {saving ? <><span className="animate-spin">⏳</span> Saving…</> : 'Save Attendance'}
               </button>
             )}
           </div>
@@ -1013,7 +1013,7 @@ function MonthlyTab() {
         <div className="text-center py-4">
           <button onClick={load} disabled={!cls || loading}
             className="bg-blue-700 hover:bg-blue-800 disabled:bg-blue-300 text-white font-medium px-8 py-2.5 rounded-xl text-sm">
-            {loading ? '⏳ Loading…' : '📊 Show Report'}
+            {loading ? '⏳ Loading…' : 'Show Report'}
           </button>
         </div>
       )}
@@ -1190,7 +1190,7 @@ function LowAttendanceTab() {
         </div>
         <button onClick={load} disabled={loading}
           className="bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white font-medium px-6 py-2 rounded-lg text-sm">
-          {loading ? '⏳ Loading…' : '🔍 Find Students'}
+          {loading ? '⏳ Loading…' : 'Find Students'}
         </button>
       </div>
 
