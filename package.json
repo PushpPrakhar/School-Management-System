@@ -1,6 +1,6 @@
 {
   "name": "school-management-system",
-  "version": "1.0.0",
+  "version": "1.4.0",
   "description": "Offline School Management System",
   "main": "src/main/main.js",
   "scripts": {
