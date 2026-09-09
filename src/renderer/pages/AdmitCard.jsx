@@ -295,13 +295,10 @@ function AdmitCardPrintModal({ students, academicYear, onClose }) {
         <div className="overflow-y-auto flex-1 p-6 print:p-0 print:overflow-visible">
           <div className="print-root">
             {students.map((s, i) => (
-              <div key={s.ledger_id} className="mb-6 print:mb-0">
-                <div className="border border-gray-300 rounded-md p-5 print:border print:border-gray-300">
-                  <AdmitCardPreview student={s} academicYear={academicYear} />
-                </div>
-                {i < students.length - 1 && (
-                  <div className="hidden print:block print:border-b-2 print:border-dashed print:border-gray-400 print:my-3" />
-                )}
+              <div key={s.ledger_id}
+                className="border border-gray-300 rounded-md p-5 print:border print:border-gray-300 mb-6 print:mb-0"
+                style={i < students.length - 1 ? { breakAfter: 'page' } : undefined}>
+                <AdmitCardPreview student={s} academicYear={academicYear} />
               </div>
             ))}
           </div>
