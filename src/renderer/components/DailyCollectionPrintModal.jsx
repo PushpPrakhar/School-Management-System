@@ -1,4 +1,5 @@
 import React from 'react';
+import PrintFooter from './PrintFooter';
 
 const fmt = (n) => Number(n || 0).toFixed(2);
 
@@ -68,6 +69,13 @@ export default function DailyCollectionPrintModal({ data, date, onClose }) {
                 </tbody>
               </table>
             </div>
+
+            <div className="flex justify-between mt-10 text-sm">
+              <span>Signature of<br/>Office Executive</span>
+              <span className="text-right">Signature of<br/>Principal</span>
+            </div>
+
+            <PrintFooter />
           </div>
         </div>
       </div>

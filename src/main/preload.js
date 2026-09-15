@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('api', {
   homeworkSave:        (requestingUserId, cls, date, entries) => invoke('homework:save', { requesting_user_id: requestingUserId, class: cls, date, entries }),
   homeworkGetAll:      (filters)           => invoke('homework:getAll', filters),
   homeworkExportReviewExcel: (rows, fromDate, toDate, cls) => invoke('homework:exportReviewExcel', { rows, fromDate, toDate, cls }),
+  homeworkSaveReportImage:   (dataUrl, fileName) => invoke('homework:saveReportImage', { dataUrl, fileName }),
   teachersToggle:      (id, active, requestingUserId) => invoke('users:toggle', { userId: id, isActive: active, requesting_user_id: requestingUserId }),
 
   // Enrollment

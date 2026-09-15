@@ -1,4 +1,5 @@
 import React from 'react';
+import PrintFooter from './PrintFooter';
 
 export default function TransportListPrintModal({ students, monthLabel, academicYear, onClose }) {
   // Group by each student's real, village-based route — useful to whoever
@@ -76,6 +77,7 @@ export default function TransportListPrintModal({ students, monthLabel, academic
               <span>Total on transport: <strong>{students.length}</strong></span>
               <span>Transport Coordinator Signature: ___________________</span>
             </div>
+            <PrintFooter />
           </div>
         </div>
       </div>

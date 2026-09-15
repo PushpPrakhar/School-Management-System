@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../utils/AuthContext';
+import PrintFooter from '../components/PrintFooter';
 
 const SESSION_YEAR = (() => { const n = new Date(), y = n.getFullYear(); return n.getMonth() >= 3 ? y : y - 1; })();
 const CURRENT_YEAR = `${SESSION_YEAR}-${String(SESSION_YEAR + 1).slice(2)}`;
@@ -204,6 +205,7 @@ function DailyTab({ academicYear, setAcademicYear }) {
               </div>
             </div>
           </div>
+          <PrintFooter />
         </div>
       )}
     </div>
@@ -441,6 +443,7 @@ function MonthlyTab({ academicYear, setAcademicYear }) {
         {loading ? (
           <div className="text-center py-10 text-gray-400">Loading...</div>
         ) : (
+          <>
           <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-blue-700">
@@ -492,6 +495,8 @@ function MonthlyTab({ academicYear, setAcademicYear }) {
             </tfoot>
           </table>
           </div>
+          <PrintFooter />
+          </>
         )}
       </div>
     </div>

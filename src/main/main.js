@@ -2713,6 +2713,26 @@ ipcMain.handle('homework:exportReviewExcel', async (_evt, { rows, fromDate, toDa
   }
 });
 
+// Saves a PNG image of the teacher's Daily Report (captured client-side via
+// html2canvas) to disk — same save-dialog pattern as every other export in
+// this app, just writing raw image bytes instead of an XLSX workbook.
+ipcMain.handle('homework:saveReportImage', async (_evt, { dataUrl, fileName }) => {
+  try {
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: 'Save Daily Report',
+      defaultPath: fileName || 'Daily-Report.png',
+      filters: [{ name: 'PNG Image', extensions: ['png'] }],
+    });
+    if (canceled || !filePath) return { success: false, cancelled: true };
+
+    const base64 = String(dataUrl || '').replace(/^data:image\/png;base64,/, '');
+    fs.writeFileSync(filePath, base64, 'base64');
+    return { success: true, filePath };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
 
 // ── ENROLLMENT (SR Register) ──────────────────────────────────
 // ── Apply null-value defaults ────────────────────────────────

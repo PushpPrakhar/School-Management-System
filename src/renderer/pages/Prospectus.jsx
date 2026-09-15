@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../utils/AuthContext';
+import PrintFooter from '../components/PrintFooter';
 
 const TODAY   = new Date().toISOString().slice(0, 10);
 const fmtDate = (d) => d ? String(d).slice(0, 10).split('-').reverse().join('-') : '—';
@@ -317,6 +318,7 @@ function FollowUpTab() {
           <p className="text-sm mt-1">All prospectus buyers have either taken admission or filters returned no results</p>
         </div>
       ) : (
+        <>
         <div className="print-root bg-white border border-gray-200 rounded-2xl overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-gray-50 border-b border-gray-200">
@@ -359,6 +361,8 @@ function FollowUpTab() {
             </tbody>
           </table>
         </div>
+        <PrintFooter />
+        </>
       )}
 
       {admitting && (

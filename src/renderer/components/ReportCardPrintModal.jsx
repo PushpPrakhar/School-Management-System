@@ -1,4 +1,5 @@
 import React from 'react';
+import PrintFooter from './PrintFooter';
 
 // Reusable print modal for report cards — shared across Unit Test, Half
 // Yearly, and Final result tabs in Examination.jsx. Same pattern as
@@ -25,6 +26,7 @@ export default function ReportCardPrintModal({ studentName, onClose, children })
         <div className="overflow-y-auto flex-1 p-6 print:p-0 print:overflow-visible">
           <div className="print-root">
             {children}
+            <PrintFooter />
           </div>
         </div>
       </div>

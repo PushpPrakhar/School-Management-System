@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import PrintFooter from './PrintFooter';
 
 const fmt = (n) => Number(n || 0).toFixed(2);
 const fmtDate = (iso) => {
@@ -212,6 +213,7 @@ function ReceiptContent({ data }) {
         <p className="text-xs text-gray-500 border-t border-gray-400 pt-1 w-40 text-center shrink-0">Authorized Signatory</p>
       </div>
       </div>
+      <PrintFooter />
     </div>
   );
 }

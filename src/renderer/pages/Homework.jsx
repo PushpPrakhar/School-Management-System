@@ -3,8 +3,9 @@
 // (Subjects & Chapters, managed by Principal). A row can be left blank if
 // nothing was given in that subject that day.
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../utils/AuthContext';
+import html2canvas from 'html2canvas';
 
 const todayInput = () => new Date().toISOString().slice(0, 10);
 const toDisplayDate = (iso) => { // YYYY-MM-DD -> DD-MM-YYYY
@@ -56,7 +57,9 @@ function SubjectRow({ subject, entry, chapters, onChange }) {
   );
 }
 
-// ── Daily Report — teacher's own reference view, NOT printable ──
+// ── Daily Report — teacher's own reference view. Not print-styled (no
+// print-root, no page-break handling) since it's meant to be read on
+// screen or saved as a PNG, not sent to a printer.
 function DailyReportModal({ selectedClass, displayDate, teacherName, dayStatus, subjects, entries, chaptersBySubject, absentStudents, onClose }) {
   const filledRows = subjects.filter(s => {
     const e = entries[s.subject_id];
@@ -65,10 +68,34 @@ function DailyReportModal({ selectedClass, displayDate, teacherName, dayStatus, 
   const chapterName = (subjectId, chapterId) =>
     chapterId ? ((chaptersBySubject[subjectId] || []).find(c => c.chapter_id === chapterId)?.chapter_name || '—') : '—';
 
+  const reportRef = useRef(null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState('');
+
+  const downloadImage = async () => {
+    if (!reportRef.current) return;
+    setDownloading(true); setDownloadError('');
+    try {
+      // scale:2 renders at double resolution so the saved PNG stays crisp
+      // rather than looking blurry when viewed or printed at full size.
+      const canvas = await html2canvas(reportRef.current, { scale: 2, backgroundColor: '#ffffff' });
+      const dataUrl = canvas.toDataURL('image/png');
+      const safeClass = (selectedClass || 'class').replace(/\s+/g, '-');
+      const safeDate  = (displayDate  || '').replace(/\//g, '-');
+      const fileName  = `Daily-Report_${safeClass}_${safeDate}.png`;
+      const res = await window.api.homeworkSaveReportImage(dataUrl, fileName);
+      if (!res.success && !res.cancelled) setDownloadError(res.message || 'Could not save the image.');
+    } catch (err) {
+      setDownloadError(err.message || 'Could not capture the report.');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] overflow-y-auto">
-        <div className="p-6">
+        <div className="p-6" ref={reportRef}>
           {/* Letterhead — matches the fee receipt's, no print styling since this view is deliberately not printable */}
           <div className="text-center border-b-2 border-gray-800 pb-3 mb-4">
             <h1 className="text-2xl font-bold tracking-wide">BRILLIANT PUBLIC SCHOOL</h1>
@@ -133,7 +160,14 @@ function DailyReportModal({ selectedClass, displayDate, teacherName, dayStatus, 
           </div>
         </div>
 
-        <div className="border-t border-gray-100 p-4 flex justify-end">
+        {downloadError && (
+          <p className="px-6 text-sm text-red-600 bg-red-50 border-t border-red-100 py-2">{downloadError}</p>
+        )}
+        <div className="border-t border-gray-100 p-4 flex justify-end gap-2">
+          <button onClick={downloadImage} disabled={downloading}
+            className="px-5 py-2 border border-blue-300 text-blue-700 hover:bg-blue-50 disabled:opacity-50 rounded-xl text-sm font-medium">
+            {downloading ? '⏳ Saving…' : '⬇️ Download as Image'}
+          </button>
           <button onClick={onClose} className="px-5 py-2 bg-blue-700 hover:bg-blue-800 text-white rounded-xl text-sm font-medium">
             Close
           </button>

@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import schoolLogo from '../../assets/logo/school-logo.png';
+import PrintFooter from '../components/PrintFooter';
 
 const SESSION_YEAR = (() => { const n = new Date(), y = n.getFullYear(); return n.getMonth() >= 3 ? y : y - 1; })();
 const CURRENT_YEAR = `${SESSION_YEAR}-${String(SESSION_YEAR + 1).slice(2)}`;
@@ -268,6 +269,7 @@ function AdmitCardPreview({ student, academicYear }) {
           <span className="text-right">Signature of<br/>Principal</span>
         </div>
       </div>
+      <PrintFooter />
     </div>
   );
 }

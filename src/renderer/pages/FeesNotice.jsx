@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../utils/AuthContext';
 import schoolLogo from '../../assets/logo/school-logo.png';
 import { gslSearchError } from '../utils/helpers';
+import PrintFooter from '../components/PrintFooter';
 
 const todayISO = () => {
   const d = new Date();
@@ -341,6 +342,7 @@ function NoticePreview({ detail, academicYear, serial }) {
           <p className="font-medium">Village Sherpur (Nayser), Post - Jawal, Tahsil - Khurja, Distt. Bulandshar, U. P-203131</p>
         </div>
       </div>
+      <PrintFooter />
     </div>
   );
 }

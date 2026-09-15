@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import PaperReceiptModal from '../components/PaperReceiptModal';
+import PrintFooter from '../components/PrintFooter';
 
 const SESSION_YEAR = (() => { const n = new Date(), y = n.getFullYear(); return n.getMonth() >= 3 ? y : y - 1; })();
 const CURRENT_YEAR = `${SESSION_YEAR}-${String(SESSION_YEAR + 1).slice(2)}`;
@@ -206,6 +207,7 @@ function PayoutTab({ academicYear, setAcademicYear }) {
               <p>No collections found for {fmtDate(date)}</p>
             </div>
           )}
+          <PrintFooter />
         </div>
       )}
     </div>
@@ -316,6 +318,7 @@ function DefaulterTab({ academicYear, setAcademicYear }) {
                   ))}
                 </tbody>
               </table>
+              <PrintFooter />
             </div>
           )}
         </>
@@ -568,6 +571,7 @@ function NoticeModal({ students, academicYear, onClose }) {
               <p className="text-xs text-center text-gray-400 mt-3 border-t border-gray-200 pt-2">
                 This is a computer generated notice from School Management System, Brilliant Public School.
               </p>
+              <PrintFooter />
             </div>
           ))}
         </div>

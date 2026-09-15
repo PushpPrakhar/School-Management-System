@@ -1,4 +1,5 @@
 import React from 'react';
+import PrintFooter from './PrintFooter';
 
 const fmt = (n) => Number(n || 0).toFixed(2);
 
@@ -67,6 +68,7 @@ export default function MonthlyLedgerReportPrintModal({ rows, totals, monthLabel
                 </tbody>
               </table>
             </div>
+            <PrintFooter />
           </div>
         </div>
       </div>

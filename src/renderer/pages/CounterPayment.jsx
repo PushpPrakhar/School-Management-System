@@ -226,7 +226,7 @@ function IndividualTab({ academicYear }) {
   const alreadyPaidThisMonth = ledgerData?.alreadyPaidThisMonth || 0;
   const totalDue     = prevBalance + currentDue;
   const paid         = feesPaid || 0;
-  const balance      = Math.max(0, totalDue - concession - paid);
+  const balance      = totalDue - concession - paid;
   const given        = amountGiven === '' ? paid : (parseFloat(amountGiven) || 0);
   const returnAmt    = Math.max(0, given - paid);
 
@@ -301,6 +301,12 @@ function IndividualTab({ academicYear }) {
     // Get next receipt number for the next payment
     const nextRes = await window.api.counterGetNextReceipt(academicYear);
     if (nextRes.success) setReceiptNo(nextRes.receipt_number);
+
+    // Clear everything else now — the receipt modal above reads the receipt
+    // fresh from the DB by number, so it's unaffected by this reset. Without
+    // this, "Amount Given at Counter" (and paidBy, concession, etc.) would
+    // silently carry over into the next student's payment.
+    resetForm();
   };
 
   const resetForm = () => {
@@ -631,7 +637,7 @@ function GroupTab({ academicYear }) {
       current_class: member.current_class, section: member.section,
       previous_balance: prevBalance, buckets, bucket_items, total_due: totalDue,
       concession, fees_paid: feesPaid, alreadyPaidThisMonth: alreadyPaid,
-      balance: Math.max(0, totalDue - concession - feesPaid),
+      balance: totalDue - concession - feesPaid,
     };
   });
 
@@ -697,6 +703,8 @@ function GroupTab({ academicYear }) {
 
     const nextRes = await window.api.counterGetNextReceipt(academicYear);
     if (nextRes.success) setReceiptNo(nextRes.receipt_number);
+
+    resetForm();
   };
 
   const resetForm = () => {
