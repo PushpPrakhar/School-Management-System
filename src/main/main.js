@@ -7300,6 +7300,73 @@ function _buildReceiptPrintData(receipt_number, academic_year) {
     };
   }).sort((a, b) => (a.sl_number || '').localeCompare(b.sl_number || ''));
 
+  // A group receipt must show every sibling in the group, even ones nothing
+  // was entered for in this specific payment — otherwise their real
+  // outstanding balance silently goes unaccounted-for on the printed
+  // document. Backfill anyone in the group not already represented above,
+  // using the same previous-balance formula as everyone else and their
+  // still-pending dues for this receipt's month, with fees_paid forced to 0
+  // since nothing was actually collected from them in this transaction.
+  if (isGroup && header.group_id) {
+    const allMembers = db.prepare(`
+      SELECT gm.ledger_id, l.sl_number, l.student_name, l.current_class, l.section
+      FROM   fee_group_members gm
+      JOIN   fee_ledger l ON l.ledger_id = gm.ledger_id
+      WHERE  gm.group_id = ?
+    `).all(header.group_id);
+
+    const currentFeeMonth = String(header.collected_at || header.posted_at || '').slice(0, 7); // 'YYYY-MM'
+    // Excludes this member's own current-month unclaimed dues — those are
+    // captured separately below as currentDue, so including them here too
+    // would double-count them, the same bug class fixed earlier in
+    // Counter Payment's own previous-balance calculation.
+    const backfillPrevBalStmt = db.prepare(`
+      SELECT COALESCE(SUM(debit),0) - COALESCE(SUM(credit),0) - COALESCE(SUM(concession),0) as bal
+      FROM (
+        SELECT debit, credit, concession FROM fee_transactions
+        WHERE ledger_id = ? AND academic_year = ?
+        UNION ALL
+        SELECT debit, credit, concession FROM fee_transactions_stage
+        WHERE ledger_id = ? AND academic_year = ? AND status = 'PENDING'
+        AND    NOT (fee_month = ? AND (receipt_number IS NULL OR receipt_number = ''))
+      )
+    `);
+    const currentDueStmt = db.prepare(`
+      SELECT fee_type, description, debit FROM fee_transactions_stage
+      WHERE  ledger_id = ? AND academic_year = ? AND transaction_type = 'RECEIVABLE'
+      AND    status = 'PENDING' AND (receipt_number IS NULL OR receipt_number = '')
+      AND    fee_month = ?
+    `);
+
+    allMembers.forEach(m => {
+      if (byLedger[m.ledger_id]) return; // already represented from a real transaction row
+
+      const openingBal = openingBalStmt.get(m.ledger_id)?.opening_balance || 0;
+      const priorBal = backfillPrevBalStmt.get(m.ledger_id, academic_year, m.ledger_id, academic_year, currentFeeMonth).bal || 0;
+      const previousBalance = openingBal + priorBal;
+
+      const buckets = { admission: 0, activity: 0, tuition: 0, transport: 0, others: 0 };
+      let currentDue = 0;
+      currentDueStmt.all(m.ledger_id, academic_year, currentFeeMonth).forEach(d => {
+        const ft = d.fee_type || _guessFeeTypeFromDescription(d.description || '');
+        buckets[_bucketForFeeType(ft)] += (d.debit || 0);
+        currentDue += (d.debit || 0);
+      });
+
+      const totalFeesDue = previousBalance + currentDue;
+      studentRows.push({
+        ledger_id: m.ledger_id, sl_number: m.sl_number, student_name: m.student_name,
+        father_name: '', current_class: m.current_class, section: m.section,
+        previous_balance: Math.round(previousBalance * 100) / 100,
+        buckets: Object.fromEntries(Object.entries(buckets).map(([k, v]) => [k, Math.round(v * 100) / 100])),
+        total_fees_due: Math.round(totalFeesDue * 100) / 100,
+        concession: 0, fees_paid: 0,
+        balance: Math.round(totalFeesDue * 100) / 100,
+      });
+    });
+    studentRows.sort((a, b) => (a.sl_number || '').localeCompare(b.sl_number || ''));
+  }
+
   const totals = studentRows.reduce((t, r) => ({
     previous_balance: t.previous_balance + r.previous_balance,
     admission: t.admission + r.buckets.admission, activity: t.activity + r.buckets.activity,
