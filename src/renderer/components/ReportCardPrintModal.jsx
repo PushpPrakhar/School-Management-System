@@ -7,7 +7,7 @@ import PrintFooter from './PrintFooter';
 // modal with Print/Close buttons, .print-root scoping so nothing else on
 // the page bleeds into the printed page. Wraps whichever report card
 // component is passed in as children.
-export default function ReportCardPrintModal({ studentName, onClose, children }) {
+export default function ReportCardPrintModal({ studentName, onClose, children, appendFooter = true }) {
   return (
     <div className="fixed inset-0 bg-black bg-opacity-60 z-50 flex items-center justify-center p-4 print:p-0 print:bg-white print:static">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[92vh] flex flex-col overflow-hidden print:max-w-full print:max-h-full print:rounded-none print:shadow-none">
@@ -26,7 +26,7 @@ export default function ReportCardPrintModal({ studentName, onClose, children })
         <div className="overflow-y-auto flex-1 p-6 print:p-0 print:overflow-visible">
           <div className="print-root">
             {children}
-            <PrintFooter />
+            {appendFooter && <PrintFooter />}
           </div>
         </div>
       </div>

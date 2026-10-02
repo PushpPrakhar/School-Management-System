@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useLayoutEffect } from 'react';
 import PaperReceiptModal from '../components/PaperReceiptModal';
 import PrintFooter from '../components/PrintFooter';
 
@@ -289,37 +289,7 @@ function DefaulterTab({ academicYear, setAcademicYear }) {
               <p className="font-medium">No defaulters! All fees are paid up.</p>
             </div>
           ) : (
-            <div className="print-root bg-white border border-gray-200 rounded-2xl overflow-hidden">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 border-b border-gray-200">
-                  <tr>
-                    {['SL No','Student Name','Class','Father','Mobile','Balance Due','Last Payment',''].map(h => (
-                      <th key={h} className="px-4 py-3 text-left text-xs text-gray-500 font-semibold">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {data.map((r, i) => (
-                    <tr key={r.ledger_id} className={i%2===0?'bg-white':'bg-red-50'}>
-                      <td className="px-4 py-2.5 font-bold text-blue-700 text-xs">{r.sl_number}</td>
-                      <td className="px-4 py-2.5 font-medium text-gray-800">{r.student_name}</td>
-                      <td className="px-4 py-2.5 text-gray-500 text-xs">{r.current_class} {r.section}</td>
-                      <td className="px-4 py-2.5 text-gray-600">{r.father_name || '—'}</td>
-                      <td className="px-4 py-2.5 text-gray-500 text-xs">{r.mobile_number || '—'}</td>
-                      <td className="px-4 py-2.5 font-bold text-red-600 text-base">{fmtINR(r.balance)}</td>
-                      <td className="px-4 py-2.5 text-gray-400 text-xs">{r.last_payment ? String(r.last_payment).slice(0,10).split('-').reverse().join('-') : 'Never'}</td>
-                      <td className="px-4 py-2.5">
-                        <button onClick={() => setNotice(r)}
-                          className="text-xs text-blue-600 hover:text-blue-800 border border-blue-200 px-2 py-1 rounded-lg">
-                          Notice
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <PrintFooter />
-            </div>
+            <DefaulterListPrint data={data} cls={cls} academicYear={academicYear} totalDue={totalDue} onNotice={setNotice} />
           )}
         </>
       )}
@@ -332,6 +302,108 @@ function DefaulterTab({ academicYear, setAcademicYear }) {
           onClose={() => setNotice(null)}
         />
       )}
+    </div>
+  );
+}
+
+// Same reasoning and estimates as Marks List's pagination — see the
+// comment there for why these are necessarily estimates, not pixel-perfect.
+const DEF_PAGE_CONTENT_HEIGHT_PX = 950;
+const DEF_PAGE_CONTENT_WIDTH_PX  = 720;
+const DEF_PAGE_FOOTER_RESERVE_PX = 40;
+
+function DefaulterListPrint({ data, cls, academicYear, totalDue, onNotice }) {
+  const letterhead = (
+    <div className="text-center border-b-2 border-gray-800 pb-3 mb-4">
+      <h1 className="text-xl font-bold tracking-wide">BRILLIANT PUBLIC SCHOOL</h1>
+      <p className="text-xs text-gray-500">Village-Sherpur-Nayser, Post-Jawal, District-Bulandshahr, UP-203131</p>
+      <h2 className="text-base font-bold mt-2">Defaulter List</h2>
+      <p className="text-sm text-gray-600">{cls || 'All Classes'} · {academicYear}</p>
+    </div>
+  );
+
+  const headerRow = (
+    <tr className="bg-gray-50 border-b border-gray-200">
+      {['SL No','Student Name','Class','Father','Mobile','Balance Due','Last Payment',''].map(h => (
+        <th key={h} className="px-4 py-3 text-left text-xs text-gray-500 font-semibold">{h === '' ? <span className="print:hidden">{h}</span> : h}</th>
+      ))}
+    </tr>
+  );
+
+  const dataRow = (r, i) => (
+    <tr key={r.ledger_id} className={i%2===0?'bg-white':'bg-red-50'}>
+      <td className="px-4 py-2.5 font-bold text-blue-700 text-xs">{r.sl_number}</td>
+      <td className="px-4 py-2.5 font-medium text-gray-800">{r.student_name}</td>
+      <td className="px-4 py-2.5 text-gray-500 text-xs">{r.current_class} {r.section}</td>
+      <td className="px-4 py-2.5 text-gray-600">{r.father_name || '—'}</td>
+      <td className="px-4 py-2.5 text-gray-500 text-xs">{r.mobile_number || '—'}</td>
+      <td className="px-4 py-2.5 font-bold text-red-600 text-base">{fmtINR(r.balance)}</td>
+      <td className="px-4 py-2.5 text-gray-400 text-xs">{r.last_payment ? String(r.last_payment).slice(0,10).split('-').reverse().join('-') : 'Never'}</td>
+      <td className="px-4 py-2.5 print:hidden">
+        <button onClick={() => onNotice(r)}
+          className="text-xs text-blue-600 hover:text-blue-800 border border-blue-200 px-2 py-1 rounded-lg">
+          Notice
+        </button>
+      </td>
+    </tr>
+  );
+
+  const letterheadRef = useRef(null);
+  const headerRowRef  = useRef(null);
+  const sampleRowRef  = useRef(null);
+  const [rowsPerPage, setRowsPerPage] = useState(null);
+
+  useLayoutEffect(() => {
+    const letterheadH = letterheadRef.current?.offsetHeight || 90;
+    const headerH     = headerRowRef.current?.offsetHeight  || 26;
+    const rowH        = sampleRowRef.current?.offsetHeight  || 20;
+    const available   = DEF_PAGE_CONTENT_HEIGHT_PX - letterheadH - headerH - DEF_PAGE_FOOTER_RESERVE_PX;
+    setRowsPerPage(Math.max(5, Math.floor(available / rowH)));
+    // eslint-disable-next-line
+  }, []);
+
+  if (rowsPerPage === null) {
+    return (
+      <div style={{ position: 'fixed', left: -9999, top: 0, width: DEF_PAGE_CONTENT_WIDTH_PX }}>
+        <div ref={letterheadRef}>{letterhead}</div>
+        <table className="w-full text-sm">
+          <thead><tr ref={headerRowRef}>{headerRow.props.children}</tr></thead>
+          <tbody>{data[0] && <tr ref={sampleRowRef}>{dataRow(data[0], 0).props.children}</tr>}</tbody>
+        </table>
+      </div>
+    );
+  }
+
+  const pages = [];
+  for (let i = 0; i < data.length; i += rowsPerPage) pages.push(data.slice(i, i + rowsPerPage));
+  if (pages.length === 0) pages.push([]);
+
+  return (
+    <div className="print-root">
+      {pages.map((pageRows, pageIdx) => (
+        <div key={pageIdx}
+          className="bg-white border border-gray-200 rounded-2xl overflow-hidden mb-4 print:mb-0 print:border-none print:rounded-none"
+          style={pageIdx < pages.length - 1 ? { breakAfter: 'page' } : undefined}>
+          <div className="p-4">{letterhead}</div>
+          <table className="w-full text-sm">
+            <thead>{headerRow}</thead>
+            <tbody className="divide-y divide-gray-100">
+              {pageRows.map((r, i) => dataRow(r, i))}
+            </tbody>
+          </table>
+          {pageIdx === pages.length - 1 && (
+            <p className="px-4 py-3 text-xs text-gray-600 border-t border-gray-100">
+              Total Defaulters: <strong>{data.length}</strong> &nbsp;·&nbsp; Total Outstanding: <strong>{fmtINR(totalDue)}</strong>
+            </p>
+          )}
+          <div className="grid grid-cols-3 text-xs text-gray-500 px-4 pb-2">
+            <span></span>
+            <span className="text-center">Page {pageIdx + 1} of {pages.length}</span>
+            <span></span>
+          </div>
+          <PrintFooter />
+        </div>
+      ))}
     </div>
   );
 }

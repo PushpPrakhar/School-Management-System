@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../utils/AuthContext';
+import PostingSchedulePrintModal from '../components/PostingSchedulePrintModal';
 
 const SESSION_YEAR  = (() => { const n = new Date(), y = n.getFullYear(); return n.getMonth() >= 3 ? y : y - 1; })();
 const CURRENT_YEAR  = `${SESSION_YEAR}-${String(SESSION_YEAR + 1).slice(2)}`;
@@ -384,6 +385,7 @@ function HistoryTab({ centers, academicYear, setAcademicYear }) {
   const [selected,  setSelected]  = useState(null);
   const [details,   setDetails]   = useState(null);
   const [loadingD,  setLoadingD]  = useState(false);
+  const [showPrint, setShowPrint] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -465,9 +467,15 @@ function HistoryTab({ centers, academicYear, setAcademicYear }) {
                     Posted on {fmtDate(details.schedule.posted_at)} by {details.schedule.posted_by}
                   </p>
                 </div>
-                <div className="text-right">
-                  <p className="text-white font-bold text-xl">{fmt(details.schedule.total_amount)}</p>
-                  <p className="text-blue-200 text-xs">{details.schedule.total_transactions} receipts</p>
+                <div className="flex items-center gap-4">
+                  <div className="text-right">
+                    <p className="text-white font-bold text-xl">{fmt(details.schedule.total_amount)}</p>
+                    <p className="text-blue-200 text-xs">{details.schedule.total_transactions} receipts</p>
+                  </div>
+                  <button onClick={() => setShowPrint(true)}
+                    className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl text-sm font-medium">
+                    🖨️ Print
+                  </button>
                 </div>
               </div>
               <div className="max-h-[55vh] overflow-y-auto">
@@ -500,6 +508,10 @@ function HistoryTab({ centers, academicYear, setAcademicYear }) {
           )}
         </div>
       </div>
+
+      {showPrint && details && (
+        <PostingSchedulePrintModal schedule={details.schedule} receipts={details.receipts} onClose={() => setShowPrint(false)} />
+      )}
     </div>
   );
 }

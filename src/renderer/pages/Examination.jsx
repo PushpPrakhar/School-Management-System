@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useLayoutEffect } from 'react';
 import { useAuth } from '../utils/AuthContext';
 import ReportCardPrintModal from '../components/ReportCardPrintModal';
+import PrintFooter from '../components/PrintFooter';
 
 // ── Constants ─────────────────────────────────────────────────
 const SESSION_YEAR = (() => { const n = new Date(), y = n.getFullYear(); return n.getMonth()>=3?y:y-1; })();
@@ -473,7 +474,7 @@ function EnterMarksTab() {
       )}
 
       {showMarksPrint && (
-        <ReportCardPrintModal studentName={`${cls} — Section ${section} (${examLabel})`} onClose={() => setShowMarksPrint(false)}>
+        <ReportCardPrintModal studentName={`${cls} — Section ${section} (${examLabel})`} onClose={() => setShowMarksPrint(false)} appendFooter={false}>
           <MarksListPrintContent students={students} marks={marks} subjects={subjects}
             cls={cls} section={section} examLabel={examLabel} maxMarks={maxMarks} academicYear={academicYear} />
         </ReportCardPrintModal>
@@ -483,54 +484,119 @@ function EnterMarksTab() {
 }
 
 // ── Marks List — printable/exportable table for a whole class/section ──
+// Paginated in JS (not left purely to the browser's native table
+// page-breaking) so the school letterhead, column headers, and footer are
+// guaranteed to repeat on every physical page — the same proven pattern
+// already used for Fees Notice/Admit Card/Report Card bulk printing. The
+// row count per page is measured, not hardcoded: a hidden off-screen pass
+// renders one real row plus the real letterhead and header, measures their
+// actual heights, and only then computes how many rows fit — rather than
+// guessing a fixed number and wasting a page when more would actually fit.
+//
+// This is necessarily an estimate, not pixel-perfect: Chromium's print
+// engine doesn't expose the OS print dialog's actual margins to the page,
+// so the "page content height" below assumes typical default margins.
+const PAGE_CONTENT_HEIGHT_PX = 950;  // ~A4 (297mm) minus typical print margins, at 96dpi
+const PAGE_CONTENT_WIDTH_PX  = 720;  // ~A4 (210mm) minus typical print margins, at 96dpi
+const PAGE_FOOTER_RESERVE_PX = 40;   // space for the Academic Year / Page X of Y / Generated-by line
+
 function MarksListPrintContent({ students, marks, subjects, cls, section, examLabel, maxMarks, academicYear }) {
-  const maxTotal = subjects.length * maxMarks;
+  const rows = students.map((s, i) => {
+    const studentMarks = marks[s.admission_number] || {};
+    let total = 0;
+    const cells = subjects.map(sub => {
+      const cell = studentMarks[sub];
+      if (cell?.absent) return 'AB';
+      if (cell?.val === '' || cell?.val === undefined || cell?.val === null) return '—';
+      const v = parseFloat(cell.val);
+      total += isNaN(v) ? 0 : v;
+      return v;
+    });
+    return { student: s, rank: i + 1, cells, total };
+  });
+
+  const letterheadRef = useRef(null);
+  const headerRowRef  = useRef(null);
+  const sampleRowRef  = useRef(null);
+  const [rowsPerPage, setRowsPerPage] = useState(null);
+
+  useLayoutEffect(() => {
+    const letterheadH = letterheadRef.current?.offsetHeight || 90;
+    const headerH     = headerRowRef.current?.offsetHeight  || 26;
+    const rowH        = sampleRowRef.current?.offsetHeight  || 20;
+    const available   = PAGE_CONTENT_HEIGHT_PX - letterheadH - headerH - PAGE_FOOTER_RESERVE_PX;
+    setRowsPerPage(Math.max(5, Math.floor(available / rowH)));
+    // Measured once per exam/class selection (subjects/columns affect row
+    // height) — re-measuring on every keystroke elsewhere isn't needed
+    // since this component remounts whenever the print modal reopens.
+  }, []);
+
+  const letterhead = (
+    <div className="text-center border-b-2 border-gray-800 pb-3 mb-4">
+      <h1 className="text-xl font-bold tracking-wide">BRILLIANT PUBLIC SCHOOL</h1>
+      <p className="text-xs text-gray-500">Village-Sherpur-Nayser, Post-Jawal, District-Bulandshahr, UP-203131</p>
+      <h2 className="text-base font-bold mt-2">{examLabel} — Summary of Marks</h2>
+      <p className="text-sm text-gray-600">{cls} — Section {section} · {academicYear}</p>
+    </div>
+  );
+
+  const headerRow = (
+    <tr className="bg-gray-100">
+      <th className="border border-gray-400 px-2 py-1.5 w-8">#</th>
+      <th className="border border-gray-400 px-2 py-1.5">Adm. No.</th>
+      <th className="border border-gray-400 px-2 py-1.5 text-left">Student Name</th>
+      {subjects.map(sub => <th key={sub} className="border border-gray-400 px-2 py-1.5">{sub}</th>)}
+      <th className="border border-gray-400 px-2 py-1.5">Total</th>
+    </tr>
+  );
+
+  const dataRow = ({ student: s, rank, cells, total }) => (
+    <tr key={s.admission_number}>
+      <td className="border border-gray-400 px-2 py-1 text-center">{rank}</td>
+      <td className="border border-gray-400 px-2 py-1 text-center font-mono text-blue-700">{s.admission_number}</td>
+      <td className="border border-gray-400 px-2 py-1">{s.student_name}</td>
+      {cells.map((c, j) => <td key={j} className="border border-gray-400 px-2 py-1 text-center">{c}</td>)}
+      <td className="border border-gray-400 px-2 py-1 text-center font-bold">{total}</td>
+    </tr>
+  );
+
+  if (rowsPerPage === null) {
+    // Hidden measurement pass — same markup the real print will use, at
+    // the same content width, so the measured heights are representative.
+    return (
+      <div style={{ position: 'fixed', left: -9999, top: 0, width: PAGE_CONTENT_WIDTH_PX }}>
+        <div ref={letterheadRef}>{letterhead}</div>
+        <table className="w-full text-xs border border-gray-400 border-collapse">
+          <thead><tr ref={headerRowRef}>{headerRow.props.children}</tr></thead>
+          <tbody>{rows[0] && <tr ref={sampleRowRef}>{dataRow(rows[0]).props.children}</tr>}</tbody>
+        </table>
+      </div>
+    );
+  }
+
+  const pages = [];
+  for (let i = 0; i < rows.length; i += rowsPerPage) pages.push(rows.slice(i, i + rowsPerPage));
+  if (pages.length === 0) pages.push([]);
+
   return (
     <div>
-      <div className="text-center border-b-2 border-gray-800 pb-3 mb-4">
-        <h1 className="text-xl font-bold tracking-wide">BRILLIANT PUBLIC SCHOOL</h1>
-        <p className="text-xs text-gray-500">Village-Sherpur-Nayser, Post-Jawal, District-Bulandshahr, UP-203131</p>
-        <h2 className="text-base font-bold mt-2">{examLabel} — MARKS LIST</h2>
-        <p className="text-sm text-gray-600">{cls} — Section {section} · {academicYear}</p>
-      </div>
+      {pages.map((pageRows, pageIdx) => (
+        <div key={pageIdx} style={pageIdx < pages.length - 1 ? { breakAfter: 'page' } : undefined}>
+          {letterhead}
 
-      <table className="w-full text-xs border border-gray-400 border-collapse">
-        <thead>
-          <tr className="bg-gray-100">
-            <th className="border border-gray-400 px-2 py-1.5 w-8">#</th>
-            <th className="border border-gray-400 px-2 py-1.5">Adm. No.</th>
-            <th className="border border-gray-400 px-2 py-1.5 text-left">Student Name</th>
-            {subjects.map(sub => <th key={sub} className="border border-gray-400 px-2 py-1.5">{sub}</th>)}
-            <th className="border border-gray-400 px-2 py-1.5">Total</th>
-            <th className="border border-gray-400 px-2 py-1.5">%</th>
-          </tr>
-        </thead>
-        <tbody>
-          {students.map((s, i) => {
-            const studentMarks = marks[s.admission_number] || {};
-            let total = 0;
-            const cells = subjects.map(sub => {
-              const cell = studentMarks[sub];
-              if (cell?.absent) return 'AB';
-              if (cell?.val === '' || cell?.val === undefined || cell?.val === null) return '—';
-              const v = parseFloat(cell.val);
-              total += isNaN(v) ? 0 : v;
-              return v;
-            });
-            const pct = maxTotal ? ((total / maxTotal) * 100).toFixed(1) : '0.0';
-            return (
-              <tr key={s.admission_number}>
-                <td className="border border-gray-400 px-2 py-1 text-center">{i + 1}</td>
-                <td className="border border-gray-400 px-2 py-1 text-center font-mono text-blue-700">{s.admission_number}</td>
-                <td className="border border-gray-400 px-2 py-1">{s.student_name}</td>
-                {cells.map((c, j) => <td key={j} className="border border-gray-400 px-2 py-1 text-center">{c}</td>)}
-                <td className="border border-gray-400 px-2 py-1 text-center font-bold">{total}</td>
-                <td className="border border-gray-400 px-2 py-1 text-center">{pct}%</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+          <table className="w-full text-xs border border-gray-400 border-collapse mb-3">
+            <thead>{headerRow}</thead>
+            <tbody>{pageRows.map(dataRow)}</tbody>
+          </table>
+
+          <div className="grid grid-cols-3 text-xs text-gray-500">
+            <span className="text-left">Academic Year: {academicYear}</span>
+            <span className="text-center">Page {pageIdx + 1} of {pages.length}</span>
+            <span></span>
+          </div>
+          <PrintFooter />
+        </div>
+      ))}
     </div>
   );
 }
@@ -691,18 +757,14 @@ function ReportCard({ student, marksMap, subjects, cls, section, academicYear, t
               {isHY ? (
                 <>
                   <th className={th}>Marks Obtained / Max Marks</th>
-                  <th className={th}>Percentage of Marks</th>
                   <th className={th}>Grade</th>
                   <th className={th}>Result</th>
                 </>
               ) : (
                 <>
                   <th className={th}>Half Yearly</th>
-                  <th className={th}>HY %</th>
                   <th className={th}>Annual</th>
-                  <th className={th}>Annual %</th>
                   <th className={th}>Overall</th>
-                  <th className={th}>Overall %</th>
                   <th className={th}>Grade</th>
                 </>
               )}
@@ -713,18 +775,14 @@ function ReportCard({ student, marksMap, subjects, cls, section, academicYear, t
               {isHY ? (
                 <>
                   <td className={td}>{totHYT} / {maxSub}</td>
-                  <td className={td}>{hyPct}%</td>
                   <td className={td}><span className={`px-2 py-0.5 rounded font-bold ${GRADE_STYLE[getGrade(parseFloat(hyPct))]}`}>{getGrade(parseFloat(hyPct))}</span></td>
                   <td className={`${td} font-bold ${allPass?'text-green-700':'text-red-600'}`}>{allPass?'PASS':'FAIL'}</td>
                 </>
               ) : (
                 <>
                   <td className={td}>{totHYT}/{maxSub}</td>
-                  <td className={td}>{hyPct}%</td>
                   <td className={td}>{totFinT}/{maxSub}</td>
-                  <td className={td}>{finPct}%</td>
                   <td className={td}>{totOver}/{maxOver}</td>
-                  <td className={td}>{overPct}%</td>
                   <td className={td}><span className={`px-2 py-0.5 rounded font-bold ${GRADE_STYLE[getGrade(parseFloat(overPct))]}`}>{getGrade(parseFloat(overPct))}</span></td>
                 </>
               )}
@@ -751,14 +809,6 @@ function ReportCard({ student, marksMap, subjects, cls, section, academicYear, t
       <div className="border border-gray-400 rounded p-3 mb-4 text-xs">
         <span className="font-semibold">Class Teacher's Remarks : </span>
         <span className="border-b border-gray-400 inline-block w-96">&nbsp;</span>
-      </div>
-
-      {/* Result */}
-      <div className="border border-gray-400 rounded p-3 mb-4 text-xs text-center">
-        <span className="font-bold text-sm">Result : </span>
-        <span className={`font-bold text-base underline italic ${allPass?'text-green-700':'text-red-600'}`}>
-          {allPass ? 'CONGRATULATIONS, YOU HAVE PASSED AND PROMOTED.' : 'RESULT: FAIL — PROMOTION WITHHELD.'}
-        </span>
       </div>
 
       {/* Date + Signatures */}
@@ -1052,7 +1102,6 @@ function UnitTestReportCard({ student, marksMap, subjects, cls, section, academi
           <thead>
             <tr>
               <th className={th}>Marks Obtained / Max Marks</th>
-              <th className={th}>Percentage of Marks</th>
               <th className={th}>Grade</th>
               <th className={th}>Result</th>
             </tr>
@@ -1060,7 +1109,6 @@ function UnitTestReportCard({ student, marksMap, subjects, cls, section, academi
           <tbody>
             <tr>
               <td className={td}>{total} / {maxTotal}</td>
-              <td className={td}>{pct}%</td>
               <td className={td}><span className={`px-2 py-0.5 rounded font-bold ${GRADE_STYLE[grade]}`}>{grade}</span></td>
               <td className={`${td} font-bold ${allPass ? 'text-green-700' : 'text-red-600'}`}>{allPass ? 'PASS' : 'FAIL'}</td>
             </tr>

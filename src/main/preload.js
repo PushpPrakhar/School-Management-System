@@ -216,6 +216,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // Cash Book (Phase 7)
   cashbookGetDaily:        (date, yr)       => invoke('cashbook:getDaily',          { date, academic_year: yr }),
+  cashbookGetMonthDays:    (yr, year, month) => invoke('cashbook:getMonthDays',     { academic_year: yr, year, month }),
   cashbookAddExpense:      (data)           => invoke('cashbook:addExpense',         data),
   cashbookUpdateExpense:   (data)           => invoke('cashbook:updateExpense',      data),
   cashbookDeleteExpense:   (id)             => invoke('cashbook:deleteExpense',      id),

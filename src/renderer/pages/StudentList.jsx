@@ -4,6 +4,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../utils/AuthContext';
+import StudentListPrintModal from '../components/StudentListPrintModal';
 
 const CLASSES = [
   'Nursery', 'LKG', 'UKG',
@@ -258,51 +259,8 @@ export default function StudentList() {
   };
 
   // ── Print ────────────────────────────────────────────────────
-  const handlePrint = () => {
-    const showClassCol = selectedClass === 'ALL';
-    const rows = filtered.map((s, i) => `
-      <tr>
-        <td>${i + 1}</td>
-        <td>${s.admission_number}</td>
-        <td>${s.student_name}</td>
-        ${showClassCol ? `<td>${s.current_class}${s.section ? ' - ' + s.section : ''}</td>` : ''}
-        <td>${s.father_name}</td>
-        <td>${s.gender === 'M' ? 'Male' : s.gender === 'F' ? 'Female' : s.gender}</td>
-        <td>${fmtDate(s.date_of_birth)}</td>
-        <td>${s.father_phone || s.mother_phone || '—'}</td>
-        <td>${s.address || '—'}</td>
-      </tr>`).join('');
-
-    const html = `
-      <html><head><title>Student List</title>
-      <style>
-        body { font-family: Arial, sans-serif; font-size: 11px; margin: 20px; }
-        h2 { margin-bottom: 4px; }
-        p  { margin: 0 0 12px; color: #555; }
-        table { width: 100%; border-collapse: collapse; }
-        th { background: #1d4ed8; color: white; padding: 6px 8px; text-align: left; }
-        td { padding: 5px 8px; border-bottom: 1px solid #e5e7eb; }
-        tr:nth-child(even) td { background: #eff6ff; }
-      </style></head>
-      <body>
-        <h2>Student List — ${classLabel} (${academicYear})</h2>
-        <p>Total Students: ${filtered.length} &nbsp;|&nbsp; Date: ${fmtDate(new Date().toISOString())}</p>
-        <table>
-          <thead><tr>
-            <th>#</th><th>Adm. No.</th><th>Student Name</th>
-            ${showClassCol ? '<th>Class</th>' : ''}
-            <th>Father's Name</th>
-            <th>Gender</th><th>Date of Birth</th><th>Phone</th><th>Address</th>
-          </tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </body></html>`;
-
-    const win = window.open('', '_blank');
-    win.document.write(html);
-    win.document.close();
-    win.print();
-  };
+  const [showPrint, setShowPrint] = useState(false);
+  const handlePrint = () => setShowPrint(true);
 
   // ── Render ───────────────────────────────────────────────────
   return (
@@ -532,6 +490,17 @@ export default function StudentList() {
 
       {/* Student detail modal */}
       <StudentModal student={selectedStudent} onClose={() => setSelectedStudent(null)} />
+
+      {/* Print preview modal */}
+      {showPrint && (
+        <StudentListPrintModal
+          students={filtered}
+          classLabel={classLabel}
+          academicYear={academicYear}
+          showClassCol={selectedClass === 'ALL'}
+          onClose={() => setShowPrint(false)}
+        />
+      )}
     </div>
   );
 }

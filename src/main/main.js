@@ -8054,7 +8054,7 @@ ipcMain.handle('cashbook:getDaily', (_evt, { date, academic_year }) => {
 
     // Running totals for this day
     const receiptsCash = receipts.filter(r => r.payment_mode === 'CASH').reduce((s,r) => s+(r.amount||0), 0);
-    const receiptsBank = receipts.filter(r => ['UPI','IMPS','RTGS','CHEQUE'].includes(r.payment_mode)).reduce((s,r) => s+(r.amount||0), 0);
+    const receiptsBank = receipts.filter(r => ['ONLINE','CHEQUE'].includes(r.payment_mode)).reduce((s,r) => s+(r.amount||0), 0);
     const expensesCash = expenses.reduce((s,e) => s+(e.cash_amount||0), 0);
     const expensesBank = expenses.reduce((s,e) => s+(e.bank_amount||0), 0);
 
@@ -8067,7 +8067,7 @@ ipcMain.handle('cashbook:getDaily', (_evt, { date, academic_year }) => {
       SELECT COALESCE(SUM(cash_amount),0) as tot FROM cash_expenses WHERE expense_date < ? AND academic_year=?
     `).get(d, academic_year);
     const prevRecBank = db.prepare(`
-      SELECT COALESCE(SUM(CASE WHEN t.payment_mode IN ('UPI','IMPS','RTGS','CHEQUE') THEN t.credit ELSE 0 END),0) as tot
+      SELECT COALESCE(SUM(CASE WHEN t.payment_mode IN ('ONLINE','CHEQUE') THEN t.credit ELSE 0 END),0) as tot
       FROM fee_transactions t WHERE t.transaction_type='RECEIVED' AND DATE(t.collected_at) < ? AND t.academic_year=?
     `).get(d, academic_year);
     const prevExpBank = db.prepare(`
@@ -8124,6 +8124,79 @@ ipcMain.handle('cashbook:deleteExpense', (_evt, expense_id) => {
 });
 
 // Monthly summary
+// Day-by-day breakdown for an entire month — backs the Monthly Summary's
+// expandable rows. Mirrors cashbook:getDaily's exact formula (same
+// CASH/ONLINE/CHEQUE classification, same opening-balance logic) so a given
+// day always shows identical numbers whether reached from here or from the
+// Daily tab directly; kept as a separate, larger query set purely for
+// efficiency (one query per figure for the whole month, not per day).
+ipcMain.handle('cashbook:getMonthDays', (_evt, { academic_year, year, month }) => {
+  try {
+    const y = String(year);
+    const m = String(month).padStart(2, '0');
+    const firstDay = `${y}-${m}-01`;
+    const daysInMonth = new Date(Number(y), Number(m), 0).getDate();
+    const lastDay = `${y}-${m}-${String(daysInMonth).padStart(2, '0')}`;
+
+    const prevRecCash = db.prepare(`
+      SELECT COALESCE(SUM(CASE WHEN payment_mode='CASH' THEN credit ELSE 0 END),0) as tot
+      FROM fee_transactions WHERE transaction_type='RECEIVED' AND DATE(collected_at) < ? AND academic_year=?
+    `).get(firstDay, academic_year);
+    const prevExpCash = db.prepare(`
+      SELECT COALESCE(SUM(cash_amount),0) as tot FROM cash_expenses WHERE expense_date < ? AND academic_year=?
+    `).get(firstDay, academic_year);
+    const prevRecBank = db.prepare(`
+      SELECT COALESCE(SUM(CASE WHEN payment_mode IN ('ONLINE','CHEQUE') THEN credit ELSE 0 END),0) as tot
+      FROM fee_transactions WHERE transaction_type='RECEIVED' AND DATE(collected_at) < ? AND academic_year=?
+    `).get(firstDay, academic_year);
+    const prevExpBank = db.prepare(`
+      SELECT COALESCE(SUM(bank_amount),0) as tot FROM cash_expenses WHERE expense_date < ? AND academic_year=?
+    `).get(firstDay, academic_year);
+
+    let runningCash = (prevRecCash?.tot || 0) - (prevExpCash?.tot || 0);
+    let runningBank = (prevRecBank?.tot || 0) - (prevExpBank?.tot || 0);
+
+    const recRows = db.prepare(`
+      SELECT DATE(collected_at) as d,
+             SUM(CASE WHEN payment_mode='CASH' THEN credit ELSE 0 END) as cash,
+             SUM(CASE WHEN payment_mode IN ('ONLINE','CHEQUE') THEN credit ELSE 0 END) as bank
+      FROM   fee_transactions
+      WHERE  transaction_type='RECEIVED' AND academic_year=? AND DATE(collected_at) BETWEEN ? AND ?
+      GROUP  BY DATE(collected_at)
+    `).all(academic_year, firstDay, lastDay);
+    const recByDay = {};
+    recRows.forEach(r => { recByDay[r.d] = { cash: r.cash || 0, bank: r.bank || 0 }; });
+
+    const expRows = db.prepare(`
+      SELECT expense_date as d, SUM(cash_amount) as cash, SUM(bank_amount) as bank
+      FROM   cash_expenses
+      WHERE  academic_year=? AND expense_date BETWEEN ? AND ?
+      GROUP  BY expense_date
+    `).all(academic_year, firstDay, lastDay);
+    const expByDay = {};
+    expRows.forEach(r => { expByDay[r.d] = { cash: r.cash || 0, bank: r.bank || 0 }; });
+
+    const days = [];
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dateStr = `${y}-${m}-${String(day).padStart(2, '0')}`;
+      const rec = recByDay[dateStr] || { cash: 0, bank: 0 };
+      const exp = expByDay[dateStr] || { cash: 0, bank: 0 };
+      const openingCash = runningCash, openingBank = runningBank;
+      const closingCash = openingCash + rec.cash - exp.cash;
+      const closingBank = openingBank + rec.bank - exp.bank;
+      days.push({
+        date: dateStr,
+        receiptsCash: rec.cash, receiptsBank: rec.bank,
+        expensesCash: exp.cash, expensesBank: exp.bank,
+        openingCash, openingBank, closingCash, closingBank,
+      });
+      runningCash = closingCash; runningBank = closingBank;
+    }
+
+    return { success: true, days };
+  } catch (e) { return { success: false, message: e.message }; }
+});
+
 ipcMain.handle('cashbook:getMonthlySummary', (_evt, { academic_year }) => {
   try {
     // Fee receipts grouped by month
@@ -8132,7 +8205,7 @@ ipcMain.handle('cashbook:getMonthlySummary', (_evt, { academic_year }) => {
         SUBSTR(collected_at,6,2) as month,
         SUBSTR(collected_at,1,4) as year,
         SUM(CASE WHEN payment_mode='CASH' THEN credit ELSE 0 END) as cash_in,
-        SUM(CASE WHEN payment_mode IN ('UPI','IMPS','RTGS','CHEQUE') THEN credit ELSE 0 END) as bank_in
+        SUM(CASE WHEN payment_mode IN ('ONLINE','CHEQUE') THEN credit ELSE 0 END) as bank_in
       FROM fee_transactions
       WHERE transaction_type='RECEIVED' AND academic_year=?
       GROUP BY month, year
@@ -8161,7 +8234,7 @@ ipcMain.handle('cashbook:getMonthlySummary', (_evt, { academic_year }) => {
     receiptRows.forEach(r => { const k = r.year+'-'+r.month; addToMonth(k,'cash_in',r.cash_in); addToMonth(k,'bank_in',r.bank_in); });
     expenseRows.forEach(r => { const k = r.year+'-'+r.month; addToMonth(k,'cash_out',r.cash_out); addToMonth(k,'bank_out',r.bank_out); });
 
-    const MONTH_NAMES = { '01':'April','02':'May','03':'June','04':'July','05':'August','06':'September','07':'October','08':'November','09':'December','10':'January','11':'February','12':'March' };
+    const MONTH_NAMES = { '01':'January','02':'February','03':'March','04':'April','05':'May','06':'June','07':'July','08':'August','09':'September','10':'October','11':'November','12':'December' };
 
     // Sort by academic year order (Apr first)
     const sorted = Object.entries(months).map(([k, v]) => {

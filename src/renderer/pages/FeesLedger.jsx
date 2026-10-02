@@ -971,7 +971,7 @@ function TransportMonthlyTab({ academicYear }) {
             {assignedCount} students on transport
           </span>
           <span className="text-xs bg-green-50 text-green-700 px-3 py-1.5 rounded-full font-semibold">
-            ₹{totalMonthlyAmount.toLocaleString('en-IN')}/mo total
+            Total: ₹{totalMonthlyAmount.toLocaleString('en-IN')}/month
           </span>
           <button onClick={() => setShowPrint(true)}
             className="px-4 py-2 border border-gray-300 text-gray-600 hover:bg-gray-50 text-sm font-medium rounded-xl">
