@@ -217,6 +217,15 @@ contextBridge.exposeInMainWorld('api', {
   // Cash Book (Phase 7)
   cashbookGetDaily:        (date, yr)       => invoke('cashbook:getDaily',          { date, academic_year: yr }),
   cashbookGetMonthDays:    (yr, year, month) => invoke('cashbook:getMonthDays',     { academic_year: yr, year, month }),
+  cashbookGetSettings:     ()                => invoke('cashbook:getSettings'),
+  cashbookSetResetDate:    (resetDate, by)   => invoke('cashbook:setResetDate',     { reset_date: resetDate, updated_by: by }),
+
+  // ── Transfer Certificates ───────────────────────────────────
+  tcSearch:     (query)            => invoke('tc:search',     { query }),
+  tcGetStudent: (admissionNumber)  => invoke('tc:getStudent', { admission_number: admissionNumber }),
+  tcIssue:      (payload)          => invoke('tc:issue',      payload),
+  tcList:       (query)            => invoke('tc:list',       { query }),
+  tcGet:        (tcId)             => invoke('tc:get',        { tc_id: tcId }),
   cashbookAddExpense:      (data)           => invoke('cashbook:addExpense',         data),
   cashbookUpdateExpense:   (data)           => invoke('cashbook:updateExpense',      data),
   cashbookDeleteExpense:   (id)             => invoke('cashbook:deleteExpense',      id),

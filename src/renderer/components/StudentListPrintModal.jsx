@@ -39,8 +39,8 @@ export default function StudentListPrintModal({ students, classLabel, academicYe
   const dataRow = (s, rank) => (
     <tr key={s.admission_number}>
       <td className="border border-gray-400 px-2 py-1 text-center">{rank}</td>
-      <td className="border border-gray-400 px-2 py-1 font-mono text-blue-700">{s.admission_number}</td>
-      <td className="border border-gray-400 px-2 py-1">{s.student_name}</td>
+      <td className="border border-gray-400 px-2 py-1 font-mono text-blue-700 whitespace-nowrap">{s.admission_number}</td>
+      <td className="border border-gray-400 px-2 py-1 whitespace-nowrap">{s.student_name}</td>
       <td className="border border-gray-400 px-2 py-1">{showClassCol ? `${s.current_class}${s.section ? ' - ' + s.section : ''}` : (s.section || '—')}</td>
       <td className="border border-gray-400 px-2 py-1">{s.father_name || '—'}</td>
       <td className="border border-gray-400 px-2 py-1">{s.gender === 'M' ? 'Male' : s.gender === 'F' ? 'Female' : s.gender || '—'}</td>

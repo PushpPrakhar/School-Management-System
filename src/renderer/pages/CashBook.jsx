@@ -657,10 +657,69 @@ function MonthlyReportTab({ academicYear, setAcademicYear, onJumpToDate }) {
 }
 
 // ── Main Page ─────────────────────────────────────────────────
+// ── Starting point — lets Opening Balance / Monthly figures start counting
+// from a chosen date instead of the beginning of the academic year. Purely
+// a read-time filter: no transaction is ever changed or deleted. ──
+function StartingPointModal({ current, onClose, onSaved }) {
+  const { user } = useAuth();
+  const [value,  setValue]  = useState(current || TODAY);
+  const [saving, setSaving] = useState(false);
+  const [error,  setError]  = useState('');
+
+  const save = async (dateStr) => {
+    setSaving(true); setError('');
+    const res = await window.api.cashbookSetResetDate(dateStr, user?.username || '');
+    setSaving(false);
+    if (!res.success) { setError(res.message || 'Could not save.'); return; }
+    onSaved(res.reset_date);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+        <h3 className="font-bold text-gray-800 text-lg mb-1">Cash Book Starting Point</h3>
+        <p className="text-sm text-gray-500 mb-4">
+          Choose the date balances should start counting from. Everything before it stops being added into
+          Opening Balance and the Monthly Report. <strong>No transactions are deleted or changed</strong> —
+          you can move or clear this date at any time.
+        </p>
+        <label className="block text-xs font-medium text-gray-500 mb-1">Start counting from</label>
+        <input type="date" value={value} onChange={e => setValue(e.target.value)}
+          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
+        <div className="flex gap-2 flex-wrap">
+          <button onClick={() => save(value)} disabled={saving || !value}
+            className="px-5 py-2 bg-blue-700 hover:bg-blue-800 disabled:opacity-50 text-white rounded-xl text-sm font-medium">
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+          {current && (
+            <button onClick={() => save('')} disabled={saving}
+              className="px-5 py-2 border border-gray-300 text-gray-600 hover:bg-gray-50 rounded-xl text-sm">
+              Clear (count from year start)
+            </button>
+          )}
+          <button onClick={onClose} className="px-5 py-2 border border-gray-300 text-gray-600 hover:bg-gray-50 rounded-xl text-sm ml-auto">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function CashBook() {
   const [tab,          setTab]          = useState('cash');
   const [academicYear, setAcademicYear] = useState(CURRENT_YEAR);
   const [date,         setDate]         = useState(TODAY);
+  const [resetDate,    setResetDate]    = useState('');
+  const [showStart,    setShowStart]    = useState(false);
+  // Bumped after the starting point changes so the active tab remounts and
+  // re-fetches its figures instead of showing stale balances.
+  const [version,      setVersion]      = useState(0);
+
+  useEffect(() => {
+    window.api.cashbookGetSettings().then(r => { if (r.success) setResetDate(r.reset_date || ''); });
+  }, []);
 
   const TABS = [
     { key: 'cash',    label: '📒 Cash Book'      },
@@ -671,9 +730,17 @@ export default function CashBook() {
 
   return (
     <div className="max-w-6xl">
-      <div className="mb-5">
-        <h2 className="text-xl font-bold text-gray-800">Cash Book</h2>
-        <p className="text-sm text-gray-500 mt-0.5">Cash and bank kept as two separate ledgers — receipts from fee collections, payments from manual expense entries</p>
+      <div className="mb-5 flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-xl font-bold text-gray-800">Cash Book</h2>
+          <p className="text-sm text-gray-500 mt-0.5">Cash and bank kept as two separate ledgers — receipts from fee collections, payments from manual expense entries</p>
+        </div>
+        <button onClick={() => setShowStart(true)}
+          className="shrink-0 text-xs border border-gray-300 text-gray-600 hover:bg-gray-50 rounded-lg px-3 py-2 text-left">
+          <span className="block text-gray-400">Balances counting from</span>
+          <span className="font-semibold text-gray-700">{resetDate ? fmtDate(resetDate) : 'Start of academic year'}</span>
+          <span className="text-blue-600 ml-2">Change</span>
+        </button>
       </div>
 
       <div className="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit mb-5">
@@ -686,11 +753,16 @@ export default function CashBook() {
         ))}
       </div>
 
-      {tab === 'cash'    && <LedgerTab mode="cash" academicYear={academicYear} setAcademicYear={setAcademicYear} date={date} setDate={setDate} />}
-      {tab === 'bank'    && <LedgerTab mode="bank" academicYear={academicYear} setAcademicYear={setAcademicYear} date={date} setDate={setDate} />}
+      {tab === 'cash'    && <LedgerTab key={'c'+version} mode="cash" academicYear={academicYear} setAcademicYear={setAcademicYear} date={date} setDate={setDate} />}
+      {tab === 'bank'    && <LedgerTab key={'b'+version} mode="bank" academicYear={academicYear} setAcademicYear={setAcademicYear} date={date} setDate={setDate} />}
       {tab === 'expense' && <ExpenseTab academicYear={academicYear} setAcademicYear={setAcademicYear} />}
-      {tab === 'monthly' && <MonthlyReportTab academicYear={academicYear} setAcademicYear={setAcademicYear}
+      {tab === 'monthly' && <MonthlyReportTab key={'m'+version} academicYear={academicYear} setAcademicYear={setAcademicYear}
                                onJumpToDate={(mode, d) => { setDate(d); setTab(mode); }} />}
+
+      {showStart && (
+        <StartingPointModal current={resetDate} onClose={() => setShowStart(false)}
+          onSaved={(d) => { setResetDate(d); setVersion(v => v + 1); setShowStart(false); }} />
+      )}
     </div>
   );
 }

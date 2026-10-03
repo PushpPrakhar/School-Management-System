@@ -47,7 +47,7 @@ export default function TransportListPrintModal({ students, monthLabel, academic
             .map((s, i) => (
               <tr key={s.admission_number}>
                 <td className="border border-gray-400 px-2 py-1.5 text-center">{i + 1}</td>
-                <td className="border border-gray-400 px-2 py-1.5">{s.student_name}</td>
+                <td className="border border-gray-400 px-2 py-1.5 whitespace-nowrap">{s.student_name}</td>
                 <td className="border border-gray-400 px-2 py-1.5 text-center">{s.current_class} {s.section}</td>
                 <td className="border border-gray-400 px-2 py-1.5">{s.village || '—'}</td>
                 <td className="border border-gray-400 px-2 py-1.5 font-mono text-blue-700">{s.sl_number}</td>

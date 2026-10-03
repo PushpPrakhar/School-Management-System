@@ -535,8 +535,8 @@ function MarksListPrintContent({ students, marks, subjects, cls, section, examLa
     <div className="text-center border-b-2 border-gray-800 pb-3 mb-4">
       <h1 className="text-xl font-bold tracking-wide">BRILLIANT PUBLIC SCHOOL</h1>
       <p className="text-xs text-gray-500">Village-Sherpur-Nayser, Post-Jawal, District-Bulandshahr, UP-203131</p>
-      <h2 className="text-base font-bold mt-2">{examLabel} — Summary of Marks</h2>
-      <p className="text-sm text-gray-600">{cls} — Section {section} · {academicYear}</p>
+      <h2 className="text-base font-bold mt-2">Summary of Marks, Academic Year: {academicYear}</h2>
+      <p className="text-sm text-gray-600">{examLabel}, {cls} — Section {section}</p>
     </div>
   );
 
@@ -553,8 +553,8 @@ function MarksListPrintContent({ students, marks, subjects, cls, section, examLa
   const dataRow = ({ student: s, rank, cells, total }) => (
     <tr key={s.admission_number}>
       <td className="border border-gray-400 px-2 py-1 text-center">{rank}</td>
-      <td className="border border-gray-400 px-2 py-1 text-center font-mono text-blue-700">{s.admission_number}</td>
-      <td className="border border-gray-400 px-2 py-1">{s.student_name}</td>
+      <td className="border border-gray-400 px-2 py-1 text-center font-mono text-blue-700 whitespace-nowrap">{s.admission_number}</td>
+      <td className="border border-gray-400 px-2 py-1 whitespace-nowrap">{s.student_name}</td>
       {cells.map((c, j) => <td key={j} className="border border-gray-400 px-2 py-1 text-center">{c}</td>)}
       <td className="border border-gray-400 px-2 py-1 text-center font-bold">{total}</td>
     </tr>

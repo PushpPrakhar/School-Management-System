@@ -1085,6 +1085,19 @@ function initDatabase() {
     updated_by            TEXT     NOT NULL DEFAULT '',
     updated_at            DATETIME NOT NULL DEFAULT (datetime('now','localtime'))
   )`);
+  // Empty string means "no reset configured" — Cash Book behaves exactly
+  // as it always has, counting from the true beginning of each academic
+  // year. Once set, every cash/bank figure that sums "everything before
+  // date X" treats this as the earliest date it will ever look at —
+  // existing transactions before it are untouched in the database, they
+  // simply stop being added into the running balance.
+  try { db.exec("ALTER TABLE academic_settings ADD COLUMN cash_book_reset_date TEXT NOT NULL DEFAULT ''"); } catch(_) {}
+
+  // The original tc_log columns only cover a handful of what a Transfer
+  // Certificate prints. This holds the complete set of values exactly as
+  // they were printed, so a reprint is always identical to the original
+  // even if the student's record is edited afterwards.
+  try { db.exec("ALTER TABLE tc_log ADD COLUMN snapshot_json TEXT NOT NULL DEFAULT ''"); } catch(_) {}
 
   db.exec(`CREATE TABLE IF NOT EXISTS fee_structure (
     structure_id   INTEGER  PRIMARY KEY AUTOINCREMENT,
@@ -1551,6 +1564,14 @@ function _getUnpostedPastDays(center_id, counter_id) {
 // used both when actually posting a day and when checking whether a day is
 // already posted, so the two can never disagree on what a given day's
 // schedule ID is.
+// Returns the configured cash book reset date, or '0001-01-01' (effectively
+// "no limit") if none has been set — safe to use directly as a lower bound
+// in a DATE(...) >= ? comparison either way.
+function _cashBookResetDate() {
+  const row = db.prepare('SELECT cash_book_reset_date FROM academic_settings WHERE id = 1').get();
+  return (row && row.cash_book_reset_date) || '0001-01-01';
+}
+
 function _scheduleIdFor(center_id, dateStr) {
   const center = db.prepare('SELECT center_code FROM collection_centers WHERE center_id = ?').get(center_id || 1);
   const code   = (center?.center_code || 'BPS').replace(/-/g, '');
@@ -6901,6 +6922,231 @@ ipcMain.handle('counter:getLedgerForPayment', (_evt, { query, academic_year }) =
   } catch(e) { return { success: false, message: e.message }; }
 });
 
+// ══════════════════════════════════════════════════════════════
+// TRANSFER CERTIFICATES
+// ══════════════════════════════════════════════════════════════
+
+// Placeholder numbering until the school settles on a pattern: a plain
+// zero-padded running sequence (TC-0001). Deliberately isolated in this one
+// function — changing the pattern later touches nothing else.
+function _nextTcNumber() {
+  const rows = db.prepare('SELECT tc_number FROM tc_log').all();
+  let max = 0;
+  rows.forEach(r => {
+    const m = String(r.tc_number).match(/(\d+)$/);
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  });
+  return 'TC-' + String(max + 1).padStart(4, '0');
+}
+
+// Whether a student still owes the school anything, across EVERY academic
+// year they have a fee ledger in — not just the current one. Uses the same
+// balance helper as the Fees Notice and Defaulter List (opening balance +
+// posted + unposted-pending), so this screen can never disagree with them.
+// A credit in one year deliberately does not offset a due in another.
+function _tcFeeStatus(admission_number) {
+  const ledgers = [];
+  const rows = db.prepare(
+    'SELECT ledger_id, academic_year FROM fee_ledger WHERE admission_number = ? ORDER BY academic_year'
+  ).all(admission_number);
+  rows.forEach(r => {
+    const b = _ledgerBalances(r.academic_year, r.ledger_id)[0];
+    if (b) ledgers.push({
+      academic_year: r.academic_year,
+      sl_number: b.sl_number,
+      balance: Math.round((b.balance || 0) * 100) / 100,
+    });
+  });
+  const due = ledgers.filter(l => l.balance > 0.005);
+  const total_due = Math.round(due.reduce((s, l) => s + l.balance, 0) * 100) / 100;
+  return { ledgers, due_ledgers: due, total_due, blocked: due.length > 0, has_ledger: ledgers.length > 0 };
+}
+
+// Suggested "all sums due cleared upto" date: the last day of the most
+// recent month this student has actually been charged for. Only a
+// suggestion — the form lets the issuer change it.
+function _tcSuggestedClearedUpto(admission_number) {
+  const row = db.prepare(`
+    SELECT MAX(fm) as m FROM (
+      SELECT t.fee_month as fm FROM fee_transactions t
+        JOIN fee_ledger l ON l.ledger_id = t.ledger_id
+       WHERE l.admission_number = ? AND t.transaction_type = 'RECEIVABLE' AND t.fee_month != ''
+      UNION ALL
+      SELECT s.fee_month FROM fee_transactions_stage s
+        JOIN fee_ledger l ON l.ledger_id = s.ledger_id
+       WHERE l.admission_number = ? AND s.transaction_type = 'RECEIVABLE'
+         AND s.status = 'PENDING' AND s.fee_month != ''
+    )
+  `).get(admission_number, admission_number);
+  if (!row || !row.m) return '';
+  const [y, mo] = row.m.split('-').map(Number);
+  const last = new Date(y, mo, 0).getDate();
+  return `${y}-${String(mo).padStart(2, '0')}-${String(last).padStart(2, '0')}`;
+}
+
+// Only active students with no TC yet are eligible to be searched here.
+ipcMain.handle('tc:search', (_evt, { query }) => {
+  try {
+    const raw = String(query || '').trim();
+    if (!raw) return { success: true, data: [] };
+    const q = '%' + raw + '%';
+    const rows = db.prepare(`
+      SELECT admission_number, student_name, father_name, current_class, section, academic_year
+      FROM   enrollment
+      WHERE  student_status = 'ACTIVE' AND tc_issued = 0
+        AND  (admission_number LIKE ? OR student_name LIKE ? OR father_name LIKE ?)
+      ORDER  BY student_name
+      LIMIT  20
+    `).all(q, q, q);
+    return { success: true, data: rows };
+  } catch (e) { return { success: false, message: e.message }; }
+});
+
+// Everything the TC form needs about one student: their record, whether
+// they owe fees (blocks issuing), and suggested attendance figures.
+ipcMain.handle('tc:getStudent', (_evt, { admission_number }) => {
+  try {
+    const s = db.prepare(`
+      SELECT admission_number, student_name, father_name, mother_name, guardian_name,
+             date_of_birth, indian_nationality, caste, religion, category, pen_number,
+             date_of_admission, class_of_admission, current_class, section,
+             academic_year, student_status, tc_issued
+      FROM   enrollment WHERE admission_number = ?
+    `).get(admission_number);
+    if (!s) return { success: false, message: 'Student not found.' };
+    if (s.student_status !== 'ACTIVE' || s.tc_issued) {
+      return { success: false, message: 'A TC cannot be issued for this student — they are not an active student, or a TC was already issued.' };
+    }
+
+    // Same rule the Attendance module uses: every marked day is a working
+    // day, and Present or Late counts as attended.
+    const att = db.prepare(`
+      SELECT COUNT(*) as working,
+             COALESCE(SUM(CASE WHEN status IN ('Present','Late') THEN 1 ELSE 0 END), 0) as present
+      FROM   attendance_daily WHERE admission_number = ? AND academic_year = ?
+    `).get(admission_number, s.academic_year);
+
+    return {
+      success: true,
+      student: s,
+      fees: _tcFeeStatus(admission_number),
+      attendance: { working_days: att.working || 0, present_days: att.present || 0, academic_year: s.academic_year },
+      suggested_cleared_upto: _tcSuggestedClearedUpto(admission_number),
+    };
+  } catch (e) { return { success: false, message: e.message }; }
+});
+
+// Issue the certificate. Everything happens in ONE transaction: the TC
+// record, the student's status, their fee ledger, and the edit-history
+// entry either all succeed or none do. Fees are re-checked here on the
+// server — the screen blocking the button is a convenience, not the guard.
+ipcMain.handle('tc:issue', (_evt, { admission_number, fields, issued_by }) => {
+  try {
+    if (!fields || typeof fields !== 'object') {
+      return { success: false, message: 'Certificate details are missing.' };
+    }
+    const s = db.prepare('SELECT * FROM enrollment WHERE admission_number = ?').get(admission_number);
+    if (!s) return { success: false, message: 'Student not found.' };
+    if (s.student_status !== 'ACTIVE' || s.tc_issued) {
+      return { success: false, message: 'A TC has already been issued for this student, or they are not an active student.' };
+    }
+    const existing = db.prepare('SELECT tc_number FROM tc_log WHERE admission_number = ? AND is_cancelled = 0').get(admission_number);
+    if (existing) return { success: false, message: `TC ${existing.tc_number} has already been issued for this student.` };
+
+    const fees = _tcFeeStatus(admission_number);
+    if (fees.blocked) {
+      return {
+        success: false, blocked: true, total_due: fees.total_due, due_ledgers: fees.due_ledgers,
+        message: `TC cannot be issued — ₹${fees.total_due.toFixed(2)} is still unpaid. Clear the dues first.`,
+      };
+    }
+
+    const reason = String(fields.reason_for_leaving || '').trim();
+    if (!String(fields.student_name || '').trim() || !reason) {
+      return { success: false, message: 'Student name and reason for leaving are required.' };
+    }
+    const working = parseInt(fields.working_days, 10) || 0;
+    const present = parseInt(fields.attended_days, 10) || 0;
+    const by      = issued_by || 'admin';
+
+    let tcNumber, tcId;
+    const tx = db.transaction(() => {
+      tcNumber = _nextTcNumber();
+      const info = db.prepare(`
+        INSERT INTO tc_log
+          (admission_number, tc_number, reason_for_leaving, conduct,
+           total_working_days, total_present_days, fees_cleared, remarks, issued_by, snapshot_json)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+      `).run(admission_number, tcNumber, reason, String(fields.conduct || 'Good'),
+             working, present, String(fields.remarks || ''), by, JSON.stringify(fields));
+      tcId = info.lastInsertRowid;
+
+      db.prepare("UPDATE enrollment SET student_status = 'DROPBOX/TC', tc_issued = 1, updated_at = datetime('now','localtime') WHERE admission_number = ?")
+        .run(admission_number);
+      // Same effect as marking dropout from Edit Student: no further fees
+      // accrue, existing balance and history are untouched.
+      db.prepare('UPDATE fee_ledger SET is_active = 0 WHERE admission_number = ?').run(admission_number);
+
+      db.prepare('INSERT INTO edit_history (admission_number, student_name, edited_by, changes) VALUES (?, ?, ?, ?)')
+        .run(admission_number, s.student_name, by, JSON.stringify([
+          { field: 'student_status', old: s.student_status, new: 'DROPBOX/TC' },
+          { field: 'tc_issued',      old: '0',              new: '1' },
+          { field: 'tc_number',      old: '',               new: tcNumber },
+        ]));
+    });
+    tx();
+
+    return { success: true, tc_id: Number(tcId), tc_number: tcNumber };
+  } catch (e) { return { success: false, message: e.message }; }
+});
+
+// TC register — every certificate ever issued, newest first.
+ipcMain.handle('tc:list', (_evt, { query }) => {
+  try {
+    const rows = db.prepare(`
+      SELECT t.tc_id, t.tc_number, t.admission_number, t.reason_for_leaving,
+             t.issued_by, t.issued_at, t.is_cancelled, t.snapshot_json,
+             e.student_name as enr_name, e.current_class as enr_class
+      FROM   tc_log t
+      LEFT JOIN enrollment e ON e.admission_number = t.admission_number
+      ORDER  BY t.tc_id DESC
+    `).all();
+    let data = rows.map(r => {
+      let snap = {};
+      try { snap = r.snapshot_json ? JSON.parse(r.snapshot_json) : {}; } catch (_) {}
+      return {
+        tc_id: r.tc_id, tc_number: r.tc_number, admission_number: r.admission_number,
+        student_name: snap.student_name || r.enr_name || '',
+        class_last_studied: snap.class_last_studied || r.enr_class || '',
+        reason_for_leaving: r.reason_for_leaving, issued_by: r.issued_by,
+        issued_at: r.issued_at, is_cancelled: r.is_cancelled,
+      };
+    });
+    const q = String(query || '').trim().toLowerCase();
+    if (q) {
+      data = data.filter(r =>
+        r.tc_number.toLowerCase().includes(q) ||
+        r.admission_number.toLowerCase().includes(q) ||
+        r.student_name.toLowerCase().includes(q));
+    }
+    return { success: true, data };
+  } catch (e) { return { success: false, message: e.message }; }
+});
+
+// One issued certificate with its frozen printed values, for reprinting.
+ipcMain.handle('tc:get', (_evt, { tc_id }) => {
+  try {
+    const r = db.prepare('SELECT * FROM tc_log WHERE tc_id = ?').get(tc_id);
+    if (!r) return { success: false, message: 'TC not found.' };
+    let fields = {};
+    try { fields = r.snapshot_json ? JSON.parse(r.snapshot_json) : {}; } catch (_) {}
+    if (!Object.keys(fields).length) {
+      return { success: false, message: 'This TC was recorded without its printed details, so it cannot be reprinted.' };
+    }
+    return { success: true, tc_number: r.tc_number, fields };
+  } catch (e) { return { success: false, message: e.message }; }
+});
+
 // Admit Card — search by SL number, admission number, or student name.
 // Reuses the exact same balance formula as Fees Notice/Defaulter List
 // (_ledgerBalances) so "Total Fee Pending" can never quietly disagree with
@@ -8058,21 +8304,24 @@ ipcMain.handle('cashbook:getDaily', (_evt, { date, academic_year }) => {
     const expensesCash = expenses.reduce((s,e) => s+(e.cash_amount||0), 0);
     const expensesBank = expenses.reduce((s,e) => s+(e.bank_amount||0), 0);
 
-    // Opening balance = sum of all posted receipts - sum of all expenses before this date
+    // Opening balance = sum of all posted receipts - sum of all expenses
+    // before this date, but never reaching further back than the reset
+    // date (if one has been configured).
+    const resetDate = _cashBookResetDate();
     const prevRecCash = db.prepare(`
       SELECT COALESCE(SUM(CASE WHEN t.payment_mode='CASH' THEN t.credit ELSE 0 END),0) as tot
-      FROM fee_transactions t WHERE t.transaction_type='RECEIVED' AND DATE(t.collected_at) < ? AND t.academic_year=?
-    `).get(d, academic_year);
+      FROM fee_transactions t WHERE t.transaction_type='RECEIVED' AND DATE(t.collected_at) < ? AND DATE(t.collected_at) >= ? AND t.academic_year=?
+    `).get(d, resetDate, academic_year);
     const prevExpCash = db.prepare(`
-      SELECT COALESCE(SUM(cash_amount),0) as tot FROM cash_expenses WHERE expense_date < ? AND academic_year=?
-    `).get(d, academic_year);
+      SELECT COALESCE(SUM(cash_amount),0) as tot FROM cash_expenses WHERE expense_date < ? AND expense_date >= ? AND academic_year=?
+    `).get(d, resetDate, academic_year);
     const prevRecBank = db.prepare(`
       SELECT COALESCE(SUM(CASE WHEN t.payment_mode IN ('ONLINE','CHEQUE') THEN t.credit ELSE 0 END),0) as tot
-      FROM fee_transactions t WHERE t.transaction_type='RECEIVED' AND DATE(t.collected_at) < ? AND t.academic_year=?
-    `).get(d, academic_year);
+      FROM fee_transactions t WHERE t.transaction_type='RECEIVED' AND DATE(t.collected_at) < ? AND DATE(t.collected_at) >= ? AND t.academic_year=?
+    `).get(d, resetDate, academic_year);
     const prevExpBank = db.prepare(`
-      SELECT COALESCE(SUM(bank_amount),0) as tot FROM cash_expenses WHERE expense_date < ? AND academic_year=?
-    `).get(d, academic_year);
+      SELECT COALESCE(SUM(bank_amount),0) as tot FROM cash_expenses WHERE expense_date < ? AND expense_date >= ? AND academic_year=?
+    `).get(d, resetDate, academic_year);
 
     const openingCash = (prevRecCash?.tot||0) - (prevExpCash?.tot||0);
     const openingBank = (prevRecBank?.tot||0) - (prevExpBank?.tot||0);
@@ -8124,6 +8373,33 @@ ipcMain.handle('cashbook:deleteExpense', (_evt, expense_id) => {
 });
 
 // Monthly summary
+// Cash Book starting point. Setting a date makes every "everything before
+// X" figure (Opening Balance, month-by-month rollup) ignore anything
+// earlier than it; clearing it (empty string) restores the original
+// behaviour. Purely a read-time filter — no transaction is ever altered.
+ipcMain.handle('cashbook:getSettings', () => {
+  try {
+    const row = db.prepare('SELECT cash_book_reset_date FROM academic_settings WHERE id = 1').get();
+    return { success: true, reset_date: (row && row.cash_book_reset_date) || '' };
+  } catch (e) { return { success: false, message: e.message }; }
+});
+
+ipcMain.handle('cashbook:setResetDate', (_evt, { reset_date, updated_by }) => {
+  try {
+    const d = String(reset_date || '').trim();
+    if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+      return { success: false, message: 'Reset date must be a valid date (YYYY-MM-DD).' };
+    }
+    // academic_settings is a single-row table; make sure the row exists
+    // before updating it (it may not on a database that never saved a
+    // pass-criteria setting).
+    db.prepare("INSERT OR IGNORE INTO academic_settings (id) VALUES (1)").run();
+    db.prepare("UPDATE academic_settings SET cash_book_reset_date = ?, updated_by = ?, updated_at = datetime('now','localtime') WHERE id = 1")
+      .run(d, updated_by || '');
+    return { success: true, reset_date: d };
+  } catch (e) { return { success: false, message: e.message }; }
+});
+
 // Day-by-day breakdown for an entire month — backs the Monthly Summary's
 // expandable rows. Mirrors cashbook:getDaily's exact formula (same
 // CASH/ONLINE/CHEQUE classification, same opening-balance logic) so a given
@@ -8137,21 +8413,25 @@ ipcMain.handle('cashbook:getMonthDays', (_evt, { academic_year, year, month }) =
     const firstDay = `${y}-${m}-01`;
     const daysInMonth = new Date(Number(y), Number(m), 0).getDate();
     const lastDay = `${y}-${m}-${String(daysInMonth).padStart(2, '0')}`;
+    const resetDate = _cashBookResetDate();
+    // Days before the reset date show no activity at all, and the month's
+    // opening balance never reaches back past it either.
+    const lowerBound = resetDate > firstDay ? resetDate : firstDay;
 
     const prevRecCash = db.prepare(`
       SELECT COALESCE(SUM(CASE WHEN payment_mode='CASH' THEN credit ELSE 0 END),0) as tot
-      FROM fee_transactions WHERE transaction_type='RECEIVED' AND DATE(collected_at) < ? AND academic_year=?
-    `).get(firstDay, academic_year);
+      FROM fee_transactions WHERE transaction_type='RECEIVED' AND DATE(collected_at) < ? AND DATE(collected_at) >= ? AND academic_year=?
+    `).get(firstDay, resetDate, academic_year);
     const prevExpCash = db.prepare(`
-      SELECT COALESCE(SUM(cash_amount),0) as tot FROM cash_expenses WHERE expense_date < ? AND academic_year=?
-    `).get(firstDay, academic_year);
+      SELECT COALESCE(SUM(cash_amount),0) as tot FROM cash_expenses WHERE expense_date < ? AND expense_date >= ? AND academic_year=?
+    `).get(firstDay, resetDate, academic_year);
     const prevRecBank = db.prepare(`
       SELECT COALESCE(SUM(CASE WHEN payment_mode IN ('ONLINE','CHEQUE') THEN credit ELSE 0 END),0) as tot
-      FROM fee_transactions WHERE transaction_type='RECEIVED' AND DATE(collected_at) < ? AND academic_year=?
-    `).get(firstDay, academic_year);
+      FROM fee_transactions WHERE transaction_type='RECEIVED' AND DATE(collected_at) < ? AND DATE(collected_at) >= ? AND academic_year=?
+    `).get(firstDay, resetDate, academic_year);
     const prevExpBank = db.prepare(`
-      SELECT COALESCE(SUM(bank_amount),0) as tot FROM cash_expenses WHERE expense_date < ? AND academic_year=?
-    `).get(firstDay, academic_year);
+      SELECT COALESCE(SUM(bank_amount),0) as tot FROM cash_expenses WHERE expense_date < ? AND expense_date >= ? AND academic_year=?
+    `).get(firstDay, resetDate, academic_year);
 
     let runningCash = (prevRecCash?.tot || 0) - (prevExpCash?.tot || 0);
     let runningBank = (prevRecBank?.tot || 0) - (prevExpBank?.tot || 0);
@@ -8163,7 +8443,7 @@ ipcMain.handle('cashbook:getMonthDays', (_evt, { academic_year, year, month }) =
       FROM   fee_transactions
       WHERE  transaction_type='RECEIVED' AND academic_year=? AND DATE(collected_at) BETWEEN ? AND ?
       GROUP  BY DATE(collected_at)
-    `).all(academic_year, firstDay, lastDay);
+    `).all(academic_year, lowerBound, lastDay);
     const recByDay = {};
     recRows.forEach(r => { recByDay[r.d] = { cash: r.cash || 0, bank: r.bank || 0 }; });
 
@@ -8172,7 +8452,7 @@ ipcMain.handle('cashbook:getMonthDays', (_evt, { academic_year, year, month }) =
       FROM   cash_expenses
       WHERE  academic_year=? AND expense_date BETWEEN ? AND ?
       GROUP  BY expense_date
-    `).all(academic_year, firstDay, lastDay);
+    `).all(academic_year, lowerBound, lastDay);
     const expByDay = {};
     expRows.forEach(r => { expByDay[r.d] = { cash: r.cash || 0, bank: r.bank || 0 }; });
 
@@ -8199,6 +8479,10 @@ ipcMain.handle('cashbook:getMonthDays', (_evt, { academic_year, year, month }) =
 
 ipcMain.handle('cashbook:getMonthlySummary', (_evt, { academic_year }) => {
   try {
+    // Anything before the configured reset date is left out entirely, so
+    // the monthly rollup and its running balance start fresh from there.
+    const resetDate = _cashBookResetDate();
+
     // Fee receipts grouped by month
     const receiptRows = db.prepare(`
       SELECT
@@ -8207,10 +8491,10 @@ ipcMain.handle('cashbook:getMonthlySummary', (_evt, { academic_year }) => {
         SUM(CASE WHEN payment_mode='CASH' THEN credit ELSE 0 END) as cash_in,
         SUM(CASE WHEN payment_mode IN ('ONLINE','CHEQUE') THEN credit ELSE 0 END) as bank_in
       FROM fee_transactions
-      WHERE transaction_type='RECEIVED' AND academic_year=?
+      WHERE transaction_type='RECEIVED' AND academic_year=? AND DATE(collected_at) >= ?
       GROUP BY month, year
       ORDER BY year, month
-    `).all(academic_year);
+    `).all(academic_year, resetDate);
 
     // Expenses grouped by month
     const expenseRows = db.prepare(`
@@ -8219,10 +8503,10 @@ ipcMain.handle('cashbook:getMonthlySummary', (_evt, { academic_year }) => {
         SUBSTR(expense_date,1,4) as year,
         SUM(cash_amount) as cash_out,
         SUM(bank_amount) as bank_out
-      FROM cash_expenses WHERE academic_year=?
+      FROM cash_expenses WHERE academic_year=? AND expense_date >= ?
       GROUP BY month, year
       ORDER BY year, month
-    `).all(academic_year);
+    `).all(academic_year, resetDate);
 
     // Build month map
     const months = {};

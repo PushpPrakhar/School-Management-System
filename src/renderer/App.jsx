@@ -22,6 +22,7 @@ import CounterPayment  from './pages/CounterPayment';
 import DayEndPosting   from './pages/DayEndPosting';
 import FeeReports      from './pages/FeeReports';
 import CashBook        from './pages/CashBook';
+import TCGeneration    from './pages/TCGeneration';
 import Prospectus      from './pages/Prospectus';
 import TeacherManagement from './pages/TeacherManagement';
 import StaffManagement from './pages/StaffManagement';
@@ -173,7 +174,7 @@ function AppShell() {
       case 'prospectus':       return <Prospectus />;
       case 'feesNotice':       return <FeesNotice />;
       case 'admitCard':        return <AdmitCard />;
-      case 'tcGeneration':     return <ComingSoon page="TC Generation — Coming Soon" />;
+      case 'tcGeneration':     return <TCGeneration />;
       case 'backup':           return <ComingSoon page="Backup & Restore — Coming Soon" />;
       case 'teacherManagement':return <TeacherManagement />;
       case 'staffManagement':  return <StaffManagement />;
