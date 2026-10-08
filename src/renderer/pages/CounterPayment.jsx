@@ -148,6 +148,8 @@ function IndividualTab({ academicYear }) {
   const [chequeNo,    setChequeNo]    = useState('');
   const [bankName,    setBankName]    = useState('');
   const [txnNumber,   setTxnNumber]   = useState('');
+  // Online payments involve no cash handed over at the counter, so there is nothing to tender or return.
+  useEffect(() => { if (paymentMode === 'ONLINE') setAmountGiven(''); }, [paymentMode]);
   const [remarks,     setRemarks]     = useState('');
   const [receiptNo,   setReceiptNo]   = useState('');
   const [loading,     setLoading]     = useState(false);
@@ -227,7 +229,7 @@ function IndividualTab({ academicYear }) {
   const totalDue     = prevBalance + currentDue;
   const paid         = feesPaid || 0;
   const balance      = totalDue - concession - paid;
-  const given        = amountGiven === '' ? paid : (parseFloat(amountGiven) || 0);
+  const given        = (paymentMode === 'ONLINE' || amountGiven === '') ? paid : (parseFloat(amountGiven) || 0);
   const returnAmt    = Math.max(0, given - paid);
 
   // Ledger-style row — previous balance stays a separate column, everything
@@ -456,15 +458,19 @@ function IndividualTab({ academicYear }) {
           <div className="grid grid-cols-2 gap-4 mb-4">
             <div className="bg-white border border-gray-200 rounded-2xl p-4 space-y-2 text-sm">
               <div className="flex justify-between"><span className="text-gray-500">Amount Paid by Guardian</span><span className="font-bold text-lg">{fmtINR(paid)}</span></div>
-              <div className="flex items-center gap-2">
-                <span className="text-gray-500 text-xs">Amount Given at Counter</span>
-                <input type="number" min="0" value={amountGiven}
-                  onChange={e => setAmountGiven(e.target.value)}
-                  placeholder={paid > 0 ? fmt(paid) : '0.00'}
-                  className="flex-1 border border-gray-300 rounded-lg px-3 py-1.5 text-right text-sm focus:outline-none focus:ring-1 focus:ring-blue-400" />
-              </div>
-              <p className="text-[11px] text-gray-400">Only fill this in if the parent handed over more cash than needed (e.g. for change) — otherwise leave blank.</p>
-              <div className="flex justify-between"><span className="text-gray-500">Return Amount</span><span className="font-bold text-green-600">{fmtINR(returnAmt)}</span></div>
+              {paymentMode !== 'ONLINE' && (
+                <>
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-500 text-xs">Amount Given at Counter</span>
+                    <input type="number" min="0" value={amountGiven}
+                      onChange={e => setAmountGiven(e.target.value)}
+                      placeholder={paid > 0 ? fmt(paid) : '0.00'}
+                      className="flex-1 border border-gray-300 rounded-lg px-3 py-1.5 text-right text-sm focus:outline-none focus:ring-1 focus:ring-blue-400" />
+                  </div>
+                  <p className="text-[11px] text-gray-400">Only fill this in if the parent handed over more cash than needed (e.g. for change) — otherwise leave blank.</p>
+                  <div className="flex justify-between"><span className="text-gray-500">Return Amount</span><span className="font-bold text-green-600">{fmtINR(returnAmt)}</span></div>
+                </>
+              )}
               {paid > 0 && <p className="text-xs text-gray-400 italic">Received with thanks {fmtINR(paid)}/- ({amountToWords(paid)})</p>}
             </div>
 
@@ -514,6 +520,8 @@ function GroupTab({ academicYear }) {
   const [chequeNo,    setChequeNo]    = useState('');
   const [bankName,    setBankName]    = useState('');
   const [txnNumber,   setTxnNumber]   = useState('');
+  // Online payments involve no cash handed over at the counter, so there is nothing to tender or return.
+  useEffect(() => { if (paymentMode === 'ONLINE') setAmountGiven(''); }, [paymentMode]);
   const [remarks,     setRemarks]     = useState('');
   const [receiptNo,   setReceiptNo]   = useState('');
   const [loading,     setLoading]     = useState(false);
@@ -647,7 +655,7 @@ function GroupTab({ academicYear }) {
   const grandDue  = summaryRows.reduce((s, r) => s + Math.max(0, r.total_due - r.concession), 0);
   const paid      = summaryRows.reduce((s, r) => s + (r.fees_paid || 0), 0);
   const balance   = summaryRows.reduce((s, r) => s + r.balance, 0);
-  const given     = amountGiven === '' ? paid : (parseFloat(amountGiven) || 0);
+  const given     = (paymentMode === 'ONLINE' || amountGiven === '') ? paid : (parseFloat(amountGiven) || 0);
   const returnAmt = Math.max(0, given - paid);
 
   const savePayment = async () => {
@@ -842,14 +850,20 @@ function GroupTab({ academicYear }) {
                 <span className="text-gray-500">Amount Paid by Guardian</span>
                 <span className="font-bold text-lg text-green-700">{fmtINR(paid)}</span>
               </div>
-              <div className="flex items-center gap-2">
-                <span className="text-gray-500 text-xs">Amount Given at Counter</span>
-                <input type="number" min="0" value={amountGiven} onChange={e => setAmountGiven(e.target.value)}
-                  placeholder={paid > 0 ? fmt(paid) : '0.00'}
-                  className="flex-1 border border-gray-300 rounded-lg px-3 py-1.5 text-right text-sm focus:outline-none focus:ring-1 focus:ring-purple-400" />
-              </div>
-              <p className="text-[11px] text-gray-400">Only fill this in if the parent handed over more cash than needed (e.g. for change) — otherwise leave blank. Fees Paid for each student is entered directly in the table above.</p>
-              <div className="flex justify-between"><span className="text-gray-500">Return Amount</span><span className="font-bold text-green-600">{fmtINR(returnAmt)}</span></div>
+              {paymentMode !== 'ONLINE' ? (
+                <>
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-500 text-xs">Amount Given at Counter</span>
+                    <input type="number" min="0" value={amountGiven} onChange={e => setAmountGiven(e.target.value)}
+                      placeholder={paid > 0 ? fmt(paid) : '0.00'}
+                      className="flex-1 border border-gray-300 rounded-lg px-3 py-1.5 text-right text-sm focus:outline-none focus:ring-1 focus:ring-purple-400" />
+                  </div>
+                  <p className="text-[11px] text-gray-400">Only fill this in if the parent handed over more cash than needed (e.g. for change) — otherwise leave blank. Fees Paid for each student is entered directly in the table above.</p>
+                  <div className="flex justify-between"><span className="text-gray-500">Return Amount</span><span className="font-bold text-green-600">{fmtINR(returnAmt)}</span></div>
+                </>
+              ) : (
+                <p className="text-[11px] text-gray-400">Fees Paid for each student is entered directly in the table above.</p>
+              )}
               {paid > 0 && <p className="text-xs text-gray-400 italic">Received with thanks {fmtINR(paid)}/- ({amountToWords(paid)})</p>}
             </div>
 
@@ -1020,6 +1034,8 @@ function CounterOtherPaymentTab({ academicYear }) {
   const [chequeNo,     setChequeNo]     = useState('');
   const [bankName,     setBankName]     = useState('');
   const [txnNumber,    setTxnNumber]    = useState('');
+  // Online payments involve no cash handed over at the counter, so there is nothing to tender or return.
+  useEffect(() => { if (paymentMode === 'ONLINE') setAmountGiven(''); }, [paymentMode]);
   const [amountGiven,  setAmountGiven]  = useState('');
   const [remarks,      setRemarks]      = useState('');
   const [receiptNo,    setReceiptNo]    = useState('');
@@ -1047,7 +1063,7 @@ function CounterOtherPaymentTab({ academicYear }) {
   const totalCharged = selectedTypes.reduce((s, t) => s + (parseFloat(amounts[t]) || 0), 0);
   const paid          = parseFloat(amountPaid) || 0;
   const balance        = Math.max(0, totalCharged - paid);
-  const given          = amountGiven === '' ? paid : (parseFloat(amountGiven) || 0);
+  const given          = (paymentMode === 'ONLINE' || amountGiven === '') ? paid : (parseFloat(amountGiven) || 0);
   const returnAmt      = Math.max(0, given - paid);
 
   const savePayment = async () => {
@@ -1241,14 +1257,18 @@ function CounterOtherPaymentTab({ academicYear }) {
         <div className="bg-white border border-gray-200 rounded-2xl p-4 space-y-2 text-sm">
           <div className="flex justify-between"><span className="text-gray-500">Total Charged</span><span className="font-bold text-lg">{fmtINR(totalCharged)}</span></div>
           <div className="flex justify-between"><span className="text-gray-500">Amount Paid</span><span className="font-bold text-lg text-green-700">{fmtINR(paid)}</span></div>
-          <div className="flex items-center gap-2">
-            <span className="text-gray-500 text-xs">Amount Given at Counter</span>
-            <input type="number" min="0" value={amountGiven} onChange={e => setAmountGiven(e.target.value)}
-              placeholder={paid > 0 ? fmt(paid) : '0.00'}
-              className="flex-1 border border-gray-300 rounded-lg px-3 py-1.5 text-right text-sm focus:outline-none focus:ring-1 focus:ring-blue-400" />
-          </div>
-          <p className="text-[11px] text-gray-400">Only fill this in if they handed over more cash than needed (e.g. for change) — otherwise leave blank.</p>
-          {returnAmt > 0 && <div className="flex justify-between text-green-600"><span>Return</span><span className="font-bold">{fmtINR(returnAmt)}</span></div>}
+          {paymentMode !== 'ONLINE' && (
+            <>
+              <div className="flex items-center gap-2">
+                <span className="text-gray-500 text-xs">Amount Given at Counter</span>
+                <input type="number" min="0" value={amountGiven} onChange={e => setAmountGiven(e.target.value)}
+                  placeholder={paid > 0 ? fmt(paid) : '0.00'}
+                  className="flex-1 border border-gray-300 rounded-lg px-3 py-1.5 text-right text-sm focus:outline-none focus:ring-1 focus:ring-blue-400" />
+              </div>
+              <p className="text-[11px] text-gray-400">Only fill this in if they handed over more cash than needed (e.g. for change) — otherwise leave blank.</p>
+              {returnAmt > 0 && <div className="flex justify-between text-green-600"><span>Return</span><span className="font-bold">{fmtINR(returnAmt)}</span></div>}
+            </>
+          )}
           {balance > 0 && <div className="flex justify-between text-red-600"><span>Balance Uncollected</span><span className="font-bold">{fmtINR(balance)}</span></div>}
           {paid > 0 && <p className="text-xs text-gray-400 italic">{amountToWords(paid)}</p>}
         </div>

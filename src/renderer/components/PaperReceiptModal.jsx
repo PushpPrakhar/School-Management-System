@@ -202,8 +202,12 @@ function ReceiptContent({ data }) {
       {/* Bottom summary */}
       <div className="flex gap-6 text-sm mb-3">
         <p><span className="text-gray-600">Amount Paid by Parent/Guardian: </span><span className="font-bold">₹{fmt(data.amount_paid_by_guardian)}</span></p>
-        <p><span className="text-gray-600">Amount given at counter: </span><span className="font-bold">₹{fmt(data.amount_given_at_counter)}</span></p>
-        <p><span className="text-gray-600">Return Amount: </span><span className="font-bold">₹{fmt(data.return_amount)}</span></p>
+        {data.payment_mode !== 'ONLINE' && (
+          <>
+            <p><span className="text-gray-600">Amount given at counter: </span><span className="font-bold">₹{fmt(data.amount_given_at_counter)}</span></p>
+            <p><span className="text-gray-600">Return Amount: </span><span className="font-bold">₹{fmt(data.return_amount)}</span></p>
+          </>
+        )}
       </div>
 
       <div className="flex items-end justify-between">

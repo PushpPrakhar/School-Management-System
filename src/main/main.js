@@ -4542,7 +4542,10 @@ function getNextClass(current) {
 const PROMOTION_SUBJECTS = {
   Nursery: ['Hindi','English','Mathematics','Drawing'],
   LKG:     ['Hindi','English','Mathematics','Drawing'],
-  UKG:     ['Hindi','English','EVS','Mathematics','Computer','Drawing'],
+  // EVS and Computer are taught but not examined (graded on class
+  // involvement). A subject with no marks counts as zero here, which is below
+  // the pass mark — so leaving them in would fail every UKG student at promotion.
+  UKG:     ['Hindi','English','Mathematics','Drawing'],
 };
 ['Class 1','Class 2','Class 3','Class 4','Class 5'].forEach(c => {
   PROMOTION_SUBJECTS[c] = ['Hindi','English','Mathematics','Science/EVS','General Knowledge','Computer','Drawing'];
@@ -5517,8 +5520,15 @@ ipcMain.handle('exam:exportAllClassesMarksExcel', async (_evt, { exam_type, acad
       const subjectRows = db.prepare(
         `SELECT DISTINCT subject, max_marks FROM exam_marks WHERE class = ? AND exam_type = ? AND academic_year = ? ORDER BY subject`
       ).all(cls, exam_type, academic_year);
-      const subjects = subjectRows.map(s => s.subject);
-      const maxMarks = subjectRows[0]?.max_marks || 10;
+      // Only subjects the class is currently examined in. Marks already stored
+      // for a subject that has since been dropped (UKG's EVS / Computer) stay in
+      // the database but must not appear here or distort the percentage. A class
+      // with no defined list (or no match at all) is left exactly as stored.
+      const listKey = Object.keys(PROMOTION_SUBJECTS).find(k => k.toLowerCase() === String(cls).toLowerCase());
+      const examined = listKey ? subjectRows.filter(r => PROMOTION_SUBJECTS[listKey].includes(r.subject)) : [];
+      const keptRows = examined.length > 0 ? examined : subjectRows;
+      const subjects = keptRows.map(s => s.subject);
+      const maxMarks = keptRows[0]?.max_marks || 10;
       const maxTotal = subjects.length * maxMarks;
 
       const students = db.prepare(`

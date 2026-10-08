@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useLayoutEffect } from
 import { useAuth } from '../utils/AuthContext';
 import ReportCardPrintModal from '../components/ReportCardPrintModal';
 import PrintFooter from '../components/PrintFooter';
+import { clean } from '../utils/tcHelpers';
 
 // ── Constants ─────────────────────────────────────────────────
 const SESSION_YEAR = (() => { const n = new Date(), y = n.getFullYear(); return n.getMonth()>=3?y:y-1; })();
@@ -13,7 +14,10 @@ const SECTIONS = ['A','B','C','D'];
 const SUBJECTS = {
   Nursery: ['Hindi','English','Mathematics','Drawing'],
   LKG:     ['Hindi','English','Mathematics','Drawing'],
-  UKG:     ['Hindi','English','EVS','Mathematics','Computer','Drawing'],
+  // EVS and Computer are taught but not examined (graded on class involvement),
+  // so UKG is examined in the same four subjects as LKG. PROMOTION_SUBJECTS in
+  // main.js is the server-side copy of this list and must change with it.
+  UKG:     ['Hindi','English','Mathematics','Drawing'],
 };
 ['Class 1','Class 2','Class 3','Class 4','Class 5'].forEach(c => {
   SUBJECTS[c] = ['Hindi','English','Mathematics','Science/EVS','General Knowledge','Computer','Drawing'];
@@ -25,11 +29,20 @@ const SUBJECTS = {
 const EXAM_TYPES = {
   UT1:         { label:'Unit Test 1',  short:'UT1', max:10,  stage:'half_yearly', order:1 },
   UT2:         { label:'Unit Test 2',  short:'UT2', max:10,  stage:'half_yearly', order:2 },
-  HALF_YEARLY: { label:'Half Yearly',  short:'H/Y', max:80,  stage:'half_yearly', order:3 },
+  HALF_YEARLY: { label:'Half Yearly Examination', short:'H/Y', max:80,  stage:'half_yearly', order:3 },
   UT3:         { label:'Unit Test 3',  short:'UT3', max:10,  stage:'final',       order:4 },
   UT4:         { label:'Unit Test 4',  short:'UT4', max:10,  stage:'final',       order:5 },
   FINAL:       { label:'Final Exam',   short:'FIN', max:80,  stage:'final',       order:6 },
 };
+// A student with no roll number assigned yet comes back from the server as 999.
+const hasRoll = (s) => s.roll_number != null && s.roll_number !== 999;
+// "Father: X · Mother: Y", leaving out whichever the record doesn't have
+// (the database fills unknown names with 'NOT PROVIDED', which must never show).
+const parentsLine = (s) => {
+  const f = clean(s.father_name), m = clean(s.mother_name);
+  return [f && `Father: ${f}`, m && `Mother: ${m}`].filter(Boolean).join('  ·  ');
+};
+
 const HY_TYPES    = ['UT1','UT2','HALF_YEARLY'];
 const FINAL_TYPES = ['UT1','UT2','HALF_YEARLY','UT3','UT4','FINAL'];
 
@@ -375,8 +388,9 @@ function EnterMarksTab() {
               <table className="w-full text-sm border-collapse">
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-200">
-                    <th className="text-left px-3 py-3 font-semibold text-gray-600 text-xs sticky left-0 bg-gray-50 w-8">#</th>
-                    <th className="text-left px-3 py-3 font-semibold text-gray-600 text-xs sticky left-8 bg-gray-50 min-w-40">Student Name</th>
+                    <th className="text-center px-2 py-3 font-semibold text-gray-600 text-xs sticky bg-gray-50" style={{ left: 0, width: 44, minWidth: 44 }}>Sr. No.</th>
+                    <th className="text-center px-2 py-3 font-semibold text-gray-600 text-xs sticky bg-gray-50" style={{ left: 44, width: 52, minWidth: 52 }}>Roll No.</th>
+                    <th className="text-left px-3 py-3 font-semibold text-gray-600 text-xs sticky bg-gray-50 min-w-56" style={{ left: 96 }}>Student Name</th>
                     {subjects.map(sub => (
                       <th key={sub} className="text-center px-2 py-3 font-semibold text-gray-600 text-xs min-w-24">
                         {sub}
@@ -397,9 +411,11 @@ function EnterMarksTab() {
 
                     return (
                       <tr key={s.admission_number} className={`border-b border-gray-100 ${idx%2===0?'bg-white':'bg-gray-50'} hover:bg-blue-50`}>
-                        <td className="px-3 py-2 text-xs text-gray-400 sticky left-0 bg-inherit">{s.roll_number === 999 ? idx+1 : s.roll_number}</td>
-                        <td className="px-3 py-2 sticky left-8 bg-inherit">
+                        <td className="px-2 py-2 text-xs text-gray-400 text-center sticky bg-inherit" style={{ left: 0, width: 44, minWidth: 44 }}>{idx + 1}</td>
+                        <td className="px-2 py-2 text-xs text-gray-600 text-center sticky bg-inherit" style={{ left: 44, width: 52, minWidth: 52 }}>{hasRoll(s) ? s.roll_number : '—'}</td>
+                        <td className="px-3 py-2 sticky bg-inherit" style={{ left: 96 }}>
                           <p className="font-medium text-gray-800 text-xs">{s.student_name}</p>
+                          {parentsLine(s) && <p className="text-gray-500 text-[11px] leading-snug">{parentsLine(s)}</p>}
                           <p className="text-gray-400 text-xs">{s.admission_number}</p>
                         </td>
                         {subjects.map(sub => {
@@ -542,8 +558,8 @@ function MarksListPrintContent({ students, marks, subjects, cls, section, examLa
 
   const headerRow = (
     <tr className="bg-gray-100">
-      <th className="border border-gray-400 px-2 py-1.5 w-8">#</th>
-      <th className="border border-gray-400 px-2 py-1.5">Adm. No.</th>
+      <th className="border border-gray-400 px-2 py-1.5 whitespace-nowrap">Sr. No.</th>
+      <th className="border border-gray-400 px-2 py-1.5 whitespace-nowrap">Roll No.</th>
       <th className="border border-gray-400 px-2 py-1.5 text-left">Student Name</th>
       {subjects.map(sub => <th key={sub} className="border border-gray-400 px-2 py-1.5">{sub}</th>)}
       <th className="border border-gray-400 px-2 py-1.5">Total</th>
@@ -553,8 +569,11 @@ function MarksListPrintContent({ students, marks, subjects, cls, section, examLa
   const dataRow = ({ student: s, rank, cells, total }) => (
     <tr key={s.admission_number}>
       <td className="border border-gray-400 px-2 py-1 text-center">{rank}</td>
-      <td className="border border-gray-400 px-2 py-1 text-center font-mono text-blue-700 whitespace-nowrap">{s.admission_number}</td>
-      <td className="border border-gray-400 px-2 py-1 whitespace-nowrap">{s.student_name}</td>
+      <td className="border border-gray-400 px-2 py-1 text-center">{hasRoll(s) ? s.roll_number : '—'}</td>
+      <td className="border border-gray-400 px-2 py-1">
+        <div className="whitespace-nowrap">{s.student_name}</div>
+        {parentsLine(s) && <div className="text-[10px] leading-tight text-gray-600">{parentsLine(s)}</div>}
+      </td>
       {cells.map((c, j) => <td key={j} className="border border-gray-400 px-2 py-1 text-center">{c}</td>)}
       <td className="border border-gray-400 px-2 py-1 text-center font-bold">{total}</td>
     </tr>
@@ -795,7 +814,7 @@ function ReportCard({ student, marksMap, subjects, cls, section, academicYear, t
       <div className="border border-gray-400 rounded p-3 mb-4 text-xs">
         <p className="font-semibold mb-2">Co-Scholastic Area <span className="font-normal text-gray-500">(on A–E grading scale)</span></p>
         <div className="grid grid-cols-2 gap-x-8 gap-y-2">
-          {['Note Book Maintenance','Sports Participation','Reading and Writing Skills','Regularity in Home-Work','Discipline and Punctuality'].map(item => (
+          {['Note Book Maintenance','Sports Participation','Reading and Writing Skills','Regularity in Home-Work','Discipline and Punctuality', ...(cls === 'UKG' ? ['EVS','Computer'] : [])].map(item => (
             <div key={item} className="flex items-center gap-2">
               <span className="w-48">{item}</span>
               <span>: </span>
