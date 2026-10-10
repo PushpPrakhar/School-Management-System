@@ -43,6 +43,24 @@ const parentsLine = (s) => {
   return [f && `Father: ${f}`, m && `Mother: ${m}`].filter(Boolean).join('  ·  ');
 };
 
+// Stored as YYYY-MM-DD; shown as DD-MM-YYYY. Anything else is shown as-is.
+const fmtDob = (d) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(d || ''));
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : (clean(d) || '—');
+};
+// Year-to-date attendance for a class: { map: {admission_number → days present}, total: days held }.
+async function loadAttendance(cls, section, academicYear, uid) {
+  try {
+    const res = await window.api.attendanceGetProgressive(cls, section, academicYear, 12, 9999, uid);
+    if (!res?.success) return { map: {}, total: 0 };
+    const map = {};
+    (res.data || []).forEach(r => { map[r.admission_number] = r.total_present || 0; });
+    return { map, total: res.total_days || 0 };
+  } catch (_) { return { map: {}, total: 0 }; }
+}
+const attendanceText = (attendance, admNo) =>
+  attendance && attendance.total > 0 ? `${attendance.map[admNo] || 0} / ${attendance.total}` : '—';
+
 const HY_TYPES    = ['UT1','UT2','HALF_YEARLY'];
 const FINAL_TYPES = ['UT1','UT2','HALF_YEARLY','UT3','UT4','FINAL'];
 
@@ -561,6 +579,9 @@ function MarksListPrintContent({ students, marks, subjects, cls, section, examLa
       <th className="border border-gray-400 px-2 py-1.5 whitespace-nowrap">Sr. No.</th>
       <th className="border border-gray-400 px-2 py-1.5 whitespace-nowrap">Roll No.</th>
       <th className="border border-gray-400 px-2 py-1.5 text-left">Student Name</th>
+      <th className="border border-gray-400 px-2 py-1.5 whitespace-nowrap">DOB</th>
+      <th className="border border-gray-400 px-2 py-1.5 text-left" style={{ minWidth: 105 }}>Father's Name</th>
+      <th className="border border-gray-400 px-2 py-1.5 text-left" style={{ minWidth: 105 }}>Mother's Name</th>
       {subjects.map(sub => <th key={sub} className="border border-gray-400 px-2 py-1.5">{sub}</th>)}
       <th className="border border-gray-400 px-2 py-1.5">Total</th>
     </tr>
@@ -570,10 +591,10 @@ function MarksListPrintContent({ students, marks, subjects, cls, section, examLa
     <tr key={s.admission_number}>
       <td className="border border-gray-400 px-2 py-1 text-center">{rank}</td>
       <td className="border border-gray-400 px-2 py-1 text-center">{hasRoll(s) ? s.roll_number : '—'}</td>
-      <td className="border border-gray-400 px-2 py-1">
-        <div className="whitespace-nowrap">{s.student_name}</div>
-        {parentsLine(s) && <div className="text-[10px] leading-tight text-gray-600">{parentsLine(s)}</div>}
-      </td>
+      <td className="border border-gray-400 px-2 py-1 whitespace-nowrap">{s.student_name}</td>
+      <td className="border border-gray-400 px-2 py-1 text-center whitespace-nowrap">{fmtDob(s.date_of_birth)}</td>
+      <td className="border border-gray-400 px-2 py-1">{clean(s.father_name) || '—'}</td>
+      <td className="border border-gray-400 px-2 py-1">{clean(s.mother_name) || '—'}</td>
       {cells.map((c, j) => <td key={j} className="border border-gray-400 px-2 py-1 text-center">{c}</td>)}
       <td className="border border-gray-400 px-2 py-1 text-center font-bold">{total}</td>
     </tr>
@@ -621,7 +642,7 @@ function MarksListPrintContent({ students, marks, subjects, cls, section, examLa
 }
 
 // ── Report Card ──────────────────────────────────────────────
-function ReportCard({ student, marksMap, subjects, cls, section, academicYear, type }) {
+function ReportCard({ student, marksMap, subjects, cls, section, academicYear, type, attendance }) {
   const isHY    = type === 'half_yearly';
   const sm      = marksMap[student.admission_number] || {};
 
@@ -775,12 +796,14 @@ function ReportCard({ student, marksMap, subjects, cls, section, academicYear, t
             <tr>
               {isHY ? (
                 <>
+                  <th className={th}>Attendance</th>
                   <th className={th}>Marks Obtained / Max Marks</th>
                   <th className={th}>Grade</th>
                   <th className={th}>Result</th>
                 </>
               ) : (
                 <>
+                  <th className={th}>Attendance</th>
                   <th className={th}>Half Yearly</th>
                   <th className={th}>Annual</th>
                   <th className={th}>Overall</th>
@@ -793,12 +816,14 @@ function ReportCard({ student, marksMap, subjects, cls, section, academicYear, t
             <tr>
               {isHY ? (
                 <>
+                  <td className={td}>{attendanceText(attendance, student.admission_number)}</td>
                   <td className={td}>{totHYT} / {maxSub}</td>
                   <td className={td}><span className={`px-2 py-0.5 rounded font-bold ${GRADE_STYLE[getGrade(parseFloat(hyPct))]}`}>{getGrade(parseFloat(hyPct))}</span></td>
-                  <td className={`${td} font-bold ${allPass?'text-green-700':'text-red-600'}`}>{allPass?'PASS':'FAIL'}</td>
+                  <td className={`${td} font-bold ${allPass?'text-green-700':'text-red-600'}`}>{allPass?'PASS':''}</td>
                 </>
               ) : (
                 <>
+                  <td className={td}>{attendanceText(attendance, student.admission_number)}</td>
                   <td className={td}>{totHYT}/{maxSub}</td>
                   <td className={td}>{totFinT}/{maxSub}</td>
                   <td className={td}>{totOver}/{maxOver}</td>
@@ -864,6 +889,7 @@ function ResultView({ type }) {
   const [loading,      setLoading]     = useState(false);
   const [error,        setError]       = useState('');
   const [selectedIdx,  setSelectedIdx] = useState(0);
+  const [attendance,   setAttendance]  = useState(null);
 
   const subjects = SUBJECTS[cls] || [];
   const isHY     = type === 'half_yearly';
@@ -871,10 +897,12 @@ function ResultView({ type }) {
   const load = async () => {
     if (!cls) return;
     setLoading(true); setLoaded(false); setError('');
-    const [stuRes, markRes] = await Promise.all([
+    const [stuRes, markRes, att] = await Promise.all([
       window.api.examGetStudents(cls, section, academicYear, user?.user_id),
       window.api.examGetMarks(cls, section, academicYear, null, user?.user_id),
+      loadAttendance(cls, section, academicYear, user?.user_id),
     ]);
+    setAttendance(att);
     if (!stuRes.success) { setError(stuRes.message); setLoading(false); return; }
     if (!markRes.success){ setError(markRes.message); setLoading(false); return; }
     setStudents(stuRes.data);
@@ -976,6 +1004,7 @@ function ResultView({ type }) {
                 section={section}
                 academicYear={academicYear}
                 type={type}
+                attendance={attendance}
               />
             )}
           </div>
@@ -992,6 +1021,7 @@ function ResultView({ type }) {
             section={section}
             academicYear={academicYear}
             type={type}
+            attendance={attendance}
           />
         </ReportCardPrintModal>
       )}
@@ -1008,6 +1038,7 @@ function ResultView({ type }) {
                 section={section}
                 academicYear={academicYear}
                 type={type}
+                attendance={attendance}
               />
             </div>
           ))}
@@ -1035,7 +1066,7 @@ function FinalTab() {
 }
 
 // ── Unit Test Report Card (single exam type, no HY/Final combining) ──
-function UnitTestReportCard({ student, marksMap, subjects, cls, section, academicYear, examType }) {
+function UnitTestReportCard({ student, marksMap, subjects, cls, section, academicYear, examType, attendance }) {
   const sm = marksMap[student.admission_number] || {};
   const maxMarks = EXAM_TYPES[examType]?.max || 10;
   const examLabel = EXAM_TYPES[examType]?.label || examType;
@@ -1120,6 +1151,7 @@ function UnitTestReportCard({ student, marksMap, subjects, cls, section, academi
         <table className="w-full border-collapse text-xs">
           <thead>
             <tr>
+              <th className={th}>Attendance</th>
               <th className={th}>Marks Obtained / Max Marks</th>
               <th className={th}>Grade</th>
               <th className={th}>Result</th>
@@ -1127,9 +1159,10 @@ function UnitTestReportCard({ student, marksMap, subjects, cls, section, academi
           </thead>
           <tbody>
             <tr>
+              <td className={td}>{attendanceText(attendance, student.admission_number)}</td>
               <td className={td}>{total} / {maxTotal}</td>
               <td className={td}><span className={`px-2 py-0.5 rounded font-bold ${GRADE_STYLE[grade]}`}>{grade}</span></td>
-              <td className={`${td} font-bold ${allPass ? 'text-green-700' : 'text-red-600'}`}>{allPass ? 'PASS' : 'FAIL'}</td>
+              <td className={`${td} font-bold ${allPass ? 'text-green-700' : 'text-red-600'}`}>{allPass ? 'PASS' : ''}</td>
             </tr>
           </tbody>
         </table>
@@ -1170,6 +1203,7 @@ function UnitTestResultTab() {
   const [loading,      setLoading]     = useState(false);
   const [error,        setError]       = useState('');
   const [selectedIdx,  setSelectedIdx] = useState(0);
+  const [attendance,   setAttendance]  = useState(null);
   const [showPrint,    setShowPrint]   = useState(false);
   const [showPrintAll, setShowPrintAll]= useState(false);
 
@@ -1179,10 +1213,12 @@ function UnitTestResultTab() {
   const load = async () => {
     if (!cls) return;
     setLoading(true); setLoaded(false); setError('');
-    const [stuRes, markRes] = await Promise.all([
+    const [stuRes, markRes, att] = await Promise.all([
       window.api.examGetStudents(cls, section, academicYear, user?.user_id),
       window.api.examGetMarks(cls, section, academicYear, examType, user?.user_id),
+      loadAttendance(cls, section, academicYear, user?.user_id),
     ]);
+    setAttendance(att);
     if (!stuRes.success) { setError(stuRes.message); setLoading(false); return; }
     if (!markRes.success){ setError(markRes.message); setLoading(false); return; }
     setStudents(stuRes.data);
@@ -1307,6 +1343,7 @@ function UnitTestResultTab() {
                 section={section}
                 academicYear={academicYear}
                 examType={examType}
+                attendance={attendance}
               />
             )}
           </div>
@@ -1323,6 +1360,7 @@ function UnitTestResultTab() {
             section={section}
             academicYear={academicYear}
             examType={examType}
+            attendance={attendance}
           />
         </ReportCardPrintModal>
       )}
@@ -1339,6 +1377,7 @@ function UnitTestResultTab() {
                 section={section}
                 academicYear={academicYear}
                 examType={examType}
+                attendance={attendance}
               />
             </div>
           ))}
